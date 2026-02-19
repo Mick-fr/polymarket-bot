@@ -67,7 +67,9 @@ class RiskManager:
 
         # ── 3. Taille d'ordre max ─────────────────────────────────────────────
         order_cost = self._compute_order_cost(signal)
-        if order_cost > self.config.max_order_size:
+        # Tolérance 1% pour éviter les faux rejets dus à la précision flottante
+        # (ex: size=10.41 × price=0.48 = 4.9968 → arrondi à 5.00, mais float peut donner 5.00000001)
+        if order_cost > self.config.max_order_size * 1.01:
             return RiskVerdict(
                 False,
                 f"Ordre trop gros: {order_cost:.2f} USDC > max {self.config.max_order_size:.2f}",
