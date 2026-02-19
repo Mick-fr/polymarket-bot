@@ -343,6 +343,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self._obi_calc = OBICalculator()
         # Suivi prix précédents pour news-breaker {token_id: (price, timestamp)}
         self._price_history: dict[str, tuple[float, float]] = {}
+        # Cooldown re-cotation : évite de re-coter le même token trop rapidement
+        # {token_id: last_quote_timestamp}
+        self._last_quote_ts: dict[str, float] = {}
+        self._quote_cooldown: float = 30.0  # secondes entre deux cotations du même token
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         signals: list[Signal] = []
@@ -364,9 +368,15 @@ class OBIMarketMakingStrategy(BaseStrategy):
             if traded >= self.max_markets:
                 break
 
-            # ── Vérification cooldown ──
+            # ── Vérification cooldown news-breaker ──
             if self.db and self.db.is_in_cooldown(market.yes_token_id):
                 logger.info("[OBI] '%s' en cooldown, skip.", market.question[:40])
+                continue
+
+            # ── Cooldown re-cotation (30s) : évite le sur-trading ──
+            last_quote = self._last_quote_ts.get(market.yes_token_id, 0.0)
+            if (time.time() - last_quote) < self._quote_cooldown:
+                logger.debug("[OBI] '%s' re-cotation trop rapide, skip.", market.question[:40])
                 continue
 
             # ── Carnet d'ordres YES ──
@@ -420,6 +430,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 continue
 
             self._update_price_history(market.yes_token_id, mid)
+            self._last_quote_ts[market.yes_token_id] = time.time()
 
             # ── Calcul bid/ask avec skewing ──
             bid_price, ask_price = self._compute_quotes(

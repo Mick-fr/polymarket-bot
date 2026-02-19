@@ -278,7 +278,17 @@ class Trader:
 
             # Mise à jour de l'inventaire après fill confirmé
             if status in ("filled", "matched"):
-                qty_delta = signal.size if signal.side == "buy" else -signal.size
+                # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
+                if signal.side == "sell":
+                    qty_held = self.db.get_position(signal.token_id)
+                    actual_size = min(signal.size, max(0.0, qty_held))
+                    if actual_size <= 0:
+                        logger.debug("SELL ignoré pour inventaire: qty_held=%.2f", qty_held)
+                        self.db.update_order_status(local_id, "rejected", error="qty_held=0")
+                        return
+                else:
+                    actual_size = signal.size
+                qty_delta = actual_size if signal.side == "buy" else -actual_size
                 self.db.update_position(
                     token_id=signal.token_id,
                     market_id=signal.market_id,
@@ -291,9 +301,9 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
-                # Paper trading : mise à jour du solde fictif
+                # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:
-                    cost = signal.size * (signal.price or 0.5)
+                    cost = actual_size * (signal.price or 0.5)
                     balance_delta = -cost if signal.side == "buy" else cost
                     current = self.db.get_latest_balance() or self.config.bot.paper_balance
                     self.db.record_balance(max(0.0, current + balance_delta))
