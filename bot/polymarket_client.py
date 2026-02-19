@@ -80,7 +80,7 @@ class PolymarketClient:
             mid = self.client.get_midpoint(token_id)
             return float(mid) if mid else None
         except Exception as e:
-            logger.warning("Erreur récupération midpoint pour %s: %s", token_id, e)
+            logger.debug("Midpoint indisponible pour %s: %s", token_id, e)
             return None
 
     def get_price(self, token_id: str, side: str = "buy") -> Optional[float]:
@@ -89,7 +89,7 @@ class PolymarketClient:
             price = self.client.get_price(token_id, side=side.upper())
             return float(price) if price else None
         except Exception as e:
-            logger.warning("Erreur récupération prix pour %s: %s", token_id, e)
+            logger.debug("Prix indisponible pour %s: %s", token_id, e)
             return None
 
     # ── Passage d'ordres ─────────────────────────────────────────

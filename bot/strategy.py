@@ -12,6 +12,9 @@ Pour créer ta propre stratégie :
 """
 
 import logging
+import urllib.request
+import urllib.error
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -19,6 +22,36 @@ from typing import Optional
 from bot.polymarket_client import PolymarketClient
 
 logger = logging.getLogger("bot.strategy")
+
+GAMMA_API_URL = "https://gamma-api.polymarket.com/markets"
+
+
+def _fetch_gamma_clob_markets(limit: int = 50) -> list[dict]:
+    """
+    Interroge l'API Gamma de Polymarket pour trouver les marchés
+    avec un carnet d'ordres CLOB actif (enableOrderBook=true).
+
+    Retourne une liste de dicts avec au moins :
+      - question
+      - clobTokenIds  (list[str])
+      - bestBid / bestAsk
+    """
+    url = (
+        f"{GAMMA_API_URL}"
+        f"?closed=false&enableOrderBook=true"
+        f"&order=volume24hr&ascending=false&limit={limit}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "polymarket-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            # L'API peut retourner soit une liste directe, soit un objet {markets:[]}
+            if isinstance(data, list):
+                return data
+            return data.get("markets", [])
+    except Exception as e:
+        logger.error("[GammaAPI] Erreur lors de la récupération des marchés: %s", e)
+        return []
 
 
 @dataclass
@@ -54,64 +87,90 @@ class BaseStrategy(ABC):
 class DummyStrategy(BaseStrategy):
     """
     Stratégie factice pour le développement.
-    Scanne quelques marchés, log les prix, ne passe aucun ordre.
+    Scanne les marchés CLOB actifs via l'API Gamma, log les prix,
+    ne passe aucun ordre.
     """
 
     def analyze(self) -> list[Signal]:
-        """Scanne les marchés et retourne toujours une liste vide."""
+        """Scanne les marchés CLOB actifs et retourne toujours une liste vide."""
         signals: list[Signal] = []
 
         try:
-            # Polymarket retourne enable_order_book=False pour tous les marchés
-            # dans /markets depuis leur migration vers le modèle hybride.
-            # On filtre uniquement sur accepting_orders=True et on tente
-            # le midpoint directement — get_midpoint() retourne None sur 404,
-            # ce qui permet de découvrir les carnets actifs sans pré-filtrage.
-            resp = self.client.get_markets()
-            markets = resp.get("data", []) if isinstance(resp, dict) else []
+            # Étape 1 : récupérer les marchés CLOB actifs via l'API Gamma
+            gamma_markets = _fetch_gamma_clob_markets(limit=50)
 
-            if not markets:
-                logger.info("[DummyStrategy] Aucun marché récupéré.")
+            if not gamma_markets:
+                logger.info("[DummyStrategy] Aucun marché CLOB actif trouvé via Gamma API.")
                 return signals
 
-            # Filtre sur accepting_orders uniquement
-            candidates = [m for m in markets if m.get("accepting_orders") is True]
-            logger.info("[DummyStrategy] %d marchés acceptant des ordres sur %d total.",
-                        len(candidates), len(markets))
+            logger.info(
+                "[DummyStrategy] %d marchés CLOB actifs récupérés via Gamma API.",
+                len(gamma_markets),
+            )
 
-            # Scanne jusqu'à trouver 5 marchés avec un midpoint valide
+            # Étape 2 : scanner jusqu'à 5 marchés avec un midpoint valide
             found = 0
-            for market in candidates:
+            for market in gamma_markets:
                 if found >= 5:
                     break
+
                 question = market.get("question", "?")
-                tokens = market.get("tokens", [])
+                # L'API Gamma utilise camelCase
+                clob_token_ids = market.get("clobTokenIds") or []
+                best_bid = market.get("bestBid")
+                best_ask = market.get("bestAsk")
 
-                for token in tokens:
-                    token_id = token.get("token_id", "")
-                    outcome = token.get("outcome", "?")
-                    if not token_id:
-                        continue
+                if not clob_token_ids:
+                    logger.debug(
+                        "[DummyStrategy] Marché '%s' ignoré : pas de clobTokenIds.",
+                        question[:60],
+                    )
+                    continue
 
-                    mid = self.client.get_midpoint(token_id)
-                    if mid is None:
-                        continue  # Pas de carnet actif pour ce token
+                # Essayer d'obtenir le midpoint CLOB pour le premier token (YES)
+                token_id = clob_token_ids[0] if isinstance(clob_token_ids, list) else clob_token_ids
+                mid = self.client.get_midpoint(token_id)
 
-                    found += 1
+                # Fallback : calculer le midpoint depuis bestBid/bestAsk Gamma
+                if mid is None and best_bid and best_ask:
+                    try:
+                        mid = (float(best_bid) + float(best_ask)) / 2.0
+                        logger.debug(
+                            "[DummyStrategy] Midpoint CLOB indisponible, "
+                            "utilisation Gamma bid/ask: %.4f",
+                            mid,
+                        )
+                    except (TypeError, ValueError):
+                        mid = None
+
+                if mid is None:
+                    logger.debug(
+                        "[DummyStrategy] Pas de prix disponible pour '%s'.", question[:60]
+                    )
+                    continue
+
+                found += 1
+                logger.info(
+                    "[DummyStrategy] Marché: '%s' | YES = %.4f (bid=%s ask=%s)",
+                    question[:60],
+                    mid,
+                    best_bid,
+                    best_ask,
+                )
+
+                if mid < 0.10:
                     logger.info(
-                        "[DummyStrategy] Marché: '%s' | %s = %.4f",
-                        question[:60], outcome, mid,
+                        "[DummyStrategy] Signal potentiel détecté (non exécuté): "
+                        "BUY YES @ %.4f – '%s'",
+                        mid,
+                        question[:40],
                     )
 
-                    if mid < 0.10:
-                        logger.info(
-                            "[DummyStrategy] Signal potentiel détecté (non exécuté): "
-                            "BUY %s @ %.4f – '%s'",
-                            outcome, mid, question[:40],
-                        )
-
             if found == 0:
-                logger.info("[DummyStrategy] Aucun carnet d'ordres actif trouvé parmi %d candidats.", len(candidates))
+                logger.info(
+                    "[DummyStrategy] Aucun prix disponible parmi %d marchés CLOB.",
+                    len(gamma_markets),
+                )
 
         except Exception as e:
             logger.error("[DummyStrategy] Erreur lors de l'analyse: %s", e)
