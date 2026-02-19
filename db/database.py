@@ -267,6 +267,15 @@ class Database:
             row = cur.fetchone()
             return row["quantity"] if row else 0.0
 
+    def get_position_usdc(self, token_id: str) -> float:
+        """Retourne l'exposition en USDC = quantity * avg_price (signé, 0.0 si aucune position)."""
+        with self._cursor() as cur:
+            cur.execute("SELECT quantity, avg_price FROM positions WHERE token_id = ?", (token_id,))
+            row = cur.fetchone()
+            if not row:
+                return 0.0
+            return row["quantity"] * row["avg_price"]
+
     def get_all_positions(self) -> list[dict]:
         """Retourne toutes les positions actives (quantity != 0)."""
         with self._cursor() as cur:

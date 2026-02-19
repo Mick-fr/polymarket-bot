@@ -54,7 +54,7 @@ class Trader:
         self.strategy = OBIMarketMakingStrategy(
             client=self.pm_client,
             db=self.db,
-            order_size_usdc=self.config.bot.max_order_size / 2,  # 50% de max_order_size par ordre
+            max_order_size_usdc=self.config.bot.max_order_size,
             max_markets=5,
         )
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
@@ -130,8 +130,8 @@ class Trader:
         # 4. CTF Inverse Spread Arb (opportuniste, avant les signaux principaux)
         self._check_ctf_arb(balance)
 
-        # 5. Stratégie OBI → signaux
-        signals = self.strategy.analyze()
+        # 5. Stratégie OBI → signaux (balance passée pour sizing dynamique)
+        signals = self.strategy.analyze(balance=balance)
 
         # 6. Exécution avec gestion de l'inventaire post-fill
         for sig in signals:

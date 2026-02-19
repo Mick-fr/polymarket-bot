@@ -312,7 +312,7 @@ class BaseStrategy(ABC):
         self.client = client
 
     @abstractmethod
-    def analyze(self) -> list[Signal]:
+    def analyze(self, balance: float = 0.0) -> list[Signal]:
         ...
 
 
@@ -333,19 +333,26 @@ class OBIMarketMakingStrategy(BaseStrategy):
     """
 
     def __init__(self, client: PolymarketClient, db=None,
-                 order_size_usdc: float = 2.0,
+                 max_order_size_usdc: float = 5.0,
                  max_markets: int = 5):
         super().__init__(client)
         self.db = db
-        self.order_size_usdc = order_size_usdc  # Taille de base par ordre
+        self.max_order_size_usdc = max_order_size_usdc  # Plafond absolu par ordre
         self.max_markets = max_markets
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
         # Suivi prix précédents pour news-breaker {token_id: (price, timestamp)}
         self._price_history: dict[str, tuple[float, float]] = {}
 
-    def analyze(self) -> list[Signal]:
+    def analyze(self, balance: float = 0.0) -> list[Signal]:
         signals: list[Signal] = []
+
+        # Taille par ordre : 2% du solde, min 1 USDC, plafond max_order_size_usdc
+        order_size_usdc = max(1.0, min(balance * 0.02, self.max_order_size_usdc))
+        logger.info(
+            "[OBI] Sizing: solde=%.2f USDC → order_size=%.2f USDC (2%%, plafond=%.2f)",
+            balance, order_size_usdc, self.max_order_size_usdc,
+        )
 
         markets = self._universe.get_eligible_markets()
         if not markets:
@@ -429,8 +436,8 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 continue
 
             # Sizing basé sur prix (nombre de shares pour dépenser order_size_usdc)
-            bid_size = round(self.order_size_usdc / bid_price, 2)
-            ask_size = round(self.order_size_usdc / ask_price, 2)
+            bid_size = round(order_size_usdc / bid_price, 2)
+            ask_size = round(order_size_usdc / ask_price, 2)
 
             logger.info(
                 "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f",

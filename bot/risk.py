@@ -158,15 +158,16 @@ class RiskManager:
     def _check_fractional_sizing(self, signal: Signal, balance: float,
                                   order_cost: float) -> RiskVerdict | None:
         """
-        L'exposition nette sur un marché ne doit pas dépasser MAX_NET_EXPOSURE_PCT * balance.
-        Exposition nette = |qty_YES - qty_NO| * mid_price ≈ order_cost pour simplifier.
+        L'exposition nette en USDC sur un marché ne doit pas dépasser
+        MAX_NET_EXPOSURE_PCT * balance.
+        current_exposure_usdc = shares_nettes * prix (stocké en USDC dans la DB).
         """
         max_exposure = balance * MAX_NET_EXPOSURE_PCT
-        current_position = self.db.get_position(signal.token_id)
+        current_exposure_usdc = self.db.get_position_usdc(signal.token_id)
 
-        # Exposition nette estimée après l'ordre
+        # Delta USDC de ce nouvel ordre
         delta = order_cost if signal.side == "buy" else -order_cost
-        net_exposure = abs(current_position * (signal.price or 0.5) + delta)
+        net_exposure = abs(current_exposure_usdc + delta)
 
         if net_exposure > max_exposure:
             return RiskVerdict(
@@ -181,7 +182,7 @@ class RiskManager:
                                   balance: float) -> RiskVerdict | None:
         """
         Inventory skewing :
-          ratio = exposition_nette / max_autorisée
+          ratio = exposition_nette_USDC / max_autorisée
           > 0.7 → Cancel bids, Ask only
           = 1.0 → Liquidation unilatérale (Ask only)
         """
@@ -189,9 +190,7 @@ class RiskManager:
         if max_exposure <= 0:
             return None
 
-        current_qty   = self.db.get_position(signal.token_id)
-        mid_price     = signal.price or 0.5
-        net_exposure  = abs(current_qty * mid_price)
+        net_exposure  = abs(self.db.get_position_usdc(signal.token_id))
         ratio         = net_exposure / max_exposure
 
         if ratio >= INVENTORY_SKEW_LIQ:
