@@ -74,6 +74,26 @@ class AppConfig:
     log_level: str = "INFO"
 
 
+def _load_password_hash(data_dir: Path) -> str:
+    """
+    Charge le hash bcrypt depuis data/pw_hash.txt.
+    Ce fichier évite les problèmes d'interpolation Docker Compose
+    avec les caractères $ présents dans les hashes bcrypt.
+    Fallback sur DASHBOARD_PASSWORD_HASH si le fichier n'existe pas.
+    """
+    pw_file = data_dir / "pw_hash.txt"
+    if pw_file.exists():
+        h = pw_file.read_text().strip()
+        if h:
+            return h
+    # Fallback : variable d'environnement (peut être tronquée)
+    h = os.getenv("DASHBOARD_PASSWORD_HASH", "")
+    if not h:
+        print("FATAL: DASHBOARD_PASSWORD_HASH manquant (ni data/pw_hash.txt ni variable env)")
+        sys.exit(1)
+    return h
+
+
 def load_config() -> AppConfig:
     """Construit la configuration depuis les variables d'environnement."""
     data_dir = _PROJECT_ROOT / "data"
@@ -95,7 +115,7 @@ def load_config() -> AppConfig:
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),
             secret_key=_require_env("DASHBOARD_SECRET_KEY"),
-            password_hash=_require_env("DASHBOARD_PASSWORD_HASH"),
+            password_hash=_load_password_hash(data_dir),
         ),
         db_path=str(data_dir / "bot.db"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
