@@ -151,26 +151,13 @@ class Trader:
     def _fetch_balance(self) -> Optional[float]:
         """Récupère le solde USDC — réel via CLOB ou fictif en paper trading.
 
-        En paper trading, le 'solde' retourné est le NAV (Net Asset Value) :
-          NAV = cash_résiduel + Σ(qty × avg_price) pour chaque position ouverte
-        Cela évite que le sizing et les règles de risque se dégradent au fil des BUY.
+        En paper trading, le solde retourné est le cash résiduel uniquement.
+        Les positions sont de l'inventaire, pas du cash disponible. Valoriser
+        les positions au prix d'entrée créerait un double-comptage car chaque
+        BUY débite déjà le cash et chaque SELL le crédite.
         """
         if self.config.bot.paper_trading:
-            cash = self.db.get_latest_balance() or self.config.bot.paper_balance
-            # Ajouter la valeur mark-to-market des positions ouvertes (au prix d'entrée)
-            positions = self.db.get_all_positions()
-            positions_value = sum(
-                (p.get("quantity") or 0.0) * (p.get("avg_price") or 0.0)
-                for p in positions
-                if (p.get("quantity") or 0.0) > 0
-            )
-            nav = cash + positions_value
-            if positions_value > 0:
-                logger.debug(
-                    "[PAPER] Cash=%.2f + Positions=%.2f → NAV=%.2f USDC",
-                    cash, positions_value, nav,
-                )
-            return nav
+            return self.db.get_latest_balance() or self.config.bot.paper_balance
 
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams

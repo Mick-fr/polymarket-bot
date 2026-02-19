@@ -95,26 +95,21 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         balance_str = f"${balance:.2f}" if balance is not None else "N/A"
         balance_class = "text-green" if balance and balance > 0 else "text-red"
 
-        # En paper trading, afficher cash + valeur positions sous le solde NAV
+        # En paper trading, afficher le nombre de positions ouvertes sous le solde cash
         paper_detail = ""
         if config.bot.paper_trading and balance is not None:
             positions = db.get_all_positions()
-            pos_value = sum(
-                (p.get("quantity") or 0.0) * (p.get("avg_price") or 0.0)
-                for p in positions
-                if (p.get("quantity") or 0.0) > 0
-            )
-            cash = balance - pos_value
-            if pos_value > 0:
+            open_count = sum(1 for p in positions if (p.get("quantity") or 0.0) > 0.01)
+            if open_count > 0:
                 paper_detail = (
                     f'<div style="font-size:0.72rem; color:var(--text-dim); margin-top:4px;">'
-                    f'Cash: ${cash:.2f} + Positions: ${pos_value:.2f}</div>'
+                    f'{open_count} position(s) en inventaire</div>'
                 )
 
         return f"""
         <div class="card">
             <div class="stat-value {balance_class}">{balance_str}</div>
-            <div class="stat-label">{"NAV (paper)" if config.bot.paper_trading else "Solde USDC"}</div>
+            <div class="stat-label">{"Cash (paper)" if config.bot.paper_trading else "Solde USDC"}</div>
             {paper_detail}
         </div>
         <div class="card">
