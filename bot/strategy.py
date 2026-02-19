@@ -62,38 +62,30 @@ class DummyStrategy(BaseStrategy):
         signals: list[Signal] = []
 
         try:
-            # Parcourt jusqu'à 5 pages pour trouver des marchés CLOB actifs
-            active_markets = []
-            next_cursor = ""
-            pages_fetched = 0
+            # Polymarket retourne enable_order_book=False pour tous les marchés
+            # dans /markets depuis leur migration vers le modèle hybride.
+            # On filtre uniquement sur accepting_orders=True et on tente
+            # le midpoint directement — get_midpoint() retourne None sur 404,
+            # ce qui permet de découvrir les carnets actifs sans pré-filtrage.
+            resp = self.client.get_markets()
+            markets = resp.get("data", []) if isinstance(resp, dict) else []
 
-            while len(active_markets) < 5 and pages_fetched < 5:
-                resp = self.client.get_markets(next_cursor=next_cursor)
-                if not isinstance(resp, dict):
-                    break
-                page_markets = resp.get("data", [])
-                next_cursor = resp.get("next_cursor", "")
-                pages_fetched += 1
-
-                for m in page_markets:
-                    if m.get("accepting_orders") is True and m.get("enable_order_book") is True:
-                        active_markets.append(m)
-
-                # Fin de pagination
-                if not next_cursor or next_cursor == "LTE=":
-                    break
-
-            if not active_markets:
-                logger.info("[DummyStrategy] Aucun marché CLOB actif trouvé sur %d pages.", pages_fetched)
+            if not markets:
+                logger.info("[DummyStrategy] Aucun marché récupéré.")
                 return signals
 
-            logger.info("[DummyStrategy] %d marchés CLOB actifs trouvés sur %d pages.", len(active_markets), pages_fetched)
+            # Filtre sur accepting_orders uniquement
+            candidates = [m for m in markets if m.get("accepting_orders") is True]
+            logger.info("[DummyStrategy] %d marchés acceptant des ordres sur %d total.",
+                        len(candidates), len(markets))
 
-            # On scanne les 5 premiers marchés CLOB actifs
-            for market in active_markets[:5]:
+            # Scanne jusqu'à trouver 5 marchés avec un midpoint valide
+            found = 0
+            for market in candidates:
+                if found >= 5:
+                    break
                 question = market.get("question", "?")
                 tokens = market.get("tokens", [])
-                condition_id = market.get("condition_id", "unknown")
 
                 for token in tokens:
                     token_id = token.get("token_id", "")
@@ -103,25 +95,23 @@ class DummyStrategy(BaseStrategy):
 
                     mid = self.client.get_midpoint(token_id)
                     if mid is None:
-                        continue
+                        continue  # Pas de carnet actif pour ce token
 
+                    found += 1
                     logger.info(
                         "[DummyStrategy] Marché: '%s' | %s = %.4f",
-                        question[:60],
-                        outcome,
-                        mid,
+                        question[:60], outcome, mid,
                     )
 
-                    # Exemple : si un outcome est très sous-évalué, on le signale
-                    # (mais on ne passe PAS d'ordre – c'est un placeholder)
                     if mid < 0.10:
                         logger.info(
                             "[DummyStrategy] Signal potentiel détecté (non exécuté): "
                             "BUY %s @ %.4f – '%s'",
                             outcome, mid, question[:40],
                         )
-                        # On pourrait ajouter à `signals` ici pour une vraie stratégie
-                        # signals.append(Signal(...))
+
+            if found == 0:
+                logger.info("[DummyStrategy] Aucun carnet d'ordres actif trouvé parmi %d candidats.", len(candidates))
 
         except Exception as e:
             logger.error("[DummyStrategy] Erreur lors de l'analyse: %s", e)
