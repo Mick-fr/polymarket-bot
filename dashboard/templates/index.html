@@ -42,6 +42,23 @@
         </div>
     </div>
 
+    <!-- ── Inventaire ────────────────────────────────────── -->
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Inventaire</span>
+            <span class="htmx-indicator" style="font-size:0.8rem; color:var(--text-dim)">chargement...</span>
+        </div>
+        <div class="table-wrap"
+             hx-get="/api/inventory"
+             hx-trigger="load, every 15s"
+             hx-swap="innerHTML"
+             hx-indicator="closest .card">
+            <table>
+                <thead><tr><th colspan="5" style="text-align:center; color:var(--text-dim)">Chargement...</th></tr></thead>
+            </table>
+        </div>
+    </div>
+
     <!-- ── Derniers ordres ───────────────────────────────── -->
     <div class="card">
         <div class="card-header">

@@ -229,6 +229,58 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         </table>
         """
 
+    @app.route("/api/inventory")
+    @login_required
+    def api_inventory():
+        """Tableau des positions ouvertes (inventaire)."""
+        positions = db.get_all_positions()
+
+        if not positions:
+            return """
+            <table>
+                <thead><tr><th colspan="5" style="text-align:center; color:var(--text-dim)">Aucune position ouverte.</th></tr></thead>
+            </table>
+            """
+
+        rows = ""
+        for p in positions:
+            question = p.get("question") or ""
+            question_display = question[:35] + "..." if len(question) > 35 else question
+            question_safe = question.replace('"', '&quot;')
+
+            side = (p.get("side") or "").upper()
+            side_html = f'<span class="text-green">{side}</span>' if side == "YES" else f'<span class="text-red">{side}</span>'
+
+            qty = p.get("quantity") or 0.0
+            avg_price = p.get("avg_price")
+            avg_price_str = f"{avg_price:.4f}" if avg_price is not None else "N/A"
+            cout_str = f"${avg_price * qty:.2f}" if avg_price is not None else "N/A"
+
+            rows += f"""
+            <tr>
+                <td title="{question_safe}">{question_display}</td>
+                <td>{side_html}</td>
+                <td>{qty:.2f}</td>
+                <td>{avg_price_str}</td>
+                <td>{cout_str}</td>
+            </tr>
+            """
+
+        return f"""
+        <table>
+            <thead>
+                <tr>
+                    <th>Question</th>
+                    <th>Side</th>
+                    <th>Qty</th>
+                    <th>Avg Price</th>
+                    <th>Cout USDC</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>
+        """
+
     @app.route("/api/logs")
     @login_required
     def api_logs():
