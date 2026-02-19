@@ -140,8 +140,8 @@ class Trader:
         Retourne la somme des deux soldes.
         """
         _RPC_URLS = [
-            "https://polygon-rpc.com",
-            "https://rpc.ankr.com/polygon",
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://polygon.drpc.org",
         ]
         _USDC_CONTRACTS = [
             ("USDC natif",   "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
