@@ -228,16 +228,23 @@ class OBICalculator:
     """
     Order Book Imbalance sur les 3 meilleurs niveaux.
     OBI = (V_bid - V_ask) / (V_bid + V_ask)  ∈ [-1, +1]
+
+    Fallback : si le carnet CLOB est vide (Polymarket AMM), on génère
+    un OBI synthétique neutre à partir du bestBid/bestAsk Gamma.
     """
 
     LEVELS = 3
 
     @classmethod
-    def compute(cls, order_book: dict) -> Optional[OBIResult]:
+    def compute(cls, order_book: dict,
+                best_bid: float = 0.0,
+                best_ask: float = 0.0) -> Optional[OBIResult]:
         """
         order_book : réponse brute de get_order_book()
         Attendu : {"bids": [{"price": "0.55", "size": "100"}, ...],
                    "asks": [{"price": "0.57", "size": "80"},  ...]}
+
+        best_bid / best_ask : prix Gamma pour fallback si carnet vide.
         """
         try:
             bids = order_book.get("bids") or []
@@ -252,6 +259,16 @@ class OBICalculator:
             total = v_bid + v_ask
 
             if total == 0:
+                # ── Fallback : carnet AMM vide → OBI synthétique neutre ──
+                # On considère la liquidité symétrique (AMM) et on positionne
+                # notre quote entre bestBid et bestAsk de Gamma.
+                if best_bid > 0 and best_ask > 0 and best_ask > best_bid:
+                    logger.debug(
+                        "[OBI] Carnet CLOB vide, fallback Gamma bid=%.4f ask=%.4f",
+                        best_bid, best_ask,
+                    )
+                    # OBI neutre : on assume liquidité symétrique AMM
+                    return OBIResult(obi=0.0, v_bid=0.0, v_ask=0.0, regime="neutral")
                 return None
 
             obi = (v_bid - v_ask) / total
@@ -338,8 +355,20 @@ class OBIMarketMakingStrategy(BaseStrategy):
             if not ob:
                 continue
 
-            # ── OBI ──
-            obi_result = OBICalculator.compute(ob)
+            # Log diagnostic du carnet pour les premiers cycles
+            bids_raw = ob.get("bids") or []
+            asks_raw = ob.get("asks") or []
+            logger.debug(
+                "[OBI] Carnet '%s': %d bids, %d asks",
+                market.question[:40], len(bids_raw), len(asks_raw),
+            )
+
+            # ── OBI (avec fallback Gamma si carnet vide) ──
+            obi_result = OBICalculator.compute(
+                ob,
+                best_bid=market.best_bid,
+                best_ask=market.best_ask,
+            )
             if obi_result is None:
                 logger.debug("[OBI] OBI non calculable pour '%s'", market.question[:40])
                 continue
