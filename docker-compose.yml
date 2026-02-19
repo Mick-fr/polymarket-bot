@@ -1,0 +1,39 @@
+services:
+
+  # ── Bot de trading (tourne en arrière-plan 24/7) ────────────
+  bot:
+    build: .
+    container_name: polymarket-bot
+    command: python run.py bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - bot-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Dashboard web (monitoring + kill switch) ────────────────
+  dashboard:
+    build: .
+    container_name: polymarket-dashboard
+    command: gunicorn --bind 0.0.0.0:8080 --workers 2 --timeout 120 "dashboard.wsgi:app"
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - bot-data:/app/data
+    depends_on:
+      - bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:
+    driver: local

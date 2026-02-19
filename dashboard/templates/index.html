@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – Polymarket Bot{% endblock %}
+
+{% block body %}
+<!-- ── Navbar ─────────────────────────────────────────────── -->
+<nav class="navbar">
+    <span class="navbar-brand">Polymarket Bot</span>
+    <div class="navbar-links">
+        <div id="kill-badge"
+             hx-get="/api/kill-status"
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+        </div>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </div>
+</nav>
+
+<div class="container">
+
+    <!-- ── Stats en haut ─────────────────────────────────── -->
+    <div class="grid-3"
+         hx-get="/api/stats"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML"
+         id="stats-grid">
+        <!-- Contenu chargé par htmx -->
+        <div class="card"><div class="stat-value">--</div><div class="stat-label">Chargement...</div></div>
+        <div class="card"><div class="stat-value">--</div></div>
+        <div class="card"><div class="stat-value">--</div></div>
+    </div>
+
+    <!-- ── Kill Switch ───────────────────────────────────── -->
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Controle du Bot</span>
+        </div>
+        <div id="kill-switch-area"
+             hx-get="/api/kill-switch-ui"
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+            <!-- Contenu chargé par htmx -->
+        </div>
+    </div>
+
+    <!-- ── Derniers ordres ───────────────────────────────── -->
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Derniers Ordres</span>
+            <span class="htmx-indicator" style="font-size:0.8rem; color:var(--text-dim)">chargement...</span>
+        </div>
+        <div class="table-wrap"
+             hx-get="/api/orders"
+             hx-trigger="load, every 15s"
+             hx-swap="innerHTML"
+             hx-indicator="closest .card">
+            <table>
+                <thead><tr><th colspan="8" style="text-align:center; color:var(--text-dim)">Chargement...</th></tr></thead>
+            </table>
+        </div>
+    </div>
+
+    <!-- ── Logs système ──────────────────────────────────── -->
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Logs Systeme</span>
+        </div>
+        <div id="logs-area"
+             hx-get="/api/logs"
+             hx-trigger="load, every 10s"
+             hx-swap="innerHTML"
+             style="max-height: 400px; overflow-y: auto;">
+            <div style="color:var(--text-dim); font-size:0.85rem;">Chargement...</div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

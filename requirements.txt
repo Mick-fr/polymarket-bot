@@ -1,0 +1,16 @@
+# SDK Polymarket (CLOB)
+py-clob-client==0.34.5
+
+# Web3 (py-clob-client ne l'utilise pas directement,
+# mais on l'inclut pour nos propres appels si besoin)
+web3>=7.0.0
+
+# Dashboard web
+flask==3.1.*
+bcrypt==4.2.*
+
+# Chargement des variables d'environnement
+python-dotenv==1.1.*
+
+# Serveur WSGI de production
+gunicorn==23.*

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Login – Polymarket Bot{% endblock %}
+
+{% block body %}
+<div class="login-container">
+    <div class="login-box">
+        <h1>Polymarket Bot</h1>
+
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('login') }}">
+            <div class="form-group">
+                <label for="password">Mot de passe</label>
+                <input type="password" id="password" name="password"
+                       placeholder="Entrez le mot de passe" required autofocus>
+            </div>
+            <button type="submit" class="btn btn-success btn-full">
+                Se connecter
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}
