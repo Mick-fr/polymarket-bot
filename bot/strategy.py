@@ -69,12 +69,16 @@ class DummyStrategy(BaseStrategy):
                 logger.info("[DummyStrategy] Aucun marché récupéré.")
                 return signals
 
-            # Filtre les marchés qui acceptent des ordres (évite les 404 sur carnets fermés)
-            # accepting_orders=True est le seul champ fiable — un marché peut être
-            # active=True et closed=True simultanément (marché terminé mais non archivé)
-            active_markets = [m for m in markets if m.get("accepting_orders") is True]
+            # Filtre : carnet d'ordres CLOB actif + accepte des ordres
+            # enable_order_book=False → marché AMM, midpoint non disponible via CLOB API
+            # accepting_orders=False → marché fermé ou en attente
+            active_markets = [
+                m for m in markets
+                if m.get("accepting_orders") is True
+                and m.get("enable_order_book") is True
+            ]
             if not active_markets:
-                logger.info("[DummyStrategy] Aucun marché acceptant des ordres trouvé.")
+                logger.info("[DummyStrategy] Aucun marché CLOB actif trouvé.")
                 return signals
 
             # On scanne les 5 premiers marchés actifs
