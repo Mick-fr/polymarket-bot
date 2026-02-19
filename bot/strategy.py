@@ -62,26 +62,34 @@ class DummyStrategy(BaseStrategy):
         signals: list[Signal] = []
 
         try:
-            resp = self.client.get_markets()
-            markets = resp.get("data", []) if isinstance(resp, dict) else []
+            # Parcourt jusqu'à 5 pages pour trouver des marchés CLOB actifs
+            active_markets = []
+            next_cursor = ""
+            pages_fetched = 0
 
-            if not markets:
-                logger.info("[DummyStrategy] Aucun marché récupéré.")
-                return signals
+            while len(active_markets) < 5 and pages_fetched < 5:
+                resp = self.client.get_markets(next_cursor=next_cursor)
+                if not isinstance(resp, dict):
+                    break
+                page_markets = resp.get("data", [])
+                next_cursor = resp.get("next_cursor", "")
+                pages_fetched += 1
 
-            # Filtre : carnet d'ordres CLOB actif + accepte des ordres
-            # enable_order_book=False → marché AMM, midpoint non disponible via CLOB API
-            # accepting_orders=False → marché fermé ou en attente
-            active_markets = [
-                m for m in markets
-                if m.get("accepting_orders") is True
-                and m.get("enable_order_book") is True
-            ]
+                for m in page_markets:
+                    if m.get("accepting_orders") is True and m.get("enable_order_book") is True:
+                        active_markets.append(m)
+
+                # Fin de pagination
+                if not next_cursor or next_cursor == "LTE=":
+                    break
+
             if not active_markets:
-                logger.info("[DummyStrategy] Aucun marché CLOB actif trouvé.")
+                logger.info("[DummyStrategy] Aucun marché CLOB actif trouvé sur %d pages.", pages_fetched)
                 return signals
 
-            # On scanne les 5 premiers marchés actifs
+            logger.info("[DummyStrategy] %d marchés CLOB actifs trouvés sur %d pages.", len(active_markets), pages_fetched)
+
+            # On scanne les 5 premiers marchés CLOB actifs
             for market in active_markets[:5]:
                 question = market.get("question", "?")
                 tokens = market.get("tokens", [])
