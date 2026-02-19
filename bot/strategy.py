@@ -459,10 +459,14 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
             # Décision : quelle(s) face(s) coter ce cycle
             # - Pas de position → BUY uniquement (rien à vendre)
-            # - Position faible (< 70%) → BUY + SELL (market making normal)
+            # - Position existante → SELL uniquement (liquider avant de re-buy)
             # - Position élevée (≥ 70%) → SELL uniquement (réduction d'inventaire)
-            emit_buy  = inv_ratio < 0.70
-            emit_sell = qty_held > 0.01   # besoin d'au moins 0.01 shares pour vendre
+            # Note: on n'émet jamais BUY+SELL simultanément sur le même token.
+            # En marché réel, les ordres limit attendent dans le carnet ;
+            # en paper trading le fill est instantané → double côté = irréaliste.
+            has_position = qty_held > 0.01
+            emit_sell = has_position                    # SELL si position existante
+            emit_buy  = (not has_position) and (inv_ratio < 0.70)  # BUY uniquement si pas de position
 
             logger.info(
                 "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f "
