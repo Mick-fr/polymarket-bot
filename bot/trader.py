@@ -4,10 +4,12 @@ Gère le cycle : vérification → analyse → risque → exécution → log.
 Robuste face aux erreurs réseau avec reconnexion automatique.
 """
 
+import json
 import logging
 import time
 import signal as os_signal
 import sys
+import urllib.request
 from typing import Optional
 
 from bot.config import AppConfig
@@ -127,13 +129,44 @@ class Trader:
 
     def _fetch_balance(self) -> Optional[float]:
         """
-        Récupère le solde USDC.
-        py-clob-client 0.34.5 n'expose pas de méthode directe pour le solde
-        on retourne le dernier solde enregistré en DB.
-        Pour mettre à jour le solde, utilise le dashboard ou ajoute un appel
-        web3 direct vers le contrat USDC sur Polygon.
+        Récupère le solde USDC (bridged) sur Polygon via JSON-RPC.
+        Contrat USDC.e : 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (6 décimales)
+        Nœud public : https://polygon-rpc.com
         """
-        return self.db.get_latest_balance()
+        _USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        _RPC_URL = "https://polygon-rpc.com"
+        _BALANCEOF_SIG = "0x70a08231"  # keccak256("balanceOf(address)")[:4]
+
+        try:
+            # Dériver l'adresse du wallet depuis la clé privée
+            from eth_account import Account
+            wallet_addr = Account.from_key(self.config.polymarket.private_key).address
+            # Encoder l'appel balanceOf(address) : 4 bytes selector + adresse paddée à 32 bytes
+            addr_padded = wallet_addr[2:].lower().zfill(64)
+            call_data = _BALANCEOF_SIG + addr_padded
+
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": _USDC_CONTRACT, "data": call_data}, "latest"],
+                "id": 1,
+            }).encode()
+
+            req = urllib.request.Request(
+                _RPC_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                result = json.loads(resp.read().decode()).get("result", "0x0")
+                # USDC a 6 décimales
+                balance_usdc = int(result, 16) / 1_000_000
+                return balance_usdc
+
+        except Exception as e:
+            logger.debug("Erreur lecture solde on-chain: %s", e)
+            return self.db.get_latest_balance()
 
     def _execute_signal(self, signal: Signal, current_balance: float):
         """Vérifie le risque et exécute un signal."""
