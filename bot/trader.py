@@ -113,10 +113,15 @@ class Trader:
         balance = self._fetch_balance()
         if balance is not None:
             self.db.record_balance(balance)
-            logger.info("Solde actuel: %.2f USDC", balance)
+            logger.info("Solde actuel: %.6f USDC", balance)
         else:
-            logger.warning("Impossible de récupérer le solde.")
-            balance = self.db.get_latest_balance() or 0.0
+            # Fallback : dernier solde connu ou 0 si premier démarrage
+            balance = self.db.get_latest_balance()
+            if balance is None:
+                logger.info("Solde non disponible (premier démarrage ou RPC inaccessible). Utilisation de 0.0 USDC.")
+                balance = 0.0
+            else:
+                logger.debug("Solde RPC indisponible, utilisation du dernier solde DB: %.6f USDC", balance)
 
         # 4. Exécuter la stratégie
         signals = self.strategy.analyze()
@@ -129,43 +134,82 @@ class Trader:
 
     def _fetch_balance(self) -> Optional[float]:
         """
-        Récupère le solde USDC (bridged) sur Polygon via JSON-RPC.
-        Contrat USDC.e : 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (6 décimales)
-        Nœud public : https://polygon-rpc.com
+        Récupère le solde USDC sur Polygon via JSON-RPC.
+        Essaie USDC natif (0x3c499c...) puis USDC.e bridgé (0x2791Bc...).
+        Les deux ont 6 décimales.
+        Retourne la somme des deux soldes.
         """
-        _USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-        _RPC_URL = "https://polygon-rpc.com"
+        _RPC_URLS = [
+            "https://polygon-rpc.com",
+            "https://rpc.ankr.com/polygon",
+        ]
+        _USDC_CONTRACTS = [
+            ("USDC natif",   "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+            ("USDC.e bridgé","0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),
+        ]
         _BALANCEOF_SIG = "0x70a08231"  # keccak256("balanceOf(address)")[:4]
 
-        try:
-            # Dériver l'adresse du wallet depuis la clé privée
-            from eth_account import Account
-            wallet_addr = Account.from_key(self.config.polymarket.private_key).address
-            # Encoder l'appel balanceOf(address) : 4 bytes selector + adresse paddée à 32 bytes
-            addr_padded = wallet_addr[2:].lower().zfill(64)
-            call_data = _BALANCEOF_SIG + addr_padded
-
+        def _call_rpc(rpc_url: str, contract: str, data: str) -> Optional[str]:
             payload = json.dumps({
                 "jsonrpc": "2.0",
                 "method": "eth_call",
-                "params": [{"to": _USDC_CONTRACT, "data": call_data}, "latest"],
+                "params": [{"to": contract, "data": data}, "latest"],
                 "id": 1,
             }).encode()
-
             req = urllib.request.Request(
-                _RPC_URL,
+                rpc_url,
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
-                result = json.loads(resp.read().decode()).get("result", "0x0")
-                # USDC a 6 décimales
-                balance_usdc = int(result, 16) / 1_000_000
-                return balance_usdc
+                body = json.loads(resp.read().decode())
+                if "error" in body:
+                    logger.debug("RPC error: %s", body["error"])
+                    return None
+                return body.get("result")
+
+        try:
+            from eth_account import Account
+            wallet_addr = Account.from_key(self.config.polymarket.private_key).address
+            addr_padded = wallet_addr[2:].lower().zfill(64)
+            call_data = _BALANCEOF_SIG + addr_padded
+
+            total = 0.0
+            any_success = False
+
+            for label, contract in _USDC_CONTRACTS:
+                # Essayer chaque RPC en fallback
+                result = None
+                last_err = None
+                for rpc_url in _RPC_URLS:
+                    try:
+                        result = _call_rpc(rpc_url, contract, call_data)
+                        if result is not None:
+                            break
+                    except Exception as e:
+                        last_err = e
+                        continue
+
+                if result and result != "0x":
+                    try:
+                        amount = int(result, 16) / 1_000_000
+                        logger.debug("Solde %s: %.4f USDC (wallet %s)", label, amount, wallet_addr[:10])
+                        total += amount
+                        any_success = True
+                    except ValueError as e:
+                        logger.debug("Impossible de parser le résultat RPC (%s): %s", result, e)
+                elif last_err:
+                    logger.debug("RPC inaccessible pour %s: %s", label, last_err)
+
+            if any_success:
+                return total
+
+            logger.warning("Tous les appels RPC ont échoué, utilisation du solde DB.")
+            return self.db.get_latest_balance()
 
         except Exception as e:
-            logger.debug("Erreur lecture solde on-chain: %s", e)
+            logger.warning("Erreur inattendue lecture solde: %s", e)
             return self.db.get_latest_balance()
 
     def _execute_signal(self, signal: Signal, current_balance: float):
