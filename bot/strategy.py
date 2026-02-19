@@ -450,34 +450,52 @@ class OBIMarketMakingStrategy(BaseStrategy):
             bid_size = round(order_size_usdc / bid_price, 2)
             ask_size = round(order_size_usdc / ask_price, 2)
 
+            # ── Lecture de la position actuelle pour éviter BUY+SELL simultané ──
+            qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
+            # Ratio d'inventaire : cohérent avec RiskManager (5% du solde)
+            max_exposure = max(balance * 0.05, self.max_order_size_usdc)
+            net_exposure_usdc = qty_held * mid
+            inv_ratio = net_exposure_usdc / max_exposure if max_exposure > 0 else 0.0
+
+            # Décision : quelle(s) face(s) coter ce cycle
+            # - Pas de position → BUY uniquement (rien à vendre)
+            # - Position faible (< 70%) → BUY + SELL (market making normal)
+            # - Position élevée (≥ 70%) → SELL uniquement (réduction d'inventaire)
+            emit_buy  = inv_ratio < 0.70
+            emit_sell = qty_held > 0.01   # besoin d'au moins 0.01 shares pour vendre
+
             logger.info(
-                "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f",
+                "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f "
+                "| qty_held=%.2f inv_ratio=%.2f → buy=%s sell=%s",
                 market.question[:50], mid, obi_result.obi, obi_result.regime,
-                bid_price, ask_price,
+                bid_price, ask_price, qty_held, inv_ratio,
+                emit_buy, emit_sell,
             )
 
-            signals.append(Signal(
-                token_id=market.yes_token_id,
-                market_id=market.market_id,
-                market_question=market.question,
-                side="buy",
-                order_type="limit",
-                price=bid_price,
-                size=bid_size,
-                confidence=min(abs(obi_result.obi) + 0.5, 1.0),
-                reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
-            ))
-            signals.append(Signal(
-                token_id=market.yes_token_id,
-                market_id=market.market_id,
-                market_question=market.question,
-                side="sell",
-                order_type="limit",
-                price=ask_price,
-                size=ask_size,
-                confidence=min(abs(obi_result.obi) + 0.5, 1.0),
-                reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
-            ))
+            if emit_buy:
+                signals.append(Signal(
+                    token_id=market.yes_token_id,
+                    market_id=market.market_id,
+                    market_question=market.question,
+                    side="buy",
+                    order_type="limit",
+                    price=bid_price,
+                    size=bid_size,
+                    confidence=min(abs(obi_result.obi) + 0.5, 1.0),
+                    reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
+                ))
+            if emit_sell:
+                signals.append(Signal(
+                    token_id=market.yes_token_id,
+                    market_id=market.market_id,
+                    market_question=market.question,
+                    side="sell",
+                    order_type="limit",
+                    price=ask_price,
+                    size=min(ask_size, qty_held),  # ne jamais vendre plus que détenu
+                    confidence=min(abs(obi_result.obi) + 0.5, 1.0),
+                    reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
+                ))
             traded += 1
 
         logger.info("[OBI] Analyse terminée: %d marchés, %d signaux générés.",
