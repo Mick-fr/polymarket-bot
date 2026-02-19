@@ -69,10 +69,12 @@ class DummyStrategy(BaseStrategy):
                 logger.info("[DummyStrategy] Aucun marché récupéré.")
                 return signals
 
-            # Filtre les marchés actifs uniquement (évite les 404 sur carnets fermés)
-            active_markets = [m for m in markets if m.get("active") is True]
+            # Filtre les marchés qui acceptent des ordres (évite les 404 sur carnets fermés)
+            # accepting_orders=True est le seul champ fiable — un marché peut être
+            # active=True et closed=True simultanément (marché terminé mais non archivé)
+            active_markets = [m for m in markets if m.get("accepting_orders") is True]
             if not active_markets:
-                logger.info("[DummyStrategy] Aucun marché actif trouvé.")
+                logger.info("[DummyStrategy] Aucun marché acceptant des ordres trouvé.")
                 return signals
 
             # On scanne les 5 premiers marchés actifs
