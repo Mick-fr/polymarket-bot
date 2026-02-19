@@ -214,6 +214,19 @@
         .kill-active .kill-dot { background: var(--red); animation: pulse 1.5s infinite; }
         .kill-inactive .kill-dot { background: var(--green); }
 
+        /* ── Badge simulation ────────────────────────────── */
+        .badge-simulation {
+            background: rgba(245,158,11,0.20);
+            color: var(--orange);
+            border: 1px solid rgba(245,158,11,0.40);
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }

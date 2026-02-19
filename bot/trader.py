@@ -45,6 +45,15 @@ class Trader:
         logger.info("=" * 60)
         self.db.add_log("INFO", "trader", "Démarrage du bot OBI")
 
+        if self.config.bot.paper_trading:
+            logger.warning("=" * 60)
+            logger.warning("MODE PAPER TRADING ACTIF — Aucun ordre réel ne sera passé")
+            logger.warning("Solde fictif initial : %.2f USDC", self.config.bot.paper_balance)
+            logger.warning("=" * 60)
+            self.db.add_log("WARNING", "trader", "MODE PAPER TRADING ACTIF")
+            if self.db.get_latest_balance() is None:
+                self.db.record_balance(self.config.bot.paper_balance)
+
         os_signal.signal(os_signal.SIGTERM, self._handle_shutdown)
         os_signal.signal(os_signal.SIGINT, self._handle_shutdown)
 
@@ -140,7 +149,10 @@ class Trader:
         logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
 
     def _fetch_balance(self) -> Optional[float]:
-        """Récupère le solde USDC via l'API CLOB (COLLATERAL)."""
+        """Récupère le solde USDC — réel via CLOB ou fictif en paper trading."""
+        if self.config.bot.paper_trading:
+            return self.db.get_latest_balance() or self.config.bot.paper_balance
+
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -238,7 +250,9 @@ class Trader:
         )
 
         try:
-            if signal.order_type == "limit":
+            if self.config.bot.paper_trading:
+                resp = self._simulate_order(signal)
+            elif signal.order_type == "limit":
                 resp = self.pm_client.place_limit_order(
                     token_id=signal.token_id,
                     price=signal.price,
@@ -277,11 +291,33 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
+                # Paper trading : mise à jour du solde fictif
+                if self.config.bot.paper_trading:
+                    cost = signal.size * (signal.price or 0.5)
+                    balance_delta = -cost if signal.side == "buy" else cost
+                    current = self.db.get_latest_balance() or self.config.bot.paper_balance
+                    self.db.record_balance(max(0.0, current + balance_delta))
 
         except Exception as e:
             logger.error("Erreur exécution ordre: %s", e)
             self.db.update_order_status(local_id, "error", error=str(e))
             self.db.add_log("ERROR", "trader", f"Erreur ordre: {e}")
+
+    def _simulate_order(self, signal: Signal) -> dict:
+        """Simule un fill immédiat pour le paper trading (aucun ordre réel envoyé)."""
+        import uuid
+        order_id = f"sim_{uuid.uuid4().hex[:12]}"
+        fill_price = signal.price if signal.price else 0.5
+        logger.info(
+            "[PAPER] Ordre simulé: %s %s %.2f shares @ %.4f → %s",
+            signal.side.upper(), signal.token_id[:16], signal.size, fill_price, order_id,
+        )
+        self.db.add_log(
+            "INFO", "paper",
+            f"[PAPER] {signal.side.upper()} {signal.token_id[:16]} "
+            f"@ {fill_price:.4f} × {signal.size:.2f} → {order_id}",
+        )
+        return {"orderID": order_id, "id": order_id, "status": "filled"}
 
     def _handle_error(self, error: Exception):
         """Backoff exponentiel sur erreurs consécutives."""

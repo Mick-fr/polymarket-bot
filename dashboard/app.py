@@ -117,11 +117,12 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/api/kill-status")
     @login_required
     def api_kill_status():
-        """Badge kill switch dans la navbar."""
+        """Badge kill switch + badge simulation dans la navbar."""
         active = db.get_kill_switch()
+        sim_badge = '<span class="badge-simulation">SIMULATION</span> ' if config.bot.paper_trading else ""
         if active:
-            return '<span class="kill-indicator kill-active"><span class="kill-dot"></span>BOT ARRETE</span>'
-        return '<span class="kill-indicator kill-inactive"><span class="kill-dot"></span>BOT ACTIF</span>'
+            return f'{sim_badge}<span class="kill-indicator kill-active"><span class="kill-dot"></span>BOT ARRETE</span>'
+        return f'{sim_badge}<span class="kill-indicator kill-inactive"><span class="kill-dot"></span>BOT ACTIF</span>'
 
     @app.route("/api/kill-switch-ui")
     @login_required

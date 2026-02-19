@@ -51,6 +51,9 @@ class BotConfig:
     max_retries: int = 5
     # Pause entre les tentatives de reconnexion (secondes)
     retry_delay: int = 30
+    # Paper trading : simule les ordres sans les envoyer à Polymarket
+    paper_trading: bool = False
+    paper_balance: float = 1000.0   # Solde fictif initial (USDC)
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,8 @@ def load_config() -> AppConfig:
             max_daily_loss=float(os.getenv("BOT_MAX_DAILY_LOSS", "10.0")),
             max_retries=int(os.getenv("BOT_MAX_RETRIES", "5")),
             retry_delay=int(os.getenv("BOT_RETRY_DELAY", "30")),
+            paper_trading=os.getenv("BOT_PAPER_TRADING", "false").lower() == "true",
+            paper_balance=float(os.getenv("BOT_PAPER_BALANCE", "1000.0")),
         ),
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),
