@@ -44,6 +44,9 @@ class RiskManager:
     def __init__(self, config: BotConfig, db: Database):
         self.config = config
         self.db = db
+        # En paper trading, le circuit breaker est désactivé pour ne pas
+        # interrompre la simulation à cause des positions initiales corrompues
+        self._paper_trading = getattr(config, "paper_trading", False)
 
     def check(self, signal: Signal, current_balance: float) -> RiskVerdict:
         """
@@ -56,9 +59,11 @@ class RiskManager:
             return RiskVerdict(False, "Kill switch activé", "none")
 
         # ── 2. Circuit breaker global (High Water Mark) ───────────────────────
-        cb = self._check_circuit_breaker(current_balance)
-        if cb is not None:
-            return cb
+        # Désactivé en paper trading (le HWM peut être corrompu depuis une session précédente)
+        if not self._paper_trading:
+            cb = self._check_circuit_breaker(current_balance)
+            if cb is not None:
+                return cb
 
         # ── 3. Taille d'ordre max ─────────────────────────────────────────────
         order_cost = self._compute_order_cost(signal)
