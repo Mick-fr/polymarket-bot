@@ -247,8 +247,26 @@ class OBICalculator:
         best_bid / best_ask : prix Gamma pour fallback si carnet vide.
         """
         try:
-            bids = order_book.get("bids") or []
-            asks = order_book.get("asks") or []
+            # Accepte un dict OU un OrderBookSummary (py-clob-client dataclass)
+            if isinstance(order_book, dict):
+                bids = order_book.get("bids") or []
+                asks = order_book.get("asks") or []
+            else:
+                bids = getattr(order_book, "bids", None) or []
+                asks = getattr(order_book, "asks", None) or []
+
+            # Normalise chaque niveau : OrderSummary(price, size) ou dict
+            def _to_dict(e):
+                if isinstance(e, dict):
+                    return e
+                p = getattr(e, "price", None)
+                s = getattr(e, "size",  None)
+                if p is None or s is None:
+                    return None
+                return {"price": str(p), "size": str(s)}
+
+            bids = [d for e in bids if (d := _to_dict(e)) is not None]
+            asks = [d for e in asks if (d := _to_dict(e)) is not None]
 
             # Trier : bids décroissant, asks croissant
             bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
@@ -263,8 +281,8 @@ class OBICalculator:
                 # On considère la liquidité symétrique (AMM) et on positionne
                 # notre quote entre bestBid et bestAsk de Gamma.
                 if best_bid > 0 and best_ask > 0 and best_ask > best_bid:
-                    logger.debug(
-                        "[OBI] Carnet CLOB vide, fallback Gamma bid=%.4f ask=%.4f",
+                    logger.info(
+                        "[OBI] Carnet CLOB vide → fallback AMM (Gamma bid=%.4f ask=%.4f)",
                         best_bid, best_ask,
                     )
                     # OBI neutre : on assume liquidité symétrique AMM
@@ -283,7 +301,7 @@ class OBICalculator:
             return OBIResult(obi=obi, v_bid=v_bid, v_ask=v_ask, regime=regime)
 
         except Exception as e:
-            logger.debug("[OBI] Erreur calcul: %s", e)
+            logger.info("[OBI] Erreur calcul: %s", e)
             return None
 
 
@@ -341,36 +359,39 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
             # ── Vérification cooldown ──
             if self.db and self.db.is_in_cooldown(market.yes_token_id):
-                logger.debug("[OBI] '%s' en cooldown, skip.", market.question[:40])
+                logger.info("[OBI] '%s' en cooldown, skip.", market.question[:40])
                 continue
 
             # ── Carnet d'ordres YES ──
             try:
                 ob = self.client.get_order_book(market.yes_token_id)
             except Exception as e:
-                logger.debug("[OBI] Impossible de récupérer le carnet pour %s: %s",
-                             market.yes_token_id[:16], e)
+                logger.info("[OBI] Impossible de récupérer le carnet pour %s: %s",
+                            market.yes_token_id[:16], e)
                 continue
 
-            if not ob:
+            if ob is None:
+                logger.info("[OBI] get_order_book a retourné None pour %s",
+                            market.yes_token_id[:16])
                 continue
 
-            # Log diagnostic du carnet pour les premiers cycles
-            bids_raw = ob.get("bids") or []
-            asks_raw = ob.get("asks") or []
-            logger.debug(
+            # Log du nombre de niveaux (OrderBookSummary ou dict)
+            _bids_raw = (ob.get("bids") if isinstance(ob, dict) else getattr(ob, "bids", None)) or []
+            _asks_raw = (ob.get("asks") if isinstance(ob, dict) else getattr(ob, "asks", None)) or []
+            logger.info(
                 "[OBI] Carnet '%s': %d bids, %d asks",
-                market.question[:40], len(bids_raw), len(asks_raw),
+                market.question[:40], len(_bids_raw), len(_asks_raw),
             )
 
-            # ── OBI (avec fallback Gamma si carnet vide) ──
+            # ── OBI (compute accepte dict ou OrderBookSummary, avec fallback Gamma) ──
             obi_result = OBICalculator.compute(
                 ob,
                 best_bid=market.best_bid,
                 best_ask=market.best_ask,
             )
             if obi_result is None:
-                logger.debug("[OBI] OBI non calculable pour '%s'", market.question[:40])
+                logger.info("[OBI] OBI non calculable pour '%s' (carnet vide sans fallback Gamma)",
+                            market.question[:40])
                 continue
 
             # ── News-Breaker : détection mouvement rapide ──
