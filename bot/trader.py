@@ -128,18 +128,11 @@ class Trader:
     def _fetch_balance(self) -> Optional[float]:
         """
         Récupère le solde USDC.
-        py-clob-client n'a pas de méthode directe pour le solde,
-        on utilise get_balance_allowance ou on fallback sur la DB.
+        py-clob-client 0.34.5 n'expose pas de méthode directe pour le solde
+        on retourne le dernier solde enregistré en DB.
+        Pour mettre à jour le solde, utilise le dashboard ou ajoute un appel
+        web3 direct vers le contrat USDC sur Polygon.
         """
-        try:
-            # Tente de récupérer via l'API si disponible
-            resp = self.pm_client.client.get_balance_allowance()
-            if isinstance(resp, dict) and "balance" in resp:
-                return float(resp["balance"])
-        except Exception as e:
-            logger.debug("get_balance_allowance indisponible: %s", e)
-
-        # Fallback : dernier solde enregistré
         return self.db.get_latest_balance()
 
     def _execute_signal(self, signal: Signal, current_balance: float):

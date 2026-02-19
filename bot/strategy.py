@@ -69,8 +69,14 @@ class DummyStrategy(BaseStrategy):
                 logger.info("[DummyStrategy] Aucun marché récupéré.")
                 return signals
 
-            # On scanne les 5 premiers marchés à titre d'exemple
-            for market in markets[:5]:
+            # Filtre les marchés actifs uniquement (évite les 404 sur carnets fermés)
+            active_markets = [m for m in markets if m.get("active") is True]
+            if not active_markets:
+                logger.info("[DummyStrategy] Aucun marché actif trouvé.")
+                return signals
+
+            # On scanne les 5 premiers marchés actifs
+            for market in active_markets[:5]:
                 question = market.get("question", "?")
                 tokens = market.get("tokens", [])
                 condition_id = market.get("condition_id", "unknown")
