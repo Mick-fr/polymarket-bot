@@ -120,6 +120,13 @@ class DummyStrategy(BaseStrategy):
                 best_bid = market.get("bestBid")
                 best_ask = market.get("bestAsk")
 
+                # clobTokenIds peut être une liste Python OU un string JSON (ex: '["123","456"]')
+                if isinstance(clob_token_ids, str):
+                    try:
+                        clob_token_ids = json.loads(clob_token_ids)
+                    except (json.JSONDecodeError, ValueError):
+                        clob_token_ids = []
+
                 if not clob_token_ids:
                     logger.debug(
                         "[DummyStrategy] Marché '%s' ignoré : pas de clobTokenIds.",
@@ -127,8 +134,8 @@ class DummyStrategy(BaseStrategy):
                     )
                     continue
 
-                # Essayer d'obtenir le midpoint CLOB pour le premier token (YES)
-                token_id = clob_token_ids[0] if isinstance(clob_token_ids, list) else clob_token_ids
+                # Premier token = YES
+                token_id = clob_token_ids[0] if isinstance(clob_token_ids, list) else str(clob_token_ids)
                 mid = self.client.get_midpoint(token_id)
 
                 # Fallback : calculer le midpoint depuis bestBid/bestAsk Gamma
