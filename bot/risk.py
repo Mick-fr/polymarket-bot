@@ -1,6 +1,17 @@
 """
 Module de contrôle des risques.
 Vérifie chaque signal AVANT exécution pour protéger le capital.
+
+Règles implémentées :
+  1. Kill switch global
+  2. Taille d'ordre max (config)
+  3. Solde suffisant
+  4. Réserve minimale (10% ou 2 USDC)
+  5. Perte quotidienne max
+  6. Confiance minimale du signal
+  7. [OBI] Fractional sizing : expo nette max 5% du solde total
+  8. [OBI] Inventory skewing : ratio > 0.7 → Ask only, ratio = 1.0 → liquidation
+  9. [OBI] Circuit breaker global : solde < 90% du High Water Mark journalier
 """
 
 import logging
@@ -12,17 +23,23 @@ from db.database import Database
 
 logger = logging.getLogger("bot.risk")
 
+# Constantes OBI risk
+MAX_NET_EXPOSURE_PCT   = 0.05   # 5% du solde = exposition nette max par marché
+INVENTORY_SKEW_WARN    = 0.70   # Ratio > 70% → Ask only (cancel bids)
+INVENTORY_SKEW_LIQ     = 1.00   # Ratio = 100% → liquidation unilatérale
+CIRCUIT_BREAKER_PCT    = 0.10   # Déclenche si solde chute de 10% vs HWM
+
 
 @dataclass
 class RiskVerdict:
     """Résultat d'une vérification de risque."""
-
-    approved: bool
-    reason: str
+    approved:  bool
+    reason:    str
+    action:    str = "none"   # 'none' | 'cancel_bids' | 'liquidate' | 'kill_switch'
 
 
 class RiskManager:
-    """Contrôle des risques pré-exécution."""
+    """Contrôle des risques pré-exécution avec règles OBI étendues."""
 
     def __init__(self, config: BotConfig, db: Database):
         self.config = config
@@ -30,60 +47,181 @@ class RiskManager:
 
     def check(self, signal: Signal, current_balance: float) -> RiskVerdict:
         """
-        Vérifie si un signal est autorisé par les règles de risque.
-        Retourne un RiskVerdict avec approved=True/False et la raison.
+        Vérifie si un signal est autorisé.
+        Retourne RiskVerdict(approved, reason, action).
         """
-        # 1. Kill switch actif ?
-        if self.db.get_kill_switch():
-            return RiskVerdict(False, "Kill switch activé")
 
-        # 2. Montant de l'ordre dans les limites ?
-        order_cost = signal.size if signal.order_type == "market" else (
-            signal.size * signal.price if signal.price else 0
-        )
+        # ── 1. Kill switch ────────────────────────────────────────────────────
+        if self.db.get_kill_switch():
+            return RiskVerdict(False, "Kill switch activé", "none")
+
+        # ── 2. Circuit breaker global (High Water Mark) ───────────────────────
+        cb = self._check_circuit_breaker(current_balance)
+        if cb is not None:
+            return cb
+
+        # ── 3. Taille d'ordre max ─────────────────────────────────────────────
+        order_cost = self._compute_order_cost(signal)
         if order_cost > self.config.max_order_size:
             return RiskVerdict(
                 False,
                 f"Ordre trop gros: {order_cost:.2f} USDC > max {self.config.max_order_size:.2f}",
+                "none",
             )
 
-        # 3. Solde suffisant ?
+        # ── 4. Solde suffisant ────────────────────────────────────────────────
         if order_cost > current_balance:
             return RiskVerdict(
                 False,
                 f"Solde insuffisant: {current_balance:.2f} USDC < {order_cost:.2f} requis",
+                "none",
             )
 
-        # 4. Garder un minimum vital sur le compte (10% du capital ou 2 USDC)
+        # ── 5. Réserve minimale (10% ou 2 USDC) ──────────────────────────────
         min_reserve = max(current_balance * 0.10, 2.0)
         if current_balance - order_cost < min_reserve:
             return RiskVerdict(
                 False,
-                f"Réserve insuffisante après ordre: "
-                f"resterait {current_balance - order_cost:.2f} < {min_reserve:.2f} USDC",
+                f"Réserve insuffisante: resterait {current_balance - order_cost:.2f} < {min_reserve:.2f} USDC",
+                "none",
             )
 
-        # 5. Perte quotidienne max atteinte ?
+        # ── 6. Perte quotidienne max ──────────────────────────────────────────
         daily_loss = self.db.get_daily_loss()
         if daily_loss >= self.config.max_daily_loss:
             return RiskVerdict(
                 False,
-                f"Perte quotidienne max atteinte: {daily_loss:.2f} >= {self.config.max_daily_loss:.2f} USDC",
+                f"Perte quotidienne max atteinte: {daily_loss:.2f} >= {self.config.max_daily_loss:.2f}",
+                "none",
             )
 
-        # 6. Confiance minimale du signal
+        # ── 7. Confiance minimale ─────────────────────────────────────────────
         if signal.confidence < 0.5:
             return RiskVerdict(
                 False,
                 f"Confiance trop faible: {signal.confidence:.2f} < 0.50",
+                "none",
             )
 
-        logger.info(
-            "Risque OK: %s %s @ %s – coût estimé %.2f USDC, perte jour %.2f",
-            signal.side.upper(),
-            signal.token_id[:16],
-            signal.price or "market",
-            order_cost,
-            daily_loss,
+        # ── 8. Fractional sizing : expo nette max 5% du solde ─────────────────
+        frac = self._check_fractional_sizing(signal, current_balance, order_cost)
+        if frac is not None:
+            return frac
+
+        # ── 9. Inventory skewing ──────────────────────────────────────────────
+        inv = self._check_inventory_skewing(signal, current_balance)
+        if inv is not None:
+            return inv
+
+        logger.debug(
+            "Risque OK: %s %s @ %s – coût %.2f USDC, perte jour %.2f",
+            signal.side.upper(), signal.token_id[:16],
+            signal.price or "market", order_cost, daily_loss,
         )
-        return RiskVerdict(True, "Toutes les vérifications passées")
+        return RiskVerdict(True, "Toutes les vérifications passées", "none")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _compute_order_cost(self, signal: Signal) -> float:
+        if signal.order_type == "market":
+            return signal.size
+        return signal.size * (signal.price or 0.0)
+
+    def _check_circuit_breaker(self, current_balance: float) -> RiskVerdict | None:
+        """
+        Circuit breaker global : si le solde chute de 10% vs le HWM journalier,
+        déclenche le kill switch et retourne un verdict de refus.
+        """
+        hwm = self.db.get_high_water_mark()
+        if hwm <= 0 or current_balance <= 0:
+            return None   # Pas encore de HWM (premier démarrage)
+
+        drawdown = (hwm - current_balance) / hwm
+        if drawdown >= CIRCUIT_BREAKER_PCT:
+            logger.critical(
+                "[RiskManager] CIRCUIT BREAKER: solde %.2f USDC = -%.1f%% vs HWM %.2f → kill switch",
+                current_balance, drawdown * 100, hwm,
+            )
+            self.db.set_kill_switch(True)
+            self.db.add_log(
+                "CRITICAL", "risk",
+                f"Circuit breaker déclenché: solde={current_balance:.2f} HWM={hwm:.2f} "
+                f"drawdown={drawdown*100:.1f}%",
+            )
+            return RiskVerdict(
+                False,
+                f"Circuit breaker: drawdown {drawdown*100:.1f}% >= {CIRCUIT_BREAKER_PCT*100:.0f}%",
+                "kill_switch",
+            )
+        return None
+
+    def _check_fractional_sizing(self, signal: Signal, balance: float,
+                                  order_cost: float) -> RiskVerdict | None:
+        """
+        L'exposition nette sur un marché ne doit pas dépasser MAX_NET_EXPOSURE_PCT * balance.
+        Exposition nette = |qty_YES - qty_NO| * mid_price ≈ order_cost pour simplifier.
+        """
+        max_exposure = balance * MAX_NET_EXPOSURE_PCT
+        current_position = self.db.get_position(signal.token_id)
+
+        # Exposition nette estimée après l'ordre
+        delta = order_cost if signal.side == "buy" else -order_cost
+        net_exposure = abs(current_position * (signal.price or 0.5) + delta)
+
+        if net_exposure > max_exposure:
+            return RiskVerdict(
+                False,
+                f"Fractional sizing: expo nette {net_exposure:.2f} > max {max_exposure:.2f} USDC "
+                f"({MAX_NET_EXPOSURE_PCT*100:.0f}% de {balance:.2f})",
+                "none",
+            )
+        return None
+
+    def _check_inventory_skewing(self, signal: Signal,
+                                  balance: float) -> RiskVerdict | None:
+        """
+        Inventory skewing :
+          ratio = exposition_nette / max_autorisée
+          > 0.7 → Cancel bids, Ask only
+          = 1.0 → Liquidation unilatérale (Ask only)
+        """
+        max_exposure = balance * MAX_NET_EXPOSURE_PCT
+        if max_exposure <= 0:
+            return None
+
+        current_qty   = self.db.get_position(signal.token_id)
+        mid_price     = signal.price or 0.5
+        net_exposure  = abs(current_qty * mid_price)
+        ratio         = net_exposure / max_exposure
+
+        if ratio >= INVENTORY_SKEW_LIQ:
+            # Liquidation unilatérale : seuls les Ask sont autorisés
+            if signal.side == "buy":
+                logger.warning(
+                    "[RiskManager] Inventory ratio=%.2f >= 1.0 → liquidation, BID refusé: %s",
+                    ratio, signal.token_id[:16],
+                )
+                return RiskVerdict(
+                    False,
+                    f"Inventory liquidation: ratio={ratio:.2f}, Ask uniquement",
+                    "liquidate",
+                )
+
+        elif ratio >= INVENTORY_SKEW_WARN:
+            # Ask only : on refuse les bids supplémentaires
+            if signal.side == "buy":
+                logger.info(
+                    "[RiskManager] Inventory ratio=%.2f >= 0.7 → Ask only, BID refusé: %s",
+                    ratio, signal.token_id[:16],
+                )
+                return RiskVerdict(
+                    False,
+                    f"Inventory skew: ratio={ratio:.2f} >= {INVENTORY_SKEW_WARN}, Ask only",
+                    "cancel_bids",
+                )
+
+        return None
+
+    def update_high_water_mark(self, balance: float):
+        """Appeler à chaque cycle après avoir récupéré le solde."""
+        self.db.update_high_water_mark(balance)

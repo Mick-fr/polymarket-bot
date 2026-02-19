@@ -83,6 +83,25 @@ class Database:
             INSERT OR IGNORE INTO bot_state (key, value) VALUES ('kill_switch', 'off');
             INSERT OR IGNORE INTO bot_state (key, value) VALUES ('daily_loss', '0.0');
             INSERT OR IGNORE INTO bot_state (key, value) VALUES ('daily_loss_reset', '');
+            INSERT OR IGNORE INTO bot_state (key, value) VALUES ('high_water_mark', '0.0');
+
+            -- Inventaire par token (mis à jour à chaque fill)
+            CREATE TABLE IF NOT EXISTS positions (
+                token_id    TEXT    PRIMARY KEY,
+                market_id   TEXT    NOT NULL,
+                question    TEXT,
+                side        TEXT    NOT NULL DEFAULT 'YES',
+                quantity    REAL    NOT NULL DEFAULT 0.0,
+                avg_price   REAL,
+                updated_at  TEXT    NOT NULL
+            );
+
+            -- Marchés en cooldown (news-breaker)
+            CREATE TABLE IF NOT EXISTS cooldowns (
+                token_id    TEXT    PRIMARY KEY,
+                until_ts    REAL    NOT NULL,
+                reason      TEXT
+            );
         """)
         conn.commit()
 
@@ -211,6 +230,102 @@ class Database:
             )
 
     # ── Logs ─────────────────────────────────────────────────────
+
+    # ── Positions (inventaire) ───────────────────────────────────
+
+    def update_position(self, token_id: str, market_id: str, question: str,
+                        side: str, quantity_delta: float, fill_price: float):
+        """Met à jour l'inventaire après un fill (quantité et prix moyen pondéré)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute("SELECT quantity, avg_price FROM positions WHERE token_id = ?", (token_id,))
+            row = cur.fetchone()
+            if row:
+                old_qty = row["quantity"]
+                old_avg = row["avg_price"] or fill_price
+                new_qty = old_qty + quantity_delta
+                # Prix moyen pondéré uniquement si on accroît la position
+                if quantity_delta > 0 and old_qty >= 0:
+                    new_avg = (old_qty * old_avg + quantity_delta * fill_price) / new_qty if new_qty else fill_price
+                else:
+                    new_avg = old_avg
+                cur.execute(
+                    "UPDATE positions SET quantity=?, avg_price=?, updated_at=? WHERE token_id=?",
+                    (new_qty, new_avg, now, token_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO positions (token_id, market_id, question, side, quantity, avg_price, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (token_id, market_id, question, side, quantity_delta, fill_price, now),
+                )
+
+    def get_position(self, token_id: str) -> float:
+        """Retourne la quantité détenue pour un token (0.0 si aucune position)."""
+        with self._cursor() as cur:
+            cur.execute("SELECT quantity FROM positions WHERE token_id = ?", (token_id,))
+            row = cur.fetchone()
+            return row["quantity"] if row else 0.0
+
+    def get_all_positions(self) -> list[dict]:
+        """Retourne toutes les positions actives (quantity != 0)."""
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM positions WHERE quantity != 0.0")
+            return [dict(row) for row in cur.fetchall()]
+
+    # ── Cooldowns (news-breaker) ─────────────────────────────────
+
+    def set_cooldown(self, token_id: str, duration_seconds: float, reason: str = ""):
+        """Place un token en cooldown jusqu'à now + duration_seconds."""
+        import time
+        until = time.time() + duration_seconds
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO cooldowns (token_id, until_ts, reason) VALUES (?, ?, ?)",
+                (token_id, until, reason),
+            )
+
+    def is_in_cooldown(self, token_id: str) -> bool:
+        """Retourne True si le token est toujours en cooldown."""
+        import time
+        with self._cursor() as cur:
+            cur.execute("SELECT until_ts FROM cooldowns WHERE token_id = ?", (token_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            if time.time() >= row["until_ts"]:
+                cur.execute("DELETE FROM cooldowns WHERE token_id = ?", (token_id,))
+                return False
+            return True
+
+    def clear_cooldown(self, token_id: str):
+        """Supprime manuellement le cooldown d'un token."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM cooldowns WHERE token_id = ?", (token_id,))
+
+    # ── High Water Mark (circuit breaker) ───────────────────────
+
+    def get_high_water_mark(self) -> float:
+        """Retourne le High Water Mark journalier du solde."""
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = 'high_water_mark'")
+            row = cur.fetchone()
+            return float(row["value"]) if row else 0.0
+
+    def update_high_water_mark(self, balance: float):
+        """Met à jour le HWM si le solde actuel est supérieur."""
+        current_hwm = self.get_high_water_mark()
+        if balance > current_hwm:
+            with self._cursor() as cur:
+                cur.execute(
+                    "UPDATE bot_state SET value = ? WHERE key = 'high_water_mark'",
+                    (str(balance),),
+                )
+
+    def reset_high_water_mark(self):
+        """Remet le HWM à 0 (début de journée)."""
+        with self._cursor() as cur:
+            cur.execute("UPDATE bot_state SET value = '0.0' WHERE key = 'high_water_mark'")
 
     def add_log(self, level: str, source: str, message: str):
         """Ajoute une entrée de log en base."""
