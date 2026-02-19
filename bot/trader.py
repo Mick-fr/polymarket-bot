@@ -251,8 +251,11 @@ class Trader:
         verdict = self.risk.check(signal, current_balance)
 
         if not verdict.approved:
-            logger.debug("Signal rejeté [%s]: %s", signal.side.upper(), verdict.reason)
-            # On ne logue en DB que les rejets non-triviaux
+            logger.info(
+                "Signal rejeté [%s %s @ %.4f]: %s",
+                signal.side.upper(), signal.token_id[:16],
+                signal.price or 0.0, verdict.reason,
+            )
             if verdict.action in ("cancel_bids", "liquidate", "kill_switch"):
                 self.db.add_log("WARNING", "risk", f"Rejeté [{verdict.action}]: {verdict.reason}")
             return
