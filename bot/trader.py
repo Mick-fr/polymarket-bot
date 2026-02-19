@@ -4,12 +4,10 @@ Gère le cycle : vérification → analyse → risque → exécution → log.
 Robuste face aux erreurs réseau avec reconnexion automatique.
 """
 
-import json
 import logging
 import time
 import signal as os_signal
 import sys
-import urllib.request
 from typing import Optional
 
 from bot.config import AppConfig
@@ -134,82 +132,22 @@ class Trader:
 
     def _fetch_balance(self) -> Optional[float]:
         """
-        Récupère le solde USDC sur Polygon via JSON-RPC.
-        Essaie USDC natif (0x3c499c...) puis USDC.e bridgé (0x2791Bc...).
-        Les deux ont 6 décimales.
-        Retourne la somme des deux soldes.
+        Récupère le solde USDC disponible via l'API CLOB Polymarket.
+        Utilise get_balance_allowance(COLLATERAL) — requiert L2 auth,
+        déjà établie lors de connect().
+        Retourne le montant en USDC (float) ou None en cas d'erreur.
         """
-        _RPC_URLS = [
-            "https://polygon-bor-rpc.publicnode.com",
-            "https://polygon.drpc.org",
-        ]
-        _USDC_CONTRACTS = [
-            ("USDC natif",   "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
-            ("USDC.e bridgé","0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),
-        ]
-        _BALANCEOF_SIG = "0x70a08231"  # keccak256("balanceOf(address)")[:4]
-
-        def _call_rpc(rpc_url: str, contract: str, data: str) -> Optional[str]:
-            payload = json.dumps({
-                "jsonrpc": "2.0",
-                "method": "eth_call",
-                "params": [{"to": contract, "data": data}, "latest"],
-                "id": 1,
-            }).encode()
-            req = urllib.request.Request(
-                rpc_url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                body = json.loads(resp.read().decode())
-                if "error" in body:
-                    logger.debug("RPC error: %s", body["error"])
-                    return None
-                return body.get("result")
-
         try:
-            from eth_account import Account
-            wallet_addr = Account.from_key(self.config.polymarket.private_key).address
-            addr_padded = wallet_addr[2:].lower().zfill(64)
-            call_data = _BALANCEOF_SIG + addr_padded
-
-            total = 0.0
-            any_success = False
-
-            for label, contract in _USDC_CONTRACTS:
-                # Essayer chaque RPC en fallback
-                result = None
-                last_err = None
-                for rpc_url in _RPC_URLS:
-                    try:
-                        result = _call_rpc(rpc_url, contract, call_data)
-                        if result is not None:
-                            break
-                    except Exception as e:
-                        last_err = e
-                        continue
-
-                if result and result != "0x":
-                    try:
-                        amount = int(result, 16) / 1_000_000
-                        logger.debug("Solde %s: %.4f USDC (wallet %s)", label, amount, wallet_addr[:10])
-                        total += amount
-                        any_success = True
-                    except ValueError as e:
-                        logger.debug("Impossible de parser le résultat RPC (%s): %s", result, e)
-                elif last_err:
-                    logger.debug("RPC inaccessible pour %s: %s", label, last_err)
-
-            if any_success:
-                return total
-
-            logger.warning("Tous les appels RPC ont échoué, utilisation du solde DB.")
-            return self.db.get_latest_balance()
-
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            resp = self.pm_client.client.get_balance_allowance(params)
+            # La réponse est un dict : {"balance": "50000000", "allowance": "..."}
+            # USDC a 6 décimales sur Polygon
+            raw = resp.get("balance") or resp.get("Balance") or "0"
+            balance_usdc = int(raw) / 1_000_000
+            return balance_usdc
         except Exception as e:
-            logger.warning("Erreur inattendue lecture solde: %s", e)
+            logger.debug("Erreur lecture solde CLOB: %s", e)
             return self.db.get_latest_balance()
 
     def _execute_signal(self, signal: Signal, current_balance: float):
