@@ -42,6 +42,8 @@ OBI_SKEW_FACTOR        =  3.0    # Multiplicateur OBI → ticks de skew (continu
 MIN_PRICE              =  0.20
 MAX_PRICE              =  0.80
 MIN_SPREAD             =  0.02   # 2 ticks min — rentable apres gas (ex: 0.01)
+MIN_SPREAD_HIGH_VOL    =  0.01   # 1 tick accepte si volume > HIGH_VOL_THRESHOLD
+HIGH_VOL_THRESHOLD     =  50_000.0  # Volume 24h au-dessus duquel spread 1 tick OK
 MIN_VOLUME_24H         =  10_000.0
 MAX_DAYS_TO_EXPIRY     =  14
 TICK_SIZE              =  0.01   # 1 tick = 0.01 USDC
@@ -124,8 +126,8 @@ class MarketUniverse:
                 eligible.append(result)
 
         logger.info(
-            "[Universe] %d marches bruts -> %d eligibles (filtres: prix, spread>=%.2f, volume, maturite)",
-            len(raw), len(eligible), MIN_SPREAD,
+            "[Universe] %d marches bruts -> %d eligibles (filtres: prix, spread>=%.2f/%.2f, vol>=%.0f, mat<=%dj)",
+            len(raw), len(eligible), MIN_SPREAD_HIGH_VOL, MIN_SPREAD, MIN_VOLUME_24H, MAX_DAYS_TO_EXPIRY,
         )
         self._cache = eligible
         self._cache_ts = now
@@ -180,13 +182,7 @@ class MarketUniverse:
                          question[:40], mid, MIN_PRICE, MAX_PRICE)
             return None
 
-        # ── Spread (min 2 ticks pour etre rentable apres gas) ──
-        if spread < MIN_SPREAD:
-            logger.debug("[Universe] '%s' rejete: spread=%.4f < %.2f",
-                         question[:40], spread, MIN_SPREAD)
-            return None
-
-        # ── Volume 24h ──
+        # ── Volume 24h (evaluer avant le spread pour le seuil adaptatif) ──
         try:
             vol = float(m.get("volume24hr") or m.get("volume24hrClob") or 0)
         except (TypeError, ValueError):
@@ -195,6 +191,15 @@ class MarketUniverse:
         if vol < MIN_VOLUME_24H:
             logger.debug("[Universe] '%s' rejete: volume24h=%.0f < %.0f",
                          question[:40], vol, MIN_VOLUME_24H)
+            return None
+
+        # ── Spread adaptatif (volume-aware) ──
+        # Marches tres liquides (>50k vol) : spread 1 tick OK
+        # Marches standards : spread 2 ticks minimum
+        min_spread = MIN_SPREAD_HIGH_VOL if vol >= HIGH_VOL_THRESHOLD else MIN_SPREAD
+        if spread < min_spread:
+            logger.debug("[Universe] '%s' rejete: spread=%.4f < %.2f (vol=%.0f)",
+                         question[:40], spread, min_spread, vol)
             return None
 
         # ── Maturite ──
@@ -361,7 +366,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # Cooldown re-cotation : evite de re-coter le meme token trop rapidement
         # {token_id: last_quote_timestamp}
         self._last_quote_ts: dict[str, float] = {}
-        self._quote_cooldown: float = 30.0  # secondes entre deux cotations du meme token
+        self._quote_cooldown: float = 16.0  # secondes entre deux cotations du meme token (2 cycles)
         # Tweak 1 : dernier mid par token pour cancel conditionnel
         # {token_id: last_quoted_mid}
         self._last_quoted_mid: dict[str, float] = {}
@@ -610,6 +615,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
     def get_last_quoted_mid(self, token_id: str) -> Optional[float]:
         """Retourne le dernier mid cote pour ce token (pour cancel conditionnel)."""
         return self._last_quoted_mid.get(token_id)
+
+    def get_eligible_markets(self) -> list[EligibleMarket]:
+        """Retourne les marches eligibles en cache (sans re-appeler Gamma)."""
+        return self._universe._cache if self._universe._cache else []
 
 
 # ─── DummyStrategy (conservee pour tests) ────────────────────────────────────

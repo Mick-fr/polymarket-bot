@@ -154,6 +154,15 @@ class PolymarketClient:
         """Récupère tous les ordres ouverts."""
         return self.client.get_orders(OpenOrderParams())
 
+    def get_order(self, order_id: str) -> Optional[dict]:
+        """Récupère le statut d'un ordre par son ID CLOB."""
+        try:
+            resp = self.client.get_order(order_id)
+            return resp if isinstance(resp, dict) else None
+        except Exception as e:
+            logger.debug("get_order(%s) erreur: %s", order_id[:16], e)
+            return None
+
     def cancel_order(self, order_id: str) -> dict:
         """Annule un ordre spécifique."""
         resp = self.client.cancel(order_id)

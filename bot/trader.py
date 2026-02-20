@@ -2,9 +2,10 @@
 Boucle principale du bot de trading — OBI Market Making.
 Cycle toutes les 8 secondes (Set B), gere :
   - High Water Mark + circuit breaker
+  - Reconciliation fills manques (get_order CLOB avant cancel)
   - Inventaire positions post-fill
   - CTF Inverse Spread Arb (Ask_YES + Ask_NO < 1.00)
-  - Cancel conditionnel + re-cotation des ordres (Tweak 1)
+  - Cancel systematique + re-cotation des ordres
   - Arret propre SIGTERM/SIGINT
 """
 
@@ -144,11 +145,13 @@ class Trader:
         if not self.config.bot.paper_trading:
             self._cancel_open_orders()
 
-        # 5. CTF Inverse Spread Arb (opportuniste, avant les signaux principaux)
-        self._check_ctf_arb(balance)
-
-        # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
+        # 5. Stratégie OBI → signaux (balance passée pour sizing dynamique)
+        #    Récupérer les marchés éligibles pour les partager avec CTF arb
         signals = self.strategy.analyze(balance=balance)
+
+        # 6. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
+        eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
+        self._check_ctf_arb(balance, eligible_markets)
 
         # 7. Exécution avec gestion de l'inventaire post-fill
         for sig in signals:
@@ -156,11 +159,86 @@ class Trader:
 
         logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
 
+    def _reconcile_fills(self):
+        """
+        Réconciliation des fills manqués.
+        Vérifie chaque ordre 'live' dans la DB via l'API CLOB.
+        Si un ordre a été matché entre deux cycles, met à jour l'inventaire.
+        """
+        live_orders = self.db.get_live_orders()
+        if not live_orders:
+            return
+
+        reconciled = 0
+        for order in live_orders:
+            clob_id = order.get("order_id")
+            if not clob_id:
+                continue
+
+            try:
+                clob_order = self.pm_client.get_order(clob_id)
+                if clob_order is None:
+                    continue
+
+                status = clob_order.get("status", "")
+                if status in ("matched", "filled"):
+                    # Fill détecté ! Mettre à jour la DB et l'inventaire
+                    local_id = order["id"]
+                    token_id = order["token_id"]
+                    market_id = order["market_id"]
+                    side = order["side"]
+                    size = order["size"]
+                    price = order["price"] or 0.5
+
+                    self.db.update_order_status(local_id, "matched", order_id=clob_id)
+
+                    # Mise à jour inventaire
+                    if side == "sell":
+                        qty_held = self.db.get_position(token_id)
+                        actual_size = min(size, max(0.0, qty_held))
+                        if actual_size <= 0:
+                            continue
+                    else:
+                        actual_size = size
+
+                    qty_delta = actual_size if side == "buy" else -actual_size
+                    self.db.update_position(
+                        token_id=token_id,
+                        market_id=market_id,
+                        question=order.get("market_question", ""),
+                        side="YES",
+                        quantity_delta=qty_delta,
+                        fill_price=price,
+                    )
+                    reconciled += 1
+                    logger.info(
+                        "[Reconcile] Fill detecte: %s %s %+.2f shares @ %.4f (%s)",
+                        side.upper(), token_id[:16], qty_delta, price, clob_id[:16],
+                    )
+                    self.db.add_log(
+                        "INFO", "trader",
+                        f"[Reconcile] Fill: {side.upper()} {token_id[:16]} "
+                        f"{qty_delta:+.2f} @ {price:.4f}",
+                    )
+
+                elif status in ("canceled", "cancelled"):
+                    self.db.update_order_status(order["id"], "cancelled", order_id=clob_id)
+
+            except Exception as e:
+                logger.debug("[Reconcile] Erreur check %s: %s", clob_id[:16] if clob_id else "?", e)
+
+        if reconciled > 0:
+            logger.info("[Reconcile] %d fill(s) reconcilie(s) depuis le CLOB.", reconciled)
+
     def _cancel_open_orders(self):
         """
         Cancel systématique avant chaque cycle de cotation (live uniquement).
-        Garantit qu'aucun ordre obsolète ne reste dans le carnet.
+        Étape 1 : réconcilier les fills manqués.
+        Étape 2 : annuler les ordres restants.
         """
+        # D'abord réconcilier les éventuels fills entre deux cycles
+        self._reconcile_fills()
+
         try:
             open_orders = self.pm_client.get_open_orders()
             if not open_orders:
@@ -195,19 +273,20 @@ class Trader:
             logger.debug("Erreur lecture solde CLOB: %s", e)
             return None
 
-    def _check_ctf_arb(self, balance: float):
+    def _check_ctf_arb(self, balance: float, markets: list = None):
         """
         CTF Inverse Spread Arbitrage :
         Si Ask(YES) + Ask(NO) < 1.00 USDC, acheter les deux tokens
         pour un gain quasi-certain (les deux valent 1.00 à résolution).
         Utilise le CLOB API directement (market orders FOK).
+        Réutilise les marchés déjà chargés par la stratégie (pas de double appel Gamma).
         """
         if balance < 2.0:
             return   # Solde trop faible
 
         try:
-            from bot.strategy import MarketUniverse
-            markets = MarketUniverse().get_eligible_markets()
+            if not markets:
+                return
 
             for market in markets[:10]:   # Checker les 10 premiers marchés
                 ask_yes = self.pm_client.get_price(market.yes_token_id, side="buy")

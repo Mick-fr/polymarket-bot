@@ -88,7 +88,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         orders = db.get_recent_orders(limit=1000)
 
         total_orders = len(orders)
-        filled = sum(1 for o in orders if o["status"] == "filled")
+        filled = sum(1 for o in orders if o["status"] in ("filled", "matched"))
         rejected = sum(1 for o in orders if o["status"] == "rejected")
         errors = sum(1 for o in orders if o["status"] == "error")
 
@@ -202,7 +202,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         for o in orders:
             # Badge de status
             status = o["status"]
-            badge_cls = f"badge-{status}" if status in ("filled", "rejected", "error", "pending", "submitted") else ""
+            badge_cls = f"badge-{status}" if status in ("filled", "matched", "rejected", "error", "pending", "submitted", "live", "delayed", "cancelled") else ""
 
             # Timestamp lisible
             ts = o["timestamp"][:19].replace("T", " ") if o["timestamp"] else ""

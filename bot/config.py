@@ -44,7 +44,8 @@ class BotConfig:
     # Intervalle entre chaque cycle de la boucle principale (secondes)
     loop_interval: int = 60
     # Capital maximum autorisé par ordre (en USDC)
-    max_order_size: float = 5.0
+    # 10 USDC laisse de la marge pour le minimum 5 shares Polymarket
+    max_order_size: float = 10.0
     # Perte maximale quotidienne avant arrêt automatique (en USDC)
     max_daily_loss: float = 10.0
     # Nombre de tentatives de reconnexion avant pause longue

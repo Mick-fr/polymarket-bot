@@ -168,6 +168,12 @@ class Database:
             )
             return [dict(row) for row in cur.fetchall()]
 
+    def get_live_orders(self) -> list[dict]:
+        """Retourne les ordres au statut 'live' (posés dans le carnet, pas encore matchés)."""
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM orders WHERE status = 'live' ORDER BY id DESC")
+            return [dict(row) for row in cur.fetchall()]
+
     # ── Solde ────────────────────────────────────────────────────
 
     def record_balance(self, balance: float):
