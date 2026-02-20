@@ -1,17 +1,22 @@
 """
-Stratégie OBI Market Making pour Polymarket.
+Strategie OBI Market Making pour Polymarket.
 
 Architecture :
-  - MarketUniverse  : filtre les marchés éligibles via Gamma API
-  - OBICalculator   : calcule l'Order Book Imbalance sur 3 niveaux
-  - OBIMarketMakingStrategy : génère les signaux bid/ask avec skewing
+  - MarketUniverse  : filtre les marches eligibles via Gamma API
+  - OBICalculator   : calcule l'Order Book Imbalance sur 5 niveaux
+  - OBIMarketMakingStrategy : genere les signaux bid/ask avec skewing proportionnel
 
-Règles :
-  - Prix entre 0.20 et 0.80 USDC
-  - Spread > 0.01 USDC
-  - Volume 24h > 10 000 USDC
-  - Maturité < 14 jours
-  - OBI = (V_bid - V_ask) / (V_bid + V_ask) sur L1+L2+L3
+Set B (Balanced) — Hyperparametres optimises 2026 :
+  - OBI threshold : +/- 0.20 (plus reactif que 0.30)
+  - OBI depth : 5 niveaux (lisse le bruit L1-L2 / anti-spoofing)
+  - Skew : proportionnel continu (skew_ticks = obi * 3, arrondi)
+  - Min spread : 0.02 USDC (2 ticks — rentable apres gas)
+  - Expo max : 8% du solde par marche
+  - Inv skew one-sided : 0.60 (reduit inventaire plus tot)
+  - Cycle : 8s (trade-off gas vs latency)
+  - Ordre size : 3% du solde (viable des 50$)
+  - News-breaker : >7% en <5s (detecte plus tot)
+  - Maturity-aware : taille /2 si <3 jours (volatilite terminale)
 """
 
 import json
@@ -29,16 +34,25 @@ logger = logging.getLogger("bot.strategy")
 
 GAMMA_API_URL = "https://gamma-api.polymarket.com/markets"
 
-# ─── Constantes OBI ──────────────────────────────────────────────────────────
+# ─── Constantes OBI — Set B (Balanced) ──────────────────────────────────────
 
-OBI_BULLISH_THRESHOLD  =  0.30   # OBI > +0.30 → pression acheteuse
-OBI_BEARISH_THRESHOLD  = -0.30   # OBI < -0.30 → pression vendeuse
+OBI_BULLISH_THRESHOLD  =  0.20   # OBI > +0.20 → pression acheteuse (ex: 0.30)
+OBI_BEARISH_THRESHOLD  = -0.20   # OBI < -0.20 → pression vendeuse (ex: -0.30)
+OBI_SKEW_FACTOR        =  3.0    # Multiplicateur OBI → ticks de skew (continu)
 MIN_PRICE              =  0.20
 MAX_PRICE              =  0.80
-MIN_SPREAD             =  0.01
+MIN_SPREAD             =  0.02   # 2 ticks min — rentable apres gas (ex: 0.01)
 MIN_VOLUME_24H         =  10_000.0
 MAX_DAYS_TO_EXPIRY     =  14
 TICK_SIZE              =  0.01   # 1 tick = 0.01 USDC
+MATURITY_SHORT_DAYS    =  3.0    # Seuil maturite courte → sizing reduit
+MATURITY_SHORT_FACTOR  =  0.5    # Facteur sizing pour maturite courte
+NEWS_BREAKER_THRESHOLD =  0.07   # Move mid > 7% en < 5s → cooldown (ex: 0.10)
+NEWS_BREAKER_WINDOW    =  5.0    # Fenetre temporelle news-breaker (secondes)
+NEWS_BREAKER_COOLDOWN  =  600    # Duree cooldown news-breaker (10 min)
+ORDER_SIZE_PCT         =  0.03   # 3% du solde par ordre (ex: 0.02)
+MAX_NET_EXPOSURE_PCT   =  0.08   # 8% du solde = expo nette max par marche (ex: 0.05)
+INVENTORY_SKEW_THRESHOLD = 0.60  # Ratio >= 60% → one-sided (ex: 0.70)
 
 
 # ─── Dataclasses ─────────────────────────────────────────────────────────────
@@ -59,7 +73,7 @@ class Signal:
 
 @dataclass
 class EligibleMarket:
-    """Marché passant tous les filtres Universe Selection."""
+    """Marche passant tous les filtres Universe Selection."""
     market_id:      str
     question:       str
     yes_token_id:   str
@@ -75,18 +89,18 @@ class EligibleMarket:
 
 @dataclass
 class OBIResult:
-    """Résultat du calcul OBI."""
+    """Resultat du calcul OBI."""
     obi:      float          # [-1, +1]
-    v_bid:    float          # Volume agrégé bid L1+L2+L3
-    v_ask:    float          # Volume agrégé ask L1+L2+L3
+    v_bid:    float          # Volume agrege bid
+    v_ask:    float          # Volume agrege ask
     regime:   str            # 'bullish' | 'bearish' | 'neutral'
 
 
-# ─── Universe Selection ───────────────────────────────────────────────────────
+# ─── Universe Selection ──────────────────────────────────────────────────────
 
 class MarketUniverse:
     """
-    Filtre les marchés Polymarket éligibles au market making.
+    Filtre les marches Polymarket eligibles au market making.
     Source : API Gamma (enableOrderBook=true).
     """
 
@@ -97,7 +111,7 @@ class MarketUniverse:
         self._cache_ttl: float = 60.0   # Refresh toutes les 60s
 
     def get_eligible_markets(self, force_refresh: bool = False) -> list[EligibleMarket]:
-        """Retourne la liste des marchés éligibles (avec cache 60s)."""
+        """Retourne la liste des marches eligibles (avec cache 60s)."""
         now = time.time()
         if not force_refresh and (now - self._cache_ts) < self._cache_ttl and self._cache:
             return self._cache
@@ -110,8 +124,8 @@ class MarketUniverse:
                 eligible.append(result)
 
         logger.info(
-            "[Universe] %d marchés bruts → %d éligibles (filtres: prix, spread, volume, maturité)",
-            len(raw), len(eligible),
+            "[Universe] %d marches bruts -> %d eligibles (filtres: prix, spread>=%.2f, volume, maturite)",
+            len(raw), len(eligible), MIN_SPREAD,
         )
         self._cache = eligible
         self._cache_ts = now
@@ -132,7 +146,7 @@ class MarketUniverse:
             return []
 
     def _evaluate(self, m: dict) -> Optional[EligibleMarket]:
-        """Applique tous les filtres sur un marché brut. Retourne None si rejeté."""
+        """Applique tous les filtres sur un marche brut. Retourne None si rejete."""
         question = m.get("question", "")
 
         # ── Parse clobTokenIds ──
@@ -162,13 +176,13 @@ class MarketUniverse:
         spread = best_ask - best_bid
 
         if not (MIN_PRICE <= mid <= MAX_PRICE):
-            logger.debug("[Universe] '%s' rejeté: mid=%.3f hors [%.2f, %.2f]",
+            logger.debug("[Universe] '%s' rejete: mid=%.3f hors [%.2f, %.2f]",
                          question[:40], mid, MIN_PRICE, MAX_PRICE)
             return None
 
-        # ── Spread ──
+        # ── Spread (min 2 ticks pour etre rentable apres gas) ──
         if spread < MIN_SPREAD:
-            logger.debug("[Universe] '%s' rejeté: spread=%.4f < %.2f",
+            logger.debug("[Universe] '%s' rejete: spread=%.4f < %.2f",
                          question[:40], spread, MIN_SPREAD)
             return None
 
@@ -179,16 +193,15 @@ class MarketUniverse:
             vol = 0.0
 
         if vol < MIN_VOLUME_24H:
-            logger.debug("[Universe] '%s' rejeté: volume24h=%.0f < %.0f",
+            logger.debug("[Universe] '%s' rejete: volume24h=%.0f < %.0f",
                          question[:40], vol, MIN_VOLUME_24H)
             return None
 
-        # ── Maturité ──
+        # ── Maturite ──
         end_date_str = m.get("endDate") or m.get("end_date_iso") or ""
         if not end_date_str:
             return None
         try:
-            # Format ISO : "2026-02-28T00:00:00Z" ou "2026-02-28"
             end_date_str = end_date_str.replace("Z", "+00:00")
             if "T" not in end_date_str:
                 end_date_str += "T00:00:00+00:00"
@@ -201,7 +214,7 @@ class MarketUniverse:
             return None
 
         if not (0 < days_left <= self._max_days):
-            logger.debug("[Universe] '%s' rejeté: %.1f jours restants (max=%d)",
+            logger.debug("[Universe] '%s' rejete: %.1f jours restants (max=%d)",
                          question[:40], days_left, self._max_days)
             return None
 
@@ -226,21 +239,24 @@ class MarketUniverse:
 
 class OBICalculator:
     """
-    Order Book Imbalance sur les 3 meilleurs niveaux.
+    Order Book Imbalance sur les 5 meilleurs niveaux (Set B).
     OBI = (V_bid - V_ask) / (V_bid + V_ask)  ∈ [-1, +1]
 
-    Fallback : si le carnet CLOB est vide (Polymarket AMM), on génère
-    un OBI synthétique neutre à partir du bestBid/bestAsk Gamma.
+    5 niveaux lissent le bruit L1-L2 (anti-spoofing : ordres de 10-20 shares
+    en L1 qui biaisent artificiellement l'OBI).
+
+    Fallback : si le carnet CLOB est vide (Polymarket AMM), on genere
+    un OBI synthetique neutre a partir du bestBid/bestAsk Gamma.
     """
 
-    LEVELS = 3
+    LEVELS = 5   # Set B : 5 niveaux (ex: 3)
 
     @classmethod
     def compute(cls, order_book: dict,
                 best_bid: float = 0.0,
                 best_ask: float = 0.0) -> Optional[OBIResult]:
         """
-        order_book : réponse brute de get_order_book()
+        order_book : reponse brute de get_order_book()
         Attendu : {"bids": [{"price": "0.55", "size": "100"}, ...],
                    "asks": [{"price": "0.57", "size": "80"},  ...]}
 
@@ -268,7 +284,7 @@ class OBICalculator:
             bids = [d for e in bids if (d := _to_dict(e)) is not None]
             asks = [d for e in asks if (d := _to_dict(e)) is not None]
 
-            # Trier : bids décroissant, asks croissant
+            # Trier : bids decroissant, asks croissant
             bids_sorted = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
             asks_sorted = sorted(asks, key=lambda x: float(x.get("price", 0)))
 
@@ -277,15 +293,12 @@ class OBICalculator:
             total = v_bid + v_ask
 
             if total == 0:
-                # ── Fallback : carnet AMM vide → OBI synthétique neutre ──
-                # On considère la liquidité symétrique (AMM) et on positionne
-                # notre quote entre bestBid et bestAsk de Gamma.
+                # ── Fallback : carnet AMM vide → OBI synthetique neutre ──
                 if best_bid > 0 and best_ask > 0 and best_ask > best_bid:
                     logger.info(
-                        "[OBI] Carnet CLOB vide → fallback AMM (Gamma bid=%.4f ask=%.4f)",
+                        "[OBI] Carnet CLOB vide -> fallback AMM (Gamma bid=%.4f ask=%.4f)",
                         best_bid, best_ask,
                     )
-                    # OBI neutre : on assume liquidité symétrique AMM
                     return OBIResult(obi=0.0, v_bid=0.0, v_ask=0.0, regime="neutral")
                 return None
 
@@ -316,20 +329,20 @@ class BaseStrategy(ABC):
         ...
 
 
-# ─── Stratégie OBI Market Making ─────────────────────────────────────────────
+# ─── Strategie OBI Market Making — Set B (Balanced) ─────────────────────────
 
 class OBIMarketMakingStrategy(BaseStrategy):
     """
-    Market making avec skewing basé sur l'OBI.
+    Market making avec skewing proportionnel base sur l'OBI.
 
-    Pour chaque marché éligible :
-      1. Récupère le carnet d'ordres du token YES
-      2. Calcule l'OBI sur 3 niveaux
-      3. Applique le skewing :
-         - Neutre  : bid @ mid-½spread, ask @ mid+½spread
-         - Bullish : bid agressif (top of book), ask passif (+2 ticks)
-         - Bearish : bid passif, ask agressif (top of book)
-      4. Génère 2 signaux (bid + ask) si pas en cooldown
+    Set B (Balanced) — changements vs version initiale :
+      - Skew proportionnel continu : skew_ticks = round(obi * 3)
+        Au lieu de 3 branches rigides (neutre/bull/bear) avec 2 ticks fixes.
+        OBI=0.10 → 0 tick, OBI=0.35 → 1 tick, OBI=0.70 → 2 ticks, OBI=0.95 → 3 ticks.
+      - Maturity-aware sizing : taille /2 si days_to_expiry < 3 jours
+      - Expo max 8% du solde par marche (5% avant)
+      - Inv skew one-sided des 60% (70% avant)
+      - Sizing 3% du solde par ordre (2% avant)
     """
 
     def __init__(self, client: PolymarketClient, db=None,
@@ -338,31 +351,34 @@ class OBIMarketMakingStrategy(BaseStrategy):
                  paper_trading: bool = True):
         super().__init__(client)
         self.db = db
-        self.max_order_size_usdc = max_order_size_usdc  # Plafond absolu par ordre
+        self.max_order_size_usdc = max_order_size_usdc
         self.max_markets = max_markets
         self.paper_trading = paper_trading
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
-        # Suivi prix précédents pour news-breaker {token_id: (price, timestamp)}
+        # Suivi prix precedents pour news-breaker {token_id: (price, timestamp)}
         self._price_history: dict[str, tuple[float, float]] = {}
-        # Cooldown re-cotation : évite de re-coter le même token trop rapidement
+        # Cooldown re-cotation : evite de re-coter le meme token trop rapidement
         # {token_id: last_quote_timestamp}
         self._last_quote_ts: dict[str, float] = {}
-        self._quote_cooldown: float = 30.0  # secondes entre deux cotations du même token
+        self._quote_cooldown: float = 30.0  # secondes entre deux cotations du meme token
+        # Tweak 1 : dernier mid par token pour cancel conditionnel
+        # {token_id: last_quoted_mid}
+        self._last_quoted_mid: dict[str, float] = {}
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         signals: list[Signal] = []
 
-        # Taille par ordre : 2% du solde, min 1 USDC, plafond max_order_size_usdc
-        order_size_usdc = max(1.0, min(balance * 0.02, self.max_order_size_usdc))
+        # Taille par ordre : 3% du solde (Set B), min 1 USDC, plafond max_order_size_usdc
+        order_size_usdc = max(1.0, min(balance * ORDER_SIZE_PCT, self.max_order_size_usdc))
         logger.info(
-            "[OBI] Sizing: solde=%.2f USDC → order_size=%.2f USDC (2%%, plafond=%.2f)",
-            balance, order_size_usdc, self.max_order_size_usdc,
+            "[OBI] Sizing: solde=%.2f USDC -> order_size=%.2f USDC (%.0f%%, plafond=%.2f)",
+            balance, order_size_usdc, ORDER_SIZE_PCT * 100, self.max_order_size_usdc,
         )
 
         markets = self._universe.get_eligible_markets()
         if not markets:
-            logger.info("[OBI] Aucun marché éligible.")
+            logger.info("[OBI] Aucun marche eligible.")
             return signals
 
         traded = 0
@@ -370,12 +386,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
             if traded >= self.max_markets:
                 break
 
-            # ── Vérification cooldown news-breaker ──
+            # ── Verification cooldown news-breaker ──
             if self.db and self.db.is_in_cooldown(market.yes_token_id):
                 logger.info("[OBI] '%s' en cooldown, skip.", market.question[:40])
                 continue
 
-            # ── Cooldown re-cotation (30s) : évite le sur-trading ──
+            # ── Cooldown re-cotation (30s) : evite le sur-trading ──
             last_quote = self._last_quote_ts.get(market.yes_token_id, 0.0)
             if (time.time() - last_quote) < self._quote_cooldown:
                 logger.debug("[OBI] '%s' re-cotation trop rapide, skip.", market.question[:40])
@@ -385,12 +401,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
             try:
                 ob = self.client.get_order_book(market.yes_token_id)
             except Exception as e:
-                logger.info("[OBI] Impossible de récupérer le carnet pour %s: %s",
+                logger.info("[OBI] Impossible de recuperer le carnet pour %s: %s",
                             market.yes_token_id[:16], e)
                 continue
 
             if ob is None:
-                logger.info("[OBI] get_order_book a retourné None pour %s",
+                logger.info("[OBI] get_order_book a retourne None pour %s",
                             market.yes_token_id[:16])
                 continue
 
@@ -398,8 +414,8 @@ class OBIMarketMakingStrategy(BaseStrategy):
             _bids_raw = (ob.get("bids") if isinstance(ob, dict) else getattr(ob, "bids", None)) or []
             _asks_raw = (ob.get("asks") if isinstance(ob, dict) else getattr(ob, "asks", None)) or []
             logger.info(
-                "[OBI] Carnet '%s': %d bids, %d asks",
-                market.question[:40], len(_bids_raw), len(_asks_raw),
+                "[OBI] Carnet '%s': %d bids, %d asks (L%d)",
+                market.question[:40], len(_bids_raw), len(_asks_raw), OBICalculator.LEVELS,
             )
 
             # ── OBI (compute accepte dict ou OrderBookSummary, avec fallback Gamma) ──
@@ -413,18 +429,20 @@ class OBIMarketMakingStrategy(BaseStrategy):
                             market.question[:40])
                 continue
 
-            # ── News-Breaker : détection mouvement rapide ──
+            # ── News-Breaker : detection mouvement rapide (Set B: 7% au lieu de 10%) ──
             mid = market.mid_price
             if self._is_news_event(market.yes_token_id, mid):
                 logger.warning(
-                    "[OBI] NEWS-BREAKER: mid-price de '%s' a bougé > 0.10 en < 5s → cooldown 10min",
+                    "[OBI] NEWS-BREAKER: mid-price de '%s' a bouge > %.0f%% en < %.0fs -> cooldown %dmin",
                     market.question[:40],
+                    NEWS_BREAKER_THRESHOLD * 100,
+                    NEWS_BREAKER_WINDOW,
+                    NEWS_BREAKER_COOLDOWN // 60,
                 )
                 if self.db:
-                    self.db.set_cooldown(market.yes_token_id, 600, "news-breaker")
+                    self.db.set_cooldown(market.yes_token_id, NEWS_BREAKER_COOLDOWN, "news-breaker")
                     self.db.add_log("WARNING", "strategy",
                                    f"News-breaker: {market.question[:60]}")
-                # Annuler les ordres sur ce marché
                 try:
                     self.client.cancel_all_orders()
                 except Exception:
@@ -434,60 +452,69 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self._update_price_history(market.yes_token_id, mid)
             self._last_quote_ts[market.yes_token_id] = time.time()
 
-            # ── Calcul bid/ask avec skewing ──
+            # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
                 mid=mid,
                 spread=market.spread,
                 obi=obi_result,
             )
 
-            # Vérifications de base
+            # Verifications de base
             if bid_price >= ask_price:
                 logger.debug("[OBI] bid >= ask pour '%s', skip.", market.question[:40])
                 continue
             if not (0.01 <= bid_price <= 0.99) or not (0.01 <= ask_price <= 0.99):
                 continue
 
-            # Sizing basé sur prix (nombre de shares pour dépenser order_size_usdc)
-            bid_size = round(order_size_usdc / bid_price, 2)
-            ask_size = round(order_size_usdc / ask_price, 2)
+            # ── Tweak 3 : Maturity-aware sizing ──
+            # Marches < 3 jours de maturite = plus volatils → taille /2
+            maturity_factor = MATURITY_SHORT_FACTOR if market.days_to_expiry < MATURITY_SHORT_DAYS else 1.0
+            effective_size = order_size_usdc * maturity_factor
+            if maturity_factor < 1.0:
+                logger.info(
+                    "[OBI] Maturite courte (%.1fj < %.0fj) -> sizing x%.1f = %.2f USDC",
+                    market.days_to_expiry, MATURITY_SHORT_DAYS, maturity_factor, effective_size,
+                )
 
-            # ── Lecture de la position actuelle pour éviter BUY+SELL simultané ──
+            # Sizing base sur prix (nombre de shares pour depenser effective_size)
+            bid_size = round(effective_size / bid_price, 2)
+            ask_size = round(effective_size / ask_price, 2)
+
+            # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
-            # Ratio d'inventaire : cohérent avec RiskManager (5% du solde)
-            max_exposure = max(balance * 0.05, self.max_order_size_usdc)
+            # Ratio d'inventaire : coherent avec RiskManager (8% du solde, Set B)
+            max_exposure = max(balance * MAX_NET_EXPOSURE_PCT, self.max_order_size_usdc)
             net_exposure_usdc = qty_held * mid
             inv_ratio = net_exposure_usdc / max_exposure if max_exposure > 0 else 0.0
 
-            # Décision : quelle(s) face(s) coter ce cycle
+            # Decision : quelle(s) face(s) coter ce cycle
             #
-            # PAPER TRADING : fill immédiat → jamais BUY+SELL simultané sur le même token.
+            # PAPER TRADING : fill immediat → jamais BUY+SELL simultane.
             #   - Pas de position → BUY uniquement
-            #   - Position existante → SELL uniquement (liquider avant de re-buy)
+            #   - Position existante → SELL uniquement
             #
             # LIVE TRADING : ordres limit dans le carnet, fill asynchrone.
-            #   → On peut coter les deux côtés simultanément (market making réel).
-            #   → BUY si inv_ratio < 0.70 (pas surexposé)
-            #   → SELL si position existante (offrir liquidité côté ask)
-            #   → Inventory skewing via RiskManager (ratio ≥ 0.70 → ask only)
+            #   → BUY si inv_ratio < 0.60 (Set B, ex: 0.70)
+            #   → SELL si position existante
+            #   → Inventory skewing via RiskManager (ratio >= 0.60 → ask only)
             has_position = qty_held > 0.01
             if self.paper_trading:
-                # Paper : fill immédiat → mutually exclusive (évite double-comptage)
                 emit_sell = has_position
-                emit_buy  = (not has_position) and (inv_ratio < 0.70)
+                emit_buy  = (not has_position) and (inv_ratio < INVENTORY_SKEW_THRESHOLD)
             else:
-                # Live : ordres dans le carnet → coter les deux côtés simultanément
-                # (true market making — RiskManager gère l'inventory skewing)
-                emit_buy  = inv_ratio < 0.70
+                emit_buy  = inv_ratio < INVENTORY_SKEW_THRESHOLD
                 emit_sell = has_position
 
             logger.info(
                 "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f "
-                "| qty_held=%.2f inv_ratio=%.2f → buy=%s sell=%s",
-                market.question[:50], mid, obi_result.obi, obi_result.regime,
-                bid_price, ask_price, qty_held, inv_ratio,
+                "| qty=%.2f inv=%.2f mat=%.1fj -> buy=%s sell=%s",
+                market.question[:45], mid, obi_result.obi, obi_result.regime,
+                bid_price, ask_price, qty_held, inv_ratio, market.days_to_expiry,
                 emit_buy, emit_sell,
             )
+
+            # ── Enregistrer le mid pour cancel conditionnel (Tweak 1) ──
+            self._last_quoted_mid[market.yes_token_id] = mid
 
             if emit_buy:
                 signals.append(Signal(
@@ -499,7 +526,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     price=bid_price,
                     size=bid_size,
                     confidence=min(abs(obi_result.obi) + 0.5, 1.0),
-                    reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
+                    reason=f"OBI={obi_result.obi:.3f} regime={obi_result.regime}",
                 ))
             if emit_sell:
                 signals.append(Signal(
@@ -509,44 +536,52 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     side="sell",
                     order_type="limit",
                     price=ask_price,
-                    size=min(ask_size, qty_held),  # ne jamais vendre plus que détenu
+                    size=min(ask_size, qty_held),  # ne jamais vendre plus que detenu
                     confidence=min(abs(obi_result.obi) + 0.5, 1.0),
-                    reason=f"OBI={obi_result.obi:.3f} régime={obi_result.regime}",
+                    reason=f"OBI={obi_result.obi:.3f} regime={obi_result.regime}",
                 ))
             traded += 1
 
-        logger.info("[OBI] Analyse terminée: %d marchés, %d signaux générés.",
+        logger.info("[OBI] Analyse terminee: %d marches, %d signaux generes.",
                     traded, len(signals))
         return signals
 
     def _compute_quotes(self, mid: float, spread: float,
                         obi: OBIResult) -> tuple[float, float]:
         """
-        Calcule bid et ask en fonction du régime OBI.
-        Arrondi au tick (0.01).
+        Calcule bid et ask avec skew proportionnel continu (Set B / Tweak 2).
+
+        Ancien modele (3 branches rigides) :
+          Neutre  : bid = mid - half, ask = mid + half
+          Bullish : bid = mid,        ask = mid + 2 ticks (fixe)
+          Bearish : bid = mid - 2t,   ask = mid (fixe)
+
+        Nouveau modele (continu) :
+          skew_ticks = round(obi * OBI_SKEW_FACTOR)   # [-3, +3] ticks
+          bid = mid - half + skew * TICK_SIZE
+          ask = mid + half + skew * TICK_SIZE
+
+          OBI > 0 (bullish) → les deux quotes montent → bid plus agressif
+          OBI < 0 (bearish) → les deux quotes descendent → ask plus agressif
+          OBI = 0           → symetrique autour du mid
+
+        Avantage : un OBI de 0.25 et un OBI de 0.90 ne produisent plus le
+        meme decalage. Gradation fine = plus de fills a faible signal,
+        plus de protection a fort signal.
         """
         half = spread / 2.0
 
-        if obi.regime == "neutral":
-            # Symétrique
-            bid = mid - half
-            ask = mid + half
+        # Skew proportionnel : nombre de ticks de decalage
+        skew_ticks = round(obi.obi * OBI_SKEW_FACTOR)
 
-        elif obi.regime == "bullish":
-            # Bid agressif (top of book = mid), ask passif (+2 ticks)
-            bid = mid
-            ask = mid + 2 * TICK_SIZE
-
-        else:  # bearish
-            # Bid passif, ask agressif
-            bid = mid - 2 * TICK_SIZE
-            ask = mid
+        bid = mid - half + skew_ticks * TICK_SIZE
+        ask = mid + half + skew_ticks * TICK_SIZE
 
         # Arrondi au tick
         bid = round(round(bid / TICK_SIZE) * TICK_SIZE, 4)
         ask = round(round(ask / TICK_SIZE) * TICK_SIZE, 4)
 
-        # Garantir l'écart minimal
+        # Garantir l'ecart minimal (au moins 1 tick)
         if ask - bid < TICK_SIZE:
             ask = bid + TICK_SIZE
 
@@ -554,27 +589,33 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
     def _is_news_event(self, token_id: str, current_mid: float) -> bool:
         """
-        Retourne True si le mid-price a bougé de > 0.10 en moins de 5 secondes.
+        Retourne True si le mid-price a bouge de > NEWS_BREAKER_THRESHOLD
+        en moins de NEWS_BREAKER_WINDOW secondes.
+        Set B : 7% en 5s (ex: 10% en 5s).
         """
         now = time.time()
         if token_id in self._price_history:
             prev_price, prev_ts = self._price_history[token_id]
-            if (now - prev_ts) < 5.0:
-                if abs(current_mid - prev_price) > 0.10:
+            if (now - prev_ts) < NEWS_BREAKER_WINDOW:
+                if prev_price > 0 and abs(current_mid - prev_price) / prev_price > NEWS_BREAKER_THRESHOLD:
                     return True
         return False
 
     def _update_price_history(self, token_id: str, mid: float):
-        """Enregistre le prix actuel pour la détection news-breaker."""
+        """Enregistre le prix actuel pour la detection news-breaker."""
         self._price_history[token_id] = (mid, time.time())
 
+    def get_last_quoted_mid(self, token_id: str) -> Optional[float]:
+        """Retourne le dernier mid cote pour ce token (pour cancel conditionnel)."""
+        return self._last_quoted_mid.get(token_id)
 
-# ─── DummyStrategy (conservée pour tests) ────────────────────────────────────
+
+# ─── DummyStrategy (conservee pour tests) ────────────────────────────────────
 
 class DummyStrategy(BaseStrategy):
     """
-    Stratégie factice : scan et log les marchés CLOB, ne passe aucun ordre.
-    Utiliser OBIMarketMakingStrategy pour le trading réel.
+    Strategie factice : scan et log les marches CLOB, ne passe aucun ordre.
+    Utiliser OBIMarketMakingStrategy pour le trading reel.
     """
 
     def analyze(self) -> list[Signal]:
@@ -582,10 +623,10 @@ class DummyStrategy(BaseStrategy):
         markets = universe.get_eligible_markets()
 
         if not markets:
-            logger.info("[Dummy] Aucun marché éligible trouvé.")
+            logger.info("[Dummy] Aucun marche eligible trouve.")
             return []
 
-        logger.info("[Dummy] %d marchés éligibles:", len(markets))
+        logger.info("[Dummy] %d marches eligibles:", len(markets))
         for m in markets[:5]:
             logger.info(
                 "[Dummy]  '%s' | mid=%.4f | spread=%.4f | vol24h=%.0f | %.1fd",

@@ -23,11 +23,11 @@ from db.database import Database
 
 logger = logging.getLogger("bot.risk")
 
-# Constantes OBI risk
-MAX_NET_EXPOSURE_PCT   = 0.05   # 5% du solde = exposition nette max par marché
-INVENTORY_SKEW_WARN    = 0.70   # Ratio > 70% → Ask only (cancel bids)
-INVENTORY_SKEW_LIQ     = 1.00   # Ratio = 100% → liquidation unilatérale
-CIRCUIT_BREAKER_PCT    = 0.10   # Déclenche si solde chute de 10% vs HWM
+# Constantes OBI risk — Set B (Balanced)
+MAX_NET_EXPOSURE_PCT   = 0.08   # 8% du solde = expo nette max par marche (ex: 5%)
+INVENTORY_SKEW_WARN    = 0.60   # Ratio > 60% → Ask only, cancel bids (ex: 70%)
+INVENTORY_SKEW_LIQ     = 1.00   # Ratio = 100% → liquidation unilaterale
+CIRCUIT_BREAKER_PCT    = 0.10   # Declenche si solde chute de 10% vs HWM
 
 
 @dataclass

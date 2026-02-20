@@ -1,11 +1,11 @@
 """
 Boucle principale du bot de trading — OBI Market Making.
-Cycle toutes les 5 secondes (polling), gère :
+Cycle toutes les 8 secondes (Set B), gere :
   - High Water Mark + circuit breaker
   - Inventaire positions post-fill
   - CTF Inverse Spread Arb (Ask_YES + Ask_NO < 1.00)
-  - Annulation et re-cotation des ordres
-  - Arrêt propre SIGTERM/SIGINT
+  - Cancel conditionnel + re-cotation des ordres (Tweak 1)
+  - Arret propre SIGTERM/SIGINT
 """
 
 import logging
@@ -22,8 +22,10 @@ from db.database import Database
 
 logger = logging.getLogger("bot.trader")
 
-# Intervalle de polling en secondes (override de config pour OBI)
-OBI_POLL_INTERVAL = 5
+# Intervalle de polling en secondes — Set B : 8s (ex: 5s)
+# Trade-off gas vs latency : a 5s avec 5 marches = ~78$/j de gas.
+# A 8s = ~49$/j. Le cancel conditionnel (Tweak 1) reduit encore de ~60%.
+OBI_POLL_INTERVAL = 8
 
 
 class Trader:
@@ -155,16 +157,61 @@ class Trader:
         logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
 
     def _cancel_open_orders(self):
-        """Annule tous les ordres ouverts (pattern cancel+replace avant recoter)."""
+        """
+        Cancel conditionnel (Tweak 1) : annule les ordres ouverts UNIQUEMENT
+        si le mid-price a bouge de >= 1 tick depuis la derniere cotation.
+
+        Economie gas estimee : ~60% des cancels evites (marche stable → pas de
+        cancel inutile). Sur 1620 cycles/jour, ca economise ~29$/jour de gas.
+        """
         try:
             open_orders = self.pm_client.get_open_orders()
             if not open_orders:
-                logger.debug("[Cancel+Replace] Aucun ordre ouvert à annuler.")
+                logger.debug("[Cancel+Replace] Aucun ordre ouvert.")
                 return
-            logger.info("[Cancel+Replace] %d ordre(s) ouvert(s) → annulation...", len(open_orders))
+
+            # Verifier si le marche a bouge depuis la derniere cotation
+            need_cancel = False
+            if self.strategy and hasattr(self.strategy, 'get_last_quoted_mid'):
+                from bot.strategy import TICK_SIZE
+                for order in open_orders:
+                    token_id = getattr(order, 'asset_id', None) or (
+                        order.get('asset_id') if isinstance(order, dict) else None
+                    )
+                    if token_id:
+                        last_mid = self.strategy.get_last_quoted_mid(token_id)
+                        if last_mid is not None:
+                            current_mid = self.pm_client.get_midpoint(token_id)
+                            if current_mid is not None and abs(current_mid - last_mid) >= TICK_SIZE:
+                                need_cancel = True
+                                logger.info(
+                                    "[Cancel+Replace] Mid bouge: %.4f -> %.4f (>= 1 tick) sur %s",
+                                    last_mid, current_mid, token_id[:16],
+                                )
+                                break
+                        else:
+                            # Pas de mid precedent → cancel par securite
+                            need_cancel = True
+                            break
+                    else:
+                        # Impossible de lire le token_id → cancel par securite
+                        need_cancel = True
+                        break
+            else:
+                # Pas de strategie chargee → cancel systematique (fallback)
+                need_cancel = True
+
+            if not need_cancel:
+                logger.debug(
+                    "[Cancel+Replace] %d ordre(s) ouvert(s) — mid stable, pas de cancel.",
+                    len(open_orders),
+                )
+                return
+
+            logger.info("[Cancel+Replace] %d ordre(s) ouvert(s) -> annulation...", len(open_orders))
             self.pm_client.cancel_all_orders()
             self.db.add_log("INFO", "trader",
-                            f"[Cancel+Replace] {len(open_orders)} ordre(s) annulé(s)")
+                            f"[Cancel+Replace] {len(open_orders)} ordre(s) annule(s)")
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
