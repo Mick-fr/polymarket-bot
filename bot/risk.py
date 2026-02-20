@@ -32,7 +32,10 @@ from db.database import Database
 logger = logging.getLogger("bot.risk")
 
 # Constantes OBI risk — Set B (Balanced)
-MAX_NET_EXPOSURE_PCT   = 0.08   # 8% du solde = expo nette max par marche (ex: 5%)
+# NOTE : MAX_NET_EXPOSURE_PCT est maintenant lu depuis config.max_exposure_pct
+# (variable d'env BOT_MAX_EXPOSURE_PCT, défaut 20%).
+# La constante ci-dessous n'est plus utilisée — conservée pour référence.
+_MAX_NET_EXPOSURE_PCT_LEGACY = 0.08
 INVENTORY_SKEW_WARN    = 0.60   # Ratio > 60% → Ask only, cancel bids (ex: 70%)
 INVENTORY_SKEW_LIQ     = 1.00   # Ratio = 100% → liquidation unilaterale
 CIRCUIT_BREAKER_PCT    = 0.10   # Declenche si solde chute de 10% vs HWM
@@ -189,10 +192,11 @@ class RiskManager:
                                   order_cost: float) -> RiskVerdict | None:
         """
         L'exposition nette en USDC sur un marché ne doit pas dépasser
-        MAX_NET_EXPOSURE_PCT * balance.
+        config.max_exposure_pct * balance (défaut : 20%, configurable via BOT_MAX_EXPOSURE_PCT).
         current_exposure_usdc = shares_nettes * prix (stocké en USDC dans la DB).
         """
-        max_exposure = balance * MAX_NET_EXPOSURE_PCT
+        max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
+        max_exposure = balance * max_exposure_pct
         current_exposure_usdc = self.db.get_position_usdc(signal.token_id)
 
         # Delta USDC de ce nouvel ordre
@@ -203,7 +207,7 @@ class RiskManager:
             return RiskVerdict(
                 False,
                 f"Fractional sizing: expo nette {net_exposure:.2f} > max {max_exposure:.2f} USDC "
-                f"({MAX_NET_EXPOSURE_PCT*100:.0f}% de {balance:.2f})",
+                f"({max_exposure_pct*100:.0f}% de {balance:.2f})",
                 "none",
             )
         return None
@@ -213,10 +217,11 @@ class RiskManager:
         """
         Inventory skewing :
           ratio = exposition_nette_USDC / max_autorisée
-          > 0.7 → Cancel bids, Ask only
+          > 0.6 → Cancel bids, Ask only
           = 1.0 → Liquidation unilatérale (Ask only)
         """
-        max_exposure = balance * MAX_NET_EXPOSURE_PCT
+        max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
+        max_exposure = balance * max_exposure_pct
         if max_exposure <= 0:
             return None
 

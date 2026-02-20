@@ -53,7 +53,7 @@ NEWS_BREAKER_THRESHOLD =  0.07   # Move mid > 7% en < 5s → cooldown (ex: 0.10)
 NEWS_BREAKER_WINDOW    =  5.0    # Fenetre temporelle news-breaker (secondes)
 NEWS_BREAKER_COOLDOWN  =  600    # Duree cooldown news-breaker (10 min)
 ORDER_SIZE_PCT         =  0.03   # 3% du solde par ordre (ex: 0.02)
-MAX_NET_EXPOSURE_PCT   =  0.08   # 8% du solde = expo nette max par marche (ex: 0.05)
+MAX_NET_EXPOSURE_PCT   =  0.20   # 20% du solde = expo nette max par marche (défaut, surchargé via BOT_MAX_EXPOSURE_PCT)
 INVENTORY_SKEW_THRESHOLD = 0.60  # Ratio >= 60% → one-sided (ex: 0.70)
 
 
@@ -359,12 +359,14 @@ class OBIMarketMakingStrategy(BaseStrategy):
     def __init__(self, client: PolymarketClient, db=None,
                  max_order_size_usdc: float = 5.0,
                  max_markets: int = 5,
-                 paper_trading: bool = True):
+                 paper_trading: bool = True,
+                 max_exposure_pct: float = 0.20):
         super().__init__(client)
         self.db = db
         self.max_order_size_usdc = max_order_size_usdc
         self.max_markets = max_markets
         self.paper_trading = paper_trading
+        self.max_exposure_pct = max_exposure_pct   # configurable via BOT_MAX_EXPOSURE_PCT
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
         # Suivi prix precedents pour news-breaker {token_id: (price, timestamp)}
@@ -495,8 +497,8 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
             # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
-            # Ratio d'inventaire : coherent avec RiskManager (8% du solde, Set B)
-            max_exposure = max(balance * MAX_NET_EXPOSURE_PCT, self.max_order_size_usdc)
+            # Ratio d'inventaire : cohérent avec RiskManager (configurable via BOT_MAX_EXPOSURE_PCT)
+            max_exposure = max(balance * self.max_exposure_pct, self.max_order_size_usdc)
             net_exposure_usdc = qty_held * mid
             inv_ratio = net_exposure_usdc / max_exposure if max_exposure > 0 else 0.0
 

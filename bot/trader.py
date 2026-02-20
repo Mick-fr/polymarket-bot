@@ -83,6 +83,7 @@ class Trader:
             max_order_size_usdc=self.config.bot.max_order_size,
             max_markets=5,
             paper_trading=self.config.bot.paper_trading,
+            max_exposure_pct=self.config.bot.max_exposure_pct,
         )
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
@@ -139,39 +140,41 @@ class Trader:
             self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
             self._connect()
 
-        # 3. Solde + High Water Mark
-        balance = self._fetch_balance()
-        if balance is not None:
-            self.db.record_balance(balance)
-            self.risk.update_high_water_mark(balance)
-            logger.info("Solde: %.4f USDC | HWM: %.4f USDC",
-                        balance, self.db.get_high_water_mark())
+        # 3. Solde brut initial (pour le High Water Mark uniquement — avant cancel)
+        balance_raw = self._fetch_balance()
+        if balance_raw is not None:
+            self.risk.update_high_water_mark(balance_raw)
+            logger.debug("Solde brut (avant cancel): %.4f USDC | HWM: %.4f USDC",
+                         balance_raw, self.db.get_high_water_mark())
         else:
-            balance = self.db.get_latest_balance()
-            if balance is None:
-                logger.info("Solde non disponible au démarrage. Utilisation de 0.0 USDC.")
-                balance = 0.0
-            else:
-                logger.debug("Solde CLOB indisponible, DB: %.4f USDC", balance)
+            balance_raw = self.db.get_latest_balance() or 0.0
 
-        # 4. Cancel+replace : annuler les ordres ouverts avant de recoter
+        # 4. Cancel+replace : annuler les BUY ouverts AVANT de lire le solde disponible.
+        # Cela libère les fonds verrouillés côté CLOB, permettant une lecture exacte.
         # (seulement en mode réel — en paper trading il n'y a pas d'ordres dans le carnet)
         if not self.config.bot.paper_trading:
             self._cancel_open_orders()
 
-        # 5. Stratégie OBI → signaux (balance passée pour sizing dynamique)
+        # 5. Solde disponible (après cancel → fonds BUY libérés dans le CLOB)
+        # En cas d'échec du re-fetch, on soustrait le capital estimé verrouillé.
+        balance = self._fetch_available_balance(balance_raw)
+        self.db.record_balance(balance)
+        logger.info("Solde disponible: %.4f USDC (brut: %.4f USDC) | HWM: %.4f USDC",
+                    balance, balance_raw, self.db.get_high_water_mark())
+
+        # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
         signals = self.strategy.analyze(balance=balance)
 
-        # 6. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
+        # 7. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
         eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
         self._check_ctf_arb(balance, eligible_markets)
 
-        # 7. Exécution avec gestion de l'inventaire post-fill
+        # 8. Exécution avec gestion de l'inventaire post-fill
         for sig in signals:
             self._execute_signal(sig, balance)
 
-        # 8. Snapshot de stratégie pour analytics
+        # 9. Snapshot de stratégie pour analytics
         try:
             from bot.strategy import (OBI_BULLISH_THRESHOLD, OBI_SKEW_FACTOR,
                                        MIN_SPREAD, ORDER_SIZE_PCT)
@@ -364,7 +367,7 @@ class Trader:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
     def _fetch_balance(self) -> Optional[float]:
-        """Récupère le solde USDC — réel via CLOB ou fictif en paper trading.
+        """Récupère le solde USDC brut (total, fonds verrouillés inclus).
 
         En paper trading, le solde retourné est le cash résiduel uniquement.
         Les positions sont de l'inventaire, pas du cash disponible. Valoriser
@@ -383,6 +386,62 @@ class Trader:
         except Exception as e:
             logger.debug("Erreur lecture solde CLOB: %s", e)
             return None
+
+    def _compute_locked_capital(self) -> float:
+        """
+        Estime le capital verrouillé dans les ordres BUY limit encore ouverts.
+        Utilise la DB locale (orders WHERE status='live' AND side='buy').
+        Utilisé en fallback si le re-fetch CLOB échoue après cancel.
+        Retourne 0.0 en cas d'erreur (safe — risque de légère surestimation du solde).
+        """
+        try:
+            live_buys = [
+                o for o in self.db.get_live_orders()
+                if o.get("side") == "buy"
+            ]
+            locked = sum(float(o.get("amount_usdc") or 0.0) for o in live_buys)
+            if locked > 0:
+                logger.debug("[Balance] Capital verrouillé dans %d BUY live: %.4f USDC",
+                             len(live_buys), locked)
+            return locked
+        except Exception as e:
+            logger.debug("[Balance] Erreur calcul capital verrouillé: %s", e)
+            return 0.0
+
+    def _fetch_available_balance(self, balance_before_cancel: float) -> float:
+        """
+        Retourne le solde USDC disponible pour de nouveaux ordres.
+
+        Logique :
+          1. En paper trading : retourner le cash résiduel de la DB.
+          2. En live : re-fetcher le solde CLOB APRÈS le cancel des BUY.
+             → Les fonds sont libérés côté CLOB, le solde reflète le réel disponible.
+          3. Fallback (si re-fetch CLOB échoue) : balance_avant_cancel − locked_capital.
+
+        Args:
+            balance_before_cancel: solde brut lu avant le cancel+replace.
+        """
+        if self.config.bot.paper_trading:
+            return self.db.get_latest_balance() or self.config.bot.paper_balance
+
+        # Tentative de re-fetch après cancel (fonds devraient être libérés)
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            resp = self.pm_client.client.get_balance_allowance(params)
+            raw = resp.get("balance") or resp.get("Balance") or "0"
+            available = int(raw) / 1_000_000
+            logger.debug("[Balance] Solde CLOB après cancel: %.4f USDC", available)
+            return available
+        except Exception as e:
+            logger.debug("[Balance] Re-fetch CLOB échoué (%s), fallback DB - locked", e)
+
+        # Fallback : solde avant cancel − capital encore verrouillé (ordres SELL préservés)
+        locked = self._compute_locked_capital()
+        available = max(0.0, balance_before_cancel - locked)
+        logger.debug("[Balance] Solde disponible (fallback): %.4f - %.4f = %.4f USDC",
+                     balance_before_cancel, locked, available)
+        return available
 
     def _check_ctf_arb(self, balance: float, markets: list = None):
         """
