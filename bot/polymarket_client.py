@@ -181,10 +181,14 @@ class PolymarketClient:
         """Vérifie la connectivité en récupérant l'heure serveur."""
         return self.client.get_server_time()
 
-    def is_alive(self) -> bool:
-        """Vérifie que l'API répond."""
+    def is_alive(self, timeout: float = 10.0) -> bool:
+        """Vérifie que l'API répond dans un délai donné (défaut 10s).
+        Utilise un thread avec timeout pour éviter tout blocage indéfini."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         try:
-            self.get_server_time()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.get_server_time)
+                future.result(timeout=timeout)
             return True
-        except Exception:
+        except (FuturesTimeout, Exception):
             return False

@@ -128,61 +128,77 @@ class Trader:
 
     def _cycle(self):
         """Un cycle complet de la boucle de trading."""
+        logger.info("[Cycle] ── Début du cycle ──────────────────────────────")
 
         # 1. Kill switch
+        logger.debug("[Cycle] Étape 1: kill switch")
         if self.db.get_kill_switch():
             logger.debug("Kill switch activé – bot en pause.")
             return
 
-        # 2. Connectivité API
+        # 2. Connectivité API — is_alive() avec timeout implicite de la lib
+        logger.info("[Cycle] Étape 2: vérification connectivité API")
         if not self.pm_client.is_alive():
             logger.warning("API Polymarket injoignable, tentative de reconnexion...")
             self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
             self._connect()
+        logger.info("[Cycle] Étape 2: API OK")
 
         # 3. Solde brut initial (avant cancel) — sert à calculer la valeur portfolio
+        logger.info("[Cycle] Étape 3: lecture solde brut CLOB")
         balance_raw = self._fetch_balance()
         if balance_raw is None:
             balance_raw = self.db.get_latest_balance() or 0.0
+        logger.info("[Cycle] Étape 3: solde brut = %.4f USDC", balance_raw)
 
         # 3b. Valeur totale du portfolio (USDC + inventaire au prix d'entrée)
         # → utilisée pour le High Water Mark et le circuit breaker.
         # Évite de déclencher le CB lors d'un BUY normal (argent converti en shares, pas perdu).
+        # Uniquement DB locale : ne peut PAS bloquer sur réseau.
+        logger.info("[Cycle] Étape 3b: calcul valeur portfolio (DB locale)")
         portfolio_value = self._compute_portfolio_value(balance_raw)
         self.risk.update_high_water_mark(portfolio_value)
-        logger.debug(
-            "Valeur portfolio: %.4f USDC (USDC=%.4f + inventaire) | HWM: %.4f USDC",
+        logger.info(
+            "[Cycle] Étape 3b: portfolio=%.4f USDC (USDC=%.4f + inventaire) | HWM=%.4f",
             portfolio_value, balance_raw, self.db.get_high_water_mark(),
         )
 
         # 4. Cancel+replace : annuler les BUY ouverts AVANT de lire le solde disponible.
         # Cela libère les fonds verrouillés côté CLOB, permettant une lecture exacte.
         # (seulement en mode réel — en paper trading il n'y a pas d'ordres dans le carnet)
+        logger.info("[Cycle] Étape 4: cancel+replace (mode réel)")
         if not self.config.bot.paper_trading:
             self._cancel_open_orders()
+        logger.info("[Cycle] Étape 4: cancel+replace terminé")
 
         # 5. Solde disponible (après cancel → fonds BUY libérés dans le CLOB)
         # En cas d'échec du re-fetch, on soustrait le capital estimé verrouillé.
+        logger.info("[Cycle] Étape 5: lecture solde disponible post-cancel")
         balance = self._fetch_available_balance(balance_raw)
         self.db.record_balance(balance)
         logger.info(
-            "Solde disponible: %.4f USDC | Portfolio total: %.4f USDC | HWM: %.4f USDC",
+            "[Cycle] Étape 5: solde dispo=%.4f USDC | portfolio=%.4f USDC | HWM=%.4f USDC",
             balance, portfolio_value, self.db.get_high_water_mark(),
         )
 
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
+        logger.info("[Cycle] Étape 6: analyse OBI → signaux")
         signals = self.strategy.analyze(balance=balance)
+        logger.info("[Cycle] Étape 6: %d signal(s) généré(s)", len(signals))
 
         # 7. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
+        logger.info("[Cycle] Étape 7: CTF arb check")
         eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
         self._check_ctf_arb(balance, eligible_markets)
 
         # 8. Exécution avec gestion de l'inventaire post-fill
+        logger.info("[Cycle] Étape 8: exécution %d signal(s)", len(signals))
         for sig in signals:
             self._execute_signal(sig, balance, portfolio_value=portfolio_value)
 
         # 9. Snapshot de stratégie pour analytics
+        logger.info("[Cycle] Étape 9: snapshot analytics")
         try:
             from bot.strategy import (OBI_BULLISH_THRESHOLD, OBI_SKEW_FACTOR,
                                        MIN_SPREAD, ORDER_SIZE_PCT)
@@ -209,7 +225,7 @@ class Trader:
         except Exception as se:
             logger.debug("[Analytics] Erreur snapshot: %s", se)
 
-        logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
+        logger.info("[Cycle] ── Cycle terminé. Prochain dans %ds. ──────────", OBI_POLL_INTERVAL)
 
     def _reconcile_fills(self):
         """
@@ -319,7 +335,11 @@ class Trader:
         self._reconcile_fills()
 
         try:
-            open_orders = self.pm_client.get_open_orders()
+            open_orders = self._call_with_timeout(
+                self.pm_client.get_open_orders,
+                timeout=15.0,
+                label="get_open_orders",
+            )
             if not open_orders:
                 logger.debug("[Cancel+Replace] Aucun ordre ouvert.")
                 return
@@ -405,6 +425,22 @@ class Trader:
             logger.debug("[Portfolio] Erreur calcul valeur portfolio: %s", e)
             return usdc_balance
 
+    def _call_with_timeout(self, fn, timeout: float = 15.0, label: str = ""):
+        """
+        Exécute fn() dans un thread séparé avec un timeout strict.
+        Lève concurrent.futures.TimeoutError si fn() ne répond pas dans `timeout` secondes.
+        Protège contre les appels CLOB bloquants (TCP hang, absence de timeout HTTP).
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fn)
+            try:
+                return future.result(timeout=timeout)
+            except FuturesTimeout:
+                logger.warning("[Timeout] Appel CLOB %s dépassé (%.0fs) → abandon",
+                               label or fn.__name__, timeout)
+                raise
+
     def _fetch_balance(self) -> Optional[float]:
         """Récupère le solde USDC brut (total, fonds verrouillés inclus).
 
@@ -419,9 +455,13 @@ class Trader:
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-            resp = self.pm_client.client.get_balance_allowance(params)
-            raw = resp.get("balance") or resp.get("Balance") or "0"
-            return int(raw) / 1_000_000
+
+            def _do_fetch():
+                resp = self.pm_client.client.get_balance_allowance(params)
+                raw = resp.get("balance") or resp.get("Balance") or "0"
+                return int(raw) / 1_000_000
+
+            return self._call_with_timeout(_do_fetch, timeout=15.0, label="get_balance_allowance")
         except Exception as e:
             logger.debug("Erreur lecture solde CLOB: %s", e)
             return None
@@ -467,9 +507,14 @@ class Trader:
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-            resp = self.pm_client.client.get_balance_allowance(params)
-            raw = resp.get("balance") or resp.get("Balance") or "0"
-            available = int(raw) / 1_000_000
+
+            def _do_refetch():
+                resp = self.pm_client.client.get_balance_allowance(params)
+                raw = resp.get("balance") or resp.get("Balance") or "0"
+                return int(raw) / 1_000_000
+
+            available = self._call_with_timeout(_do_refetch, timeout=15.0,
+                                                label="get_balance_allowance (post-cancel)")
             logger.debug("[Balance] Solde CLOB après cancel: %.4f USDC", available)
             return available
         except Exception as e:
