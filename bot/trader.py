@@ -158,54 +158,13 @@ class Trader:
 
     def _cancel_open_orders(self):
         """
-        Cancel conditionnel (Tweak 1) : annule les ordres ouverts UNIQUEMENT
-        si le mid-price a bouge de >= 1 tick depuis la derniere cotation.
-
-        Economie gas estimee : ~60% des cancels evites (marche stable → pas de
-        cancel inutile). Sur 1620 cycles/jour, ca economise ~29$/jour de gas.
+        Cancel systématique avant chaque cycle de cotation (live uniquement).
+        Garantit qu'aucun ordre obsolète ne reste dans le carnet.
         """
         try:
             open_orders = self.pm_client.get_open_orders()
             if not open_orders:
                 logger.debug("[Cancel+Replace] Aucun ordre ouvert.")
-                return
-
-            # Verifier si le marche a bouge depuis la derniere cotation
-            need_cancel = False
-            if self.strategy and hasattr(self.strategy, 'get_last_quoted_mid'):
-                from bot.strategy import TICK_SIZE
-                for order in open_orders:
-                    token_id = getattr(order, 'asset_id', None) or (
-                        order.get('asset_id') if isinstance(order, dict) else None
-                    )
-                    if token_id:
-                        last_mid = self.strategy.get_last_quoted_mid(token_id)
-                        if last_mid is not None:
-                            current_mid = self.pm_client.get_midpoint(token_id)
-                            if current_mid is not None and abs(current_mid - last_mid) >= TICK_SIZE:
-                                need_cancel = True
-                                logger.info(
-                                    "[Cancel+Replace] Mid bouge: %.4f -> %.4f (>= 1 tick) sur %s",
-                                    last_mid, current_mid, token_id[:16],
-                                )
-                                break
-                        else:
-                            # Pas de mid precedent → cancel par securite
-                            need_cancel = True
-                            break
-                    else:
-                        # Impossible de lire le token_id → cancel par securite
-                        need_cancel = True
-                        break
-            else:
-                # Pas de strategie chargee → cancel systematique (fallback)
-                need_cancel = True
-
-            if not need_cancel:
-                logger.debug(
-                    "[Cancel+Replace] %d ordre(s) ouvert(s) — mid stable, pas de cancel.",
-                    len(open_orders),
-                )
                 return
 
             logger.info("[Cancel+Replace] %d ordre(s) ouvert(s) -> annulation...", len(open_orders))
