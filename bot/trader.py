@@ -40,9 +40,9 @@ class Trader:
         self.strategy: Optional[BaseStrategy] = None
         self._running = False
         self._consecutive_errors = 0
-        # Order IDs CLOB des SELL de liquidation en attente de match.
-        # Ces ordres ne doivent PAS être annulés par le cancel+replace.
-        self._liquidation_order_ids: set[str] = set()
+        # NOTE: le tracking des SELL de liquidation est maintenant basé sur la DB
+        # (orders WHERE side='sell' AND status='live' AND token a une position),
+        # ce qui survit aux redémarrages. Plus de set en mémoire.
 
     def start(self):
         """Démarre la boucle de trading."""
@@ -233,13 +233,6 @@ class Trader:
 
                     self.db.update_order_status(local_id, "matched", order_id=clob_id)
 
-                    # Retirer des SELL préservés si c'était un ordre de liquidation
-                    if clob_id in self._liquidation_order_ids:
-                        self._liquidation_order_ids.discard(clob_id)
-                        logger.info(
-                            "[Liquidation] SELL reconcilié (fill détecté): %s", clob_id[:16]
-                        )
-
                     # Mise à jour inventaire
                     if side == "sell":
                         qty_held = self.db.get_position(token_id)
@@ -278,14 +271,38 @@ class Trader:
         if reconciled > 0:
             logger.info("[Reconcile] %d fill(s) reconcilie(s) depuis le CLOB.", reconciled)
 
+    def _get_liquidation_clob_ids(self) -> set[str]:
+        """
+        Retourne les order_ids CLOB des SELL de liquidation actifs depuis la DB.
+        Un SELL est "de liquidation" si :
+          - status = 'live' dans la table orders
+          - side = 'sell'
+          - le token a encore une position > 0 dans positions
+        Basé sur la DB → survit aux redémarrages du bot.
+        """
+        try:
+            live_sells = [
+                o for o in self.db.get_live_orders()
+                if o.get("side") == "sell" and o.get("order_id")
+            ]
+            liq_ids = set()
+            for o in live_sells:
+                qty = self.db.get_position(o["token_id"])
+                if qty > 0:
+                    liq_ids.add(o["order_id"])
+            return liq_ids
+        except Exception as e:
+            logger.debug("[Liquidation] Erreur lecture DB: %s", e)
+            return set()
+
     def _cancel_open_orders(self):
         """
         Cancel sélectif avant chaque cycle de cotation (live uniquement).
-        Étape 1 : réconcilier les fills manqués (met à jour _liquidation_order_ids).
+        Étape 1 : réconcilier les fills manqués.
         Étape 2 : annuler tous les ordres SAUF les SELL de liquidation en attente.
 
-        Les SELL de liquidation (positions existantes, exemptés du kill switch)
-        ne sont jamais annulés — on les laisse dans le carnet jusqu'au match.
+        Les SELL de liquidation sont identifiés via la DB (orders live + position > 0),
+        ce qui survit aux redémarrages — aucune variable en mémoire n'est nécessaire.
         """
         # D'abord réconcilier les éventuels fills entre deux cycles
         self._reconcile_fills()
@@ -296,6 +313,9 @@ class Trader:
                 logger.debug("[Cancel+Replace] Aucun ordre ouvert.")
                 return
 
+            # Récupérer les SELL de liquidation à préserver (depuis la DB)
+            liquidation_ids = self._get_liquidation_clob_ids()
+
             # Séparer : ordres à annuler vs SELL de liquidation à préserver
             to_cancel = []
             preserved = []
@@ -304,14 +324,14 @@ class Trader:
                 clob_id = (
                     o.get("id") or o.get("orderID") or o.get("order_id") or ""
                 )
-                if clob_id and clob_id in self._liquidation_order_ids:
+                if clob_id and clob_id in liquidation_ids:
                     preserved.append(clob_id)
                 else:
                     to_cancel.append(clob_id)
 
             if preserved:
                 logger.info(
-                    "[Cancel+Replace] %d ordre(s) SELL de liquidation préservé(s): %s",
+                    "[Cancel+Replace] %d SELL de liquidation préservé(s): %s",
                     len(preserved),
                     [oid[:16] for oid in preserved],
                 )
@@ -321,7 +341,7 @@ class Trader:
                 return
 
             logger.info(
-                "[Cancel+Replace] %d ordre(s) ouvert(s) -> annulation de %d (préservé: %d)...",
+                "[Cancel+Replace] %d ordre(s) -> annulation de %d, préservé: %d",
                 len(open_orders), len(to_cancel), len(preserved),
             )
 
@@ -510,25 +530,17 @@ class Trader:
                     signal.side.upper(), signal.token_id[:16],
                     signal.price or 0.0, order_id,
                 )
-                # ── Tracking des SELL de liquidation ──────────────────────────
-                # Si c'est un SELL sur position existante, on le préserve du
-                # cancel+replace en l'ajoutant à _liquidation_order_ids.
-                if signal.side == "sell" and order_id:
-                    qty_held = self.db.get_position(signal.token_id)
-                    if qty_held > 0:
-                        self._liquidation_order_ids.add(order_id)
-                        logger.info(
-                            "[Liquidation] SELL préservé du cancel+replace: %s (qty=%.2f)",
-                            order_id[:16], qty_held,
-                        )
                 # Pas de mise à jour d'inventaire : l'ordre n'est pas encore rempli.
+                # Le SELL de liquidation sera détecté via la DB au prochain cycle
+                # (_get_liquidation_clob_ids) et préservé du cancel+replace.
+                if signal.side == "sell" and order_id:
+                    logger.info(
+                        "[Liquidation] SELL posé dans le carnet, sera préservé via DB: %s",
+                        order_id[:16],
+                    )
                 return
 
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
-            # Retirer l'order_id des SELL préservés : il est maintenant matché
-            if order_id and order_id in self._liquidation_order_ids:
-                self._liquidation_order_ids.discard(order_id)
-                logger.info("[Liquidation] SELL matché, retiré du suivi: %s", order_id[:16])
 
             if status in ("filled", "matched"):
                 # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
