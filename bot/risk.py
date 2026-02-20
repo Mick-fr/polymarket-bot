@@ -3,7 +3,7 @@ Module de contrôle des risques.
 Vérifie chaque signal AVANT exécution pour protéger le capital.
 
 Règles implémentées :
-  1. Kill switch global
+  1. Kill switch global  (exemption : SELL de liquidation d'une position existante)
   2. Taille d'ordre max (config)
   3. Solde suffisant
   4. Réserve minimale (10% ou 2 USDC)
@@ -12,6 +12,14 @@ Règles implémentées :
   7. [OBI] Fractional sizing : expo nette max 5% du solde total
   8. [OBI] Inventory skewing : ratio > 0.7 → Ask only, ratio = 1.0 → liquidation
   9. [OBI] Circuit breaker global : solde < 90% du High Water Mark journalier
+
+Exemption de liquidation :
+  Quand le kill switch est actif (déclenché manuellement ou par circuit breaker),
+  les ordres SELL sur des positions existantes (qty_held > 0) restent autorisés.
+  Objectif : ne jamais bloquer la réduction d'exposition en cas de crise.
+  Les vérifications bypassées : kill switch, circuit breaker, réserve minimale,
+  perte quotidienne, confiance, fractional sizing, inventory skewing.
+  Les vérifications maintenues : taille max, solde suffisant (SELL ne coûte rien).
 """
 
 import logging
@@ -53,6 +61,21 @@ class RiskManager:
         Vérifie si un signal est autorisé.
         Retourne RiskVerdict(approved, reason, action).
         """
+
+        # ── 0. Exemption de liquidation ───────────────────────────────────────
+        # Un SELL sur une position existante est toujours autorisé, même si le
+        # kill switch est actif (circuit breaker ou manuel).
+        # Raison : bloquer les SELL en cas de crise empire l'exposition nette.
+        # On vérifie uniquement que qty_held > 0 pour éviter les faux SELL.
+        if signal.side == "sell":
+            qty_held = self.db.get_position(signal.token_id)
+            if qty_held > 0:
+                logger.info(
+                    "[RiskManager] Exemption liquidation: SELL %s qty_held=%.2f"
+                    " (kill_switch=%s)",
+                    signal.token_id[:16], qty_held, self.db.get_kill_switch(),
+                )
+                return RiskVerdict(True, f"Liquidation autorisée: qty_held={qty_held:.2f}", "none")
 
         # ── 1. Kill switch ────────────────────────────────────────────────────
         if self.db.get_kill_switch():
