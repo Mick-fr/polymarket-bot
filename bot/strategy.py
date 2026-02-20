@@ -477,8 +477,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 )
 
             # Sizing base sur prix (nombre de shares pour depenser effective_size)
-            bid_size = round(effective_size / bid_price, 2)
-            ask_size = round(effective_size / ask_price, 2)
+            # Polymarket exige un minimum de 5 shares par ordre
+            POLY_MIN_SHARES = 5.0
+            bid_size = max(POLY_MIN_SHARES, round(effective_size / bid_price, 2))
+            ask_size = max(POLY_MIN_SHARES, round(effective_size / ask_price, 2))
 
             # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
