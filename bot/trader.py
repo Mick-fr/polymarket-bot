@@ -40,6 +40,9 @@ class Trader:
         self.strategy: Optional[BaseStrategy] = None
         self._running = False
         self._consecutive_errors = 0
+        # Order IDs CLOB des SELL de liquidation en attente de match.
+        # Ces ordres ne doivent PAS être annulés par le cancel+replace.
+        self._liquidation_order_ids: set[str] = set()
 
     def start(self):
         """Démarre la boucle de trading."""
@@ -230,6 +233,13 @@ class Trader:
 
                     self.db.update_order_status(local_id, "matched", order_id=clob_id)
 
+                    # Retirer des SELL préservés si c'était un ordre de liquidation
+                    if clob_id in self._liquidation_order_ids:
+                        self._liquidation_order_ids.discard(clob_id)
+                        logger.info(
+                            "[Liquidation] SELL reconcilié (fill détecté): %s", clob_id[:16]
+                        )
+
                     # Mise à jour inventaire
                     if side == "sell":
                         qty_held = self.db.get_position(token_id)
@@ -270,9 +280,12 @@ class Trader:
 
     def _cancel_open_orders(self):
         """
-        Cancel systématique avant chaque cycle de cotation (live uniquement).
-        Étape 1 : réconcilier les fills manqués.
-        Étape 2 : annuler les ordres restants.
+        Cancel sélectif avant chaque cycle de cotation (live uniquement).
+        Étape 1 : réconcilier les fills manqués (met à jour _liquidation_order_ids).
+        Étape 2 : annuler tous les ordres SAUF les SELL de liquidation en attente.
+
+        Les SELL de liquidation (positions existantes, exemptés du kill switch)
+        ne sont jamais annulés — on les laisse dans le carnet jusqu'au match.
         """
         # D'abord réconcilier les éventuels fills entre deux cycles
         self._reconcile_fills()
@@ -283,10 +296,50 @@ class Trader:
                 logger.debug("[Cancel+Replace] Aucun ordre ouvert.")
                 return
 
-            logger.info("[Cancel+Replace] %d ordre(s) ouvert(s) -> annulation...", len(open_orders))
-            self.pm_client.cancel_all_orders()
-            self.db.add_log("INFO", "trader",
-                            f"[Cancel+Replace] {len(open_orders)} ordre(s) annule(s)")
+            # Séparer : ordres à annuler vs SELL de liquidation à préserver
+            to_cancel = []
+            preserved = []
+            for o in open_orders:
+                # L'API CLOB retourne un dict avec 'id' comme clé principale
+                clob_id = (
+                    o.get("id") or o.get("orderID") or o.get("order_id") or ""
+                )
+                if clob_id and clob_id in self._liquidation_order_ids:
+                    preserved.append(clob_id)
+                else:
+                    to_cancel.append(clob_id)
+
+            if preserved:
+                logger.info(
+                    "[Cancel+Replace] %d ordre(s) SELL de liquidation préservé(s): %s",
+                    len(preserved),
+                    [oid[:16] for oid in preserved],
+                )
+
+            if not to_cancel:
+                logger.debug("[Cancel+Replace] Aucun ordre à annuler (tous préservés).")
+                return
+
+            logger.info(
+                "[Cancel+Replace] %d ordre(s) ouvert(s) -> annulation de %d (préservé: %d)...",
+                len(open_orders), len(to_cancel), len(preserved),
+            )
+
+            if len(to_cancel) == len(open_orders):
+                # Aucun SELL à préserver : cancel_all plus rapide (1 requête)
+                self.pm_client.cancel_all_orders()
+            else:
+                # Annulation sélective : on ne cancel que les non-liquidation
+                valid_ids = [oid for oid in to_cancel if oid]
+                if valid_ids:
+                    self.pm_client.client.cancel_orders(valid_ids)
+                    logger.info("[Cancel+Replace] Annulés sélectivement: %s",
+                                [oid[:16] for oid in valid_ids])
+
+            self.db.add_log(
+                "INFO", "trader",
+                f"[Cancel+Replace] {len(to_cancel)} annulé(s), {len(preserved)} préservé(s)",
+            )
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
@@ -457,11 +510,26 @@ class Trader:
                     signal.side.upper(), signal.token_id[:16],
                     signal.price or 0.0, order_id,
                 )
+                # ── Tracking des SELL de liquidation ──────────────────────────
+                # Si c'est un SELL sur position existante, on le préserve du
+                # cancel+replace en l'ajoutant à _liquidation_order_ids.
+                if signal.side == "sell" and order_id:
+                    qty_held = self.db.get_position(signal.token_id)
+                    if qty_held > 0:
+                        self._liquidation_order_ids.add(order_id)
+                        logger.info(
+                            "[Liquidation] SELL préservé du cancel+replace: %s (qty=%.2f)",
+                            order_id[:16], qty_held,
+                        )
                 # Pas de mise à jour d'inventaire : l'ordre n'est pas encore rempli.
-                # Il sera annulé au prochain cycle (cancel+replace).
                 return
 
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
+            # Retirer l'order_id des SELL préservés : il est maintenant matché
+            if order_id and order_id in self._liquidation_order_ids:
+                self._liquidation_order_ids.discard(order_id)
+                logger.info("[Liquidation] SELL matché, retiré du suivi: %s", order_id[:16])
+
             if status in ("filled", "matched"):
                 # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
                 if signal.side == "sell":
