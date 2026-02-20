@@ -9,9 +9,17 @@ Règles implémentées :
   4. Réserve minimale (10% ou 2 USDC)
   5. Perte quotidienne max
   6. Confiance minimale du signal
-  7. [OBI] Fractional sizing : expo nette max 5% du solde total
-  8. [OBI] Inventory skewing : ratio > 0.7 → Ask only, ratio = 1.0 → liquidation
-  9. [OBI] Circuit breaker global : solde < 90% du High Water Mark journalier
+  7. [OBI] Fractional sizing : expo nette max par marché (configurable via BOT_MAX_EXPOSURE_PCT)
+  8. [OBI] Inventory skewing : ratio > 0.6 → Ask only, ratio = 1.0 → liquidation
+  9. [OBI] Circuit breaker global : valeur_portfolio < 90% du High Water Mark journalier
+
+Circuit breaker — Valeur Portfolio :
+  Le drawdown est calculé sur la VALEUR TOTALE DU PORTEFEUILLE :
+    Portfolio = USDC liquides + valeur inventaire (shares × avg_price d'entrée)
+  Cela évite les faux déclenchements lors d'un BUY normal :
+    ex. 36 USDC → achète 10 shares @ 0.35 → USDC = 32.5, inventaire = 3.5 → portfolio = 36.
+  Le circuit breaker ne se déclenche QUE si la valeur totale baisse réellement
+  (perte de valeur des shares, mauvais fills, etc.).
 
 Exemption de liquidation :
   Quand le kill switch est actif (déclenché manuellement ou par circuit breaker),
@@ -59,11 +67,19 @@ class RiskManager:
         # interrompre la simulation à cause des positions initiales corrompues
         self._paper_trading = getattr(config, "paper_trading", False)
 
-    def check(self, signal: Signal, current_balance: float) -> RiskVerdict:
+    def check(self, signal: Signal, current_balance: float,
+              portfolio_value: float = 0.0) -> RiskVerdict:
         """
         Vérifie si un signal est autorisé.
+        Args:
+            signal          : le signal à évaluer
+            current_balance : solde USDC disponible (pour sizing, réserve, suffisance)
+            portfolio_value : valeur totale (USDC + inventaire) pour le circuit breaker.
+                              Si 0.0, utilise current_balance en fallback.
         Retourne RiskVerdict(approved, reason, action).
         """
+        # Valeur utilisée pour le circuit breaker : portfolio total si fourni, sinon USDC seul
+        cb_value = portfolio_value if portfolio_value > 0 else current_balance
 
         # ── 0. Exemption de liquidation ───────────────────────────────────────
         # Un SELL sur une position existante est toujours autorisé, même si le
@@ -85,9 +101,11 @@ class RiskManager:
             return RiskVerdict(False, "Kill switch activé", "none")
 
         # ── 2. Circuit breaker global (High Water Mark) ───────────────────────
-        # Désactivé en paper trading (le HWM peut être corrompu depuis une session précédente)
+        # Basé sur la valeur totale du portfolio (USDC + inventaire), PAS uniquement sur l'USDC.
+        # Évite les faux déclenchements lors d'un BUY normal (argent converti en shares, pas perdu).
+        # Désactivé en paper trading (le HWM peut être corrompu depuis une session précédente).
         if not self._paper_trading:
-            cb = self._check_circuit_breaker(current_balance)
+            cb = self._check_circuit_breaker(cb_value)
             if cb is not None:
                 return cb
 
@@ -160,25 +178,30 @@ class RiskManager:
             return signal.size
         return signal.size * (signal.price or 0.0)
 
-    def _check_circuit_breaker(self, current_balance: float) -> RiskVerdict | None:
+    def _check_circuit_breaker(self, portfolio_value: float) -> RiskVerdict | None:
         """
-        Circuit breaker global : si le solde chute de 10% vs le HWM journalier,
-        déclenche le kill switch et retourne un verdict de refus.
+        Circuit breaker global : si la VALEUR TOTALE DU PORTFOLIO chute de 10% vs le HWM
+        journalier, déclenche le kill switch.
+
+        portfolio_value = USDC liquides + valeur inventaire (shares × avg_price).
+        Ce calcul évite les faux déclenchements lors d'un BUY normal :
+          avant BUY : 36 USDC → après BUY : 32 USDC + 10 shares × 0.40 = 36 USDC (stable).
+        Le CB ne se déclenche que si la valeur totale baisse réellement (perte sur les shares).
         """
         hwm = self.db.get_high_water_mark()
-        if hwm <= 0 or current_balance <= 0:
+        if hwm <= 0 or portfolio_value <= 0:
             return None   # Pas encore de HWM (premier démarrage)
 
-        drawdown = (hwm - current_balance) / hwm
+        drawdown = (hwm - portfolio_value) / hwm
         if drawdown >= CIRCUIT_BREAKER_PCT:
             logger.critical(
-                "[RiskManager] CIRCUIT BREAKER: solde %.2f USDC = -%.1f%% vs HWM %.2f → kill switch",
-                current_balance, drawdown * 100, hwm,
+                "[RiskManager] CIRCUIT BREAKER: portfolio %.2f USDC = -%.1f%% vs HWM %.2f → kill switch",
+                portfolio_value, drawdown * 100, hwm,
             )
             self.db.set_kill_switch(True)
             self.db.add_log(
                 "CRITICAL", "risk",
-                f"Circuit breaker déclenché: solde={current_balance:.2f} HWM={hwm:.2f} "
+                f"Circuit breaker déclenché: portfolio={portfolio_value:.2f} HWM={hwm:.2f} "
                 f"drawdown={drawdown*100:.1f}%",
             )
             return RiskVerdict(

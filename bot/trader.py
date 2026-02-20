@@ -140,14 +140,20 @@ class Trader:
             self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
             self._connect()
 
-        # 3. Solde brut initial (pour le High Water Mark uniquement — avant cancel)
+        # 3. Solde brut initial (avant cancel) — sert à calculer la valeur portfolio
         balance_raw = self._fetch_balance()
-        if balance_raw is not None:
-            self.risk.update_high_water_mark(balance_raw)
-            logger.debug("Solde brut (avant cancel): %.4f USDC | HWM: %.4f USDC",
-                         balance_raw, self.db.get_high_water_mark())
-        else:
+        if balance_raw is None:
             balance_raw = self.db.get_latest_balance() or 0.0
+
+        # 3b. Valeur totale du portfolio (USDC + inventaire au prix d'entrée)
+        # → utilisée pour le High Water Mark et le circuit breaker.
+        # Évite de déclencher le CB lors d'un BUY normal (argent converti en shares, pas perdu).
+        portfolio_value = self._compute_portfolio_value(balance_raw)
+        self.risk.update_high_water_mark(portfolio_value)
+        logger.debug(
+            "Valeur portfolio: %.4f USDC (USDC=%.4f + inventaire) | HWM: %.4f USDC",
+            portfolio_value, balance_raw, self.db.get_high_water_mark(),
+        )
 
         # 4. Cancel+replace : annuler les BUY ouverts AVANT de lire le solde disponible.
         # Cela libère les fonds verrouillés côté CLOB, permettant une lecture exacte.
@@ -159,8 +165,10 @@ class Trader:
         # En cas d'échec du re-fetch, on soustrait le capital estimé verrouillé.
         balance = self._fetch_available_balance(balance_raw)
         self.db.record_balance(balance)
-        logger.info("Solde disponible: %.4f USDC (brut: %.4f USDC) | HWM: %.4f USDC",
-                    balance, balance_raw, self.db.get_high_water_mark())
+        logger.info(
+            "Solde disponible: %.4f USDC | Portfolio total: %.4f USDC | HWM: %.4f USDC",
+            balance, portfolio_value, self.db.get_high_water_mark(),
+        )
 
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
@@ -172,7 +180,7 @@ class Trader:
 
         # 8. Exécution avec gestion de l'inventaire post-fill
         for sig in signals:
-            self._execute_signal(sig, balance)
+            self._execute_signal(sig, balance, portfolio_value=portfolio_value)
 
         # 9. Snapshot de stratégie pour analytics
         try:
@@ -366,6 +374,37 @@ class Trader:
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
+    def _compute_portfolio_value(self, usdc_balance: float) -> float:
+        """
+        Calcule la valeur totale du portefeuille en USDC :
+          Portfolio = USDC liquides + valeur de l'inventaire (shares × avg_price)
+
+        Utilisé exclusivement pour le High Water Mark et le circuit breaker,
+        afin d'éviter les faux déclenchements lors d'un BUY normal.
+        Exemple : solde 32 USDC + 10 shares @ 0.45 = 32 + 4.5 = 36.5 USDC.
+
+        Note : les shares sont valorisées au prix d'entrée (avg_price) et non
+        au prix de marché, pour éviter des fluctuations HWM trop fréquentes.
+        En cas d'erreur DB, retourne usdc_balance (mode dégradé safe).
+        """
+        try:
+            positions = self.db.get_all_positions()
+            inventory_value = sum(
+                float(p.get("quantity", 0)) * float(p.get("avg_price") or 0)
+                for p in positions
+            )
+            total = usdc_balance + inventory_value
+            if inventory_value > 0:
+                logger.debug(
+                    "[Portfolio] USDC=%.4f + inventaire=%.4f → total=%.4f USDC "
+                    "(%d position(s))",
+                    usdc_balance, inventory_value, total, len(positions),
+                )
+            return total
+        except Exception as e:
+            logger.debug("[Portfolio] Erreur calcul valeur portfolio: %s", e)
+            return usdc_balance
+
     def _fetch_balance(self) -> Optional[float]:
         """Récupère le solde USDC brut (total, fonds verrouillés inclus).
 
@@ -508,9 +547,10 @@ class Trader:
             )
             self._execute_signal(sig, balance)
 
-    def _execute_signal(self, signal: Signal, current_balance: float):
+    def _execute_signal(self, signal: Signal, current_balance: float,
+                        portfolio_value: float = 0.0):
         """Vérifie le risque, exécute, met à jour l'inventaire."""
-        verdict = self.risk.check(signal, current_balance)
+        verdict = self.risk.check(signal, current_balance, portfolio_value=portfolio_value)
 
         if not verdict.approved:
             logger.info(
