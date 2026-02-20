@@ -168,11 +168,39 @@ class Database:
             )
             return [dict(row) for row in cur.fetchall()]
 
-    def get_live_orders(self) -> list[dict]:
-        """Retourne les ordres au statut 'live' (posés dans le carnet, pas encore matchés)."""
+    def get_live_orders(self, max_age_seconds: int = 60) -> list[dict]:
+        """Retourne les ordres live récents (posés depuis < max_age_seconds).
+        Les ordres live plus anciens sont considérés comme obsolètes et marqués cancelled."""
+        now = datetime.now(timezone.utc)
         with self._cursor() as cur:
+            # Récupérer tous les ordres live
             cur.execute("SELECT * FROM orders WHERE status = 'live' ORDER BY id DESC")
-            return [dict(row) for row in cur.fetchall()]
+            all_live = [dict(row) for row in cur.fetchall()]
+
+        recent = []
+        stale_ids = []
+        for order in all_live:
+            try:
+                ts = datetime.fromisoformat(order["timestamp"])
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age = (now - ts).total_seconds()
+                if age <= max_age_seconds:
+                    recent.append(order)
+                else:
+                    stale_ids.append(order["id"])
+            except (ValueError, KeyError):
+                stale_ids.append(order["id"])
+
+        # Marquer les vieux ordres live comme cancelled (nettoyage)
+        if stale_ids:
+            with self._cursor() as cur:
+                cur.executemany(
+                    "UPDATE orders SET status = 'cancelled' WHERE id = ?",
+                    [(sid,) for sid in stale_ids],
+                )
+
+        return recent
 
     # ── Solde ────────────────────────────────────────────────────
 

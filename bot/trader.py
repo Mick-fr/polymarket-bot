@@ -62,6 +62,17 @@ class Trader:
 
         self._connect()
 
+        # Reset HWM au démarrage pour éviter un circuit breaker immédiat
+        # (le solde peut avoir changé entre deux sessions via fills ou dépôts)
+        balance = self._fetch_balance()
+        if balance is not None:
+            old_hwm = self.db.get_high_water_mark()
+            self.db.reset_high_water_mark()
+            self.db.update_high_water_mark(balance)
+            self.db.record_balance(balance)
+            logger.info("HWM réinitialisé: %.2f → %.2f USDC (solde actuel)", old_hwm, balance)
+            self.db.add_log("INFO", "trader", f"HWM reset: {old_hwm:.2f} → {balance:.2f}")
+
         # Stratégie OBI avec accès à la DB pour cooldowns et inventaire
         self.strategy = OBIMarketMakingStrategy(
             client=self.pm_client,
