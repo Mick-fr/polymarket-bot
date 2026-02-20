@@ -334,11 +334,13 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
     def __init__(self, client: PolymarketClient, db=None,
                  max_order_size_usdc: float = 5.0,
-                 max_markets: int = 5):
+                 max_markets: int = 5,
+                 paper_trading: bool = True):
         super().__init__(client)
         self.db = db
         self.max_order_size_usdc = max_order_size_usdc  # Plafond absolu par ordre
         self.max_markets = max_markets
+        self.paper_trading = paper_trading
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
         # Suivi prix précédents pour news-breaker {token_id: (price, timestamp)}
@@ -458,15 +460,26 @@ class OBIMarketMakingStrategy(BaseStrategy):
             inv_ratio = net_exposure_usdc / max_exposure if max_exposure > 0 else 0.0
 
             # Décision : quelle(s) face(s) coter ce cycle
-            # - Pas de position → BUY uniquement (rien à vendre)
-            # - Position existante → SELL uniquement (liquider avant de re-buy)
-            # - Position élevée (≥ 70%) → SELL uniquement (réduction d'inventaire)
-            # Note: on n'émet jamais BUY+SELL simultanément sur le même token.
-            # En marché réel, les ordres limit attendent dans le carnet ;
-            # en paper trading le fill est instantané → double côté = irréaliste.
+            #
+            # PAPER TRADING : fill immédiat → jamais BUY+SELL simultané sur le même token.
+            #   - Pas de position → BUY uniquement
+            #   - Position existante → SELL uniquement (liquider avant de re-buy)
+            #
+            # LIVE TRADING : ordres limit dans le carnet, fill asynchrone.
+            #   → On peut coter les deux côtés simultanément (market making réel).
+            #   → BUY si inv_ratio < 0.70 (pas surexposé)
+            #   → SELL si position existante (offrir liquidité côté ask)
+            #   → Inventory skewing via RiskManager (ratio ≥ 0.70 → ask only)
             has_position = qty_held > 0.01
-            emit_sell = has_position                    # SELL si position existante
-            emit_buy  = (not has_position) and (inv_ratio < 0.70)  # BUY uniquement si pas de position
+            if self.paper_trading:
+                # Paper : fill immédiat → mutually exclusive (évite double-comptage)
+                emit_sell = has_position
+                emit_buy  = (not has_position) and (inv_ratio < 0.70)
+            else:
+                # Live : ordres dans le carnet → coter les deux côtés simultanément
+                # (true market making — RiskManager gère l'inventory skewing)
+                emit_buy  = inv_ratio < 0.70
+                emit_sell = has_position
 
             logger.info(
                 "[OBI] '%s' | mid=%.4f | OBI=%.3f (%s) | bid=%.4f ask=%.4f "

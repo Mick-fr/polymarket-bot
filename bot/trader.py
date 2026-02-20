@@ -65,6 +65,7 @@ class Trader:
             db=self.db,
             max_order_size_usdc=self.config.bot.max_order_size,
             max_markets=5,
+            paper_trading=self.config.bot.paper_trading,
         )
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
@@ -136,17 +137,36 @@ class Trader:
             else:
                 logger.debug("Solde CLOB indisponible, DB: %.4f USDC", balance)
 
-        # 4. CTF Inverse Spread Arb (opportuniste, avant les signaux principaux)
+        # 4. Cancel+replace : annuler les ordres ouverts avant de recoter
+        # (seulement en mode réel — en paper trading il n'y a pas d'ordres dans le carnet)
+        if not self.config.bot.paper_trading:
+            self._cancel_open_orders()
+
+        # 5. CTF Inverse Spread Arb (opportuniste, avant les signaux principaux)
         self._check_ctf_arb(balance)
 
-        # 5. Stratégie OBI → signaux (balance passée pour sizing dynamique)
+        # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         signals = self.strategy.analyze(balance=balance)
 
-        # 6. Exécution avec gestion de l'inventaire post-fill
+        # 7. Exécution avec gestion de l'inventaire post-fill
         for sig in signals:
             self._execute_signal(sig, balance)
 
         logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
+
+    def _cancel_open_orders(self):
+        """Annule tous les ordres ouverts (pattern cancel+replace avant recoter)."""
+        try:
+            open_orders = self.pm_client.get_open_orders()
+            if not open_orders:
+                logger.debug("[Cancel+Replace] Aucun ordre ouvert à annuler.")
+                return
+            logger.info("[Cancel+Replace] %d ordre(s) ouvert(s) → annulation...", len(open_orders))
+            self.pm_client.cancel_all_orders()
+            self.db.add_log("INFO", "trader",
+                            f"[Cancel+Replace] {len(open_orders)} ordre(s) annulé(s)")
+        except Exception as e:
+            logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
     def _fetch_balance(self) -> Optional[float]:
         """Récupère le solde USDC — réel via CLOB ou fictif en paper trading.
@@ -276,7 +296,30 @@ class Trader:
                 )
 
             order_id = resp.get("orderID") or resp.get("id") or str(resp)
-            status = resp.get("status", "filled")
+
+            # ── Normalisation du statut CLOB ───────────────────────────────────
+            # Paper trading : fill simulé immédiat → "filled"
+            # Réel (limite GTC) : Polymarket retourne "live" (posé dans le carnet),
+            #                     "matched" (partiellement/totalement exécuté),
+            #                     "delayed" (file d'attente matching engine).
+            # On ne met à jour l'inventaire que sur fill confirmé (matched).
+            # Un ordre "live" reste ouvert → sera annulé au prochain cancel+replace.
+            raw_status = resp.get("status", "")
+            if self.config.bot.paper_trading:
+                status = "filled"       # Simulation : fill instantané
+            elif raw_status in ("matched", "filled"):
+                status = "matched"      # Fill confirmé côté CLOB
+            elif raw_status == "live":
+                status = "live"         # Ordre posé, pas encore matché
+            elif raw_status == "delayed":
+                status = "delayed"      # En file, traiter comme live
+            else:
+                # Statut inconnu ou vide → on suppose "live" (conservateur)
+                status = "live"
+                logger.warning(
+                    "Statut ordre inconnu '%s' pour %s → traité comme 'live'",
+                    raw_status, order_id,
+                )
 
             self.db.update_order_status(local_id, status, order_id=order_id)
             self.db.add_log(
@@ -285,7 +328,17 @@ class Trader:
                 f"@ {signal.price or 'market'} → {order_id} [{status}]",
             )
 
-            # Mise à jour de l'inventaire après fill confirmé
+            if status == "live":
+                logger.info(
+                    "Ordre posé dans le carnet (live): %s %s @ %.4f → %s",
+                    signal.side.upper(), signal.token_id[:16],
+                    signal.price or 0.0, order_id,
+                )
+                # Pas de mise à jour d'inventaire : l'ordre n'est pas encore rempli.
+                # Il sera annulé au prochain cycle (cancel+replace).
+                return
+
+            # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
             if status in ("filled", "matched"):
                 # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
                 if signal.side == "sell":
