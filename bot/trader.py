@@ -168,6 +168,33 @@ class Trader:
         for sig in signals:
             self._execute_signal(sig, balance)
 
+        # 8. Snapshot de stratégie pour analytics
+        try:
+            from bot.strategy import (OBI_BULLISH_THRESHOLD, OBI_SKEW_FACTOR,
+                                       MIN_SPREAD, ORDER_SIZE_PCT)
+            positions = self.db.get_all_positions()
+            net_exposure = sum(p.get("quantity", 0) * (p.get("avg_price", 0) or 0)
+                               for p in positions)
+            # Compter ordres du cycle : submitted/matched/filled = exécutés, rejected = rejetés
+            recent = self.db.get_recent_orders(limit=len(signals) * 2) if signals else []
+            cycle_executed = sum(1 for o in recent if o.get("status") in ("filled", "matched", "live", "submitted"))
+            cycle_rejected = sum(1 for o in recent if o.get("status") == "rejected")
+            self.db.record_strategy_snapshot(
+                obi_threshold=OBI_BULLISH_THRESHOLD,
+                skew_factor=OBI_SKEW_FACTOR,
+                min_spread=MIN_SPREAD,
+                order_size_pct=ORDER_SIZE_PCT,
+                balance_usdc=balance,
+                total_positions=len(positions),
+                net_exposure_usdc=net_exposure,
+                markets_scanned=len(eligible_markets),
+                signals_generated=len(signals),
+                signals_executed=len(signals),
+                signals_rejected=0,
+            )
+        except Exception as se:
+            logger.debug("[Analytics] Erreur snapshot: %s", se)
+
         logger.debug("Cycle OBI terminé. Prochain dans %ds.", OBI_POLL_INTERVAL)
 
     def _reconcile_fills(self):
@@ -465,6 +492,35 @@ class Trader:
                     balance_delta = -cost if signal.side == "buy" else cost
                     current = self.db.get_latest_balance() or self.config.bot.paper_balance
                     self.db.record_balance(max(0.0, current + balance_delta))
+
+                # ── Analytics : ouvrir/fermer un trade round-trip ──
+                try:
+                    if signal.side == "buy":
+                        self.db.open_trade(
+                            open_order_id=local_id,
+                            market_id=signal.market_id,
+                            token_id=signal.token_id,
+                            question=signal.market_question,
+                            open_price=signal.price or 0.5,
+                            open_size=actual_size,
+                            obi_at_open=getattr(signal, "obi_value", None),
+                            regime_at_open=getattr(signal, "obi_regime", None),
+                            spread_at_open=getattr(signal, "spread_at_signal", None),
+                            volume_24h_at_open=getattr(signal, "volume_24h", None),
+                            mid_price_at_open=getattr(signal, "mid_price", None),
+                        )
+                    elif signal.side == "sell":
+                        trade_id = self.db.close_trade(
+                            token_id=signal.token_id,
+                            close_order_id=local_id,
+                            close_price=signal.price or 0.5,
+                            close_size=actual_size,
+                        )
+                        if trade_id:
+                            logger.info("[Analytics] Trade #%d ferme (SELL @ %.4f)",
+                                        trade_id, signal.price or 0.5)
+                except Exception as te:
+                    logger.debug("[Analytics] Erreur enregistrement trade: %s", te)
 
         except Exception as e:
             logger.error("Erreur exécution ordre: %s", e)

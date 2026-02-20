@@ -4,6 +4,7 @@ Gère le stockage des ordres, logs et état du bot.
 Thread-safe grâce à check_same_thread=False et un design sans état partagé.
 """
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -101,6 +102,58 @@ class Database:
                 token_id    TEXT    PRIMARY KEY,
                 until_ts    REAL    NOT NULL,
                 reason      TEXT
+            );
+
+            -- Round-trips BUY→SELL avec PnL et contexte marché
+            CREATE TABLE IF NOT EXISTS trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                open_order_id   INTEGER NOT NULL,
+                close_order_id  INTEGER,
+                market_id       TEXT NOT NULL,
+                token_id        TEXT NOT NULL,
+                question        TEXT,
+                open_price      REAL NOT NULL,
+                open_size       REAL NOT NULL,
+                open_timestamp  TEXT NOT NULL,
+                close_price     REAL,
+                close_size      REAL,
+                close_timestamp TEXT,
+                pnl_usdc        REAL,
+                pnl_pct         REAL,
+                hold_duration_s REAL,
+                obi_at_open     REAL,
+                regime_at_open  TEXT,
+                spread_at_open  REAL,
+                volume_24h_at_open REAL,
+                mid_price_at_open  REAL,
+                status          TEXT NOT NULL DEFAULT 'open'
+            );
+            CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+            CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_id);
+            CREATE INDEX IF NOT EXISTS idx_trades_open_ts ON trades(open_timestamp);
+
+            -- Snapshots par cycle de stratégie (pour analyse des paramètres)
+            CREATE TABLE IF NOT EXISTS strategy_snapshots (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp         TEXT NOT NULL,
+                obi_threshold     REAL NOT NULL,
+                skew_factor       REAL NOT NULL,
+                min_spread        REAL NOT NULL,
+                order_size_pct    REAL NOT NULL,
+                balance_usdc      REAL NOT NULL,
+                total_positions   INTEGER NOT NULL,
+                net_exposure_usdc REAL NOT NULL,
+                markets_scanned   INTEGER NOT NULL,
+                signals_generated INTEGER NOT NULL,
+                signals_executed  INTEGER NOT NULL,
+                signals_rejected  INTEGER NOT NULL
+            );
+
+            -- Cache des calculs analytics (évite les requêtes lourdes)
+            CREATE TABLE IF NOT EXISTS analytics_cache (
+                key         TEXT PRIMARY KEY,
+                value_json  TEXT NOT NULL,
+                computed_at TEXT NOT NULL
             );
         """)
         conn.commit()
@@ -392,3 +445,264 @@ class Database:
                     "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
                 )
             return [dict(row) for row in cur.fetchall()]
+
+    # ── Trades (round-trips PnL) ──────────────────────────────────
+
+    def open_trade(
+        self,
+        open_order_id: int,
+        market_id: str,
+        token_id: str,
+        question: str,
+        open_price: float,
+        open_size: float,
+        obi_at_open: float = None,
+        regime_at_open: str = None,
+        spread_at_open: float = None,
+        volume_24h_at_open: float = None,
+        mid_price_at_open: float = None,
+    ) -> int:
+        """Crée un trade ouvert après un fill BUY. Retourne l'ID du trade."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO trades
+                   (open_order_id, market_id, token_id, question,
+                    open_price, open_size, open_timestamp,
+                    obi_at_open, regime_at_open, spread_at_open,
+                    volume_24h_at_open, mid_price_at_open, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                (open_order_id, market_id, token_id, question,
+                 open_price, open_size, now,
+                 obi_at_open, regime_at_open, spread_at_open,
+                 volume_24h_at_open, mid_price_at_open),
+            )
+            return cur.lastrowid
+
+    def close_trade(
+        self,
+        token_id: str,
+        close_order_id: int,
+        close_price: float,
+        close_size: float,
+    ) -> Optional[int]:
+        """Ferme le trade ouvert le plus ancien (FIFO) pour ce token.
+        Calcule le PnL et la durée. Retourne l'ID du trade fermé ou None."""
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        with self._cursor() as cur:
+            # FIFO : prendre le trade ouvert le plus ancien pour ce token
+            cur.execute(
+                """SELECT id, open_price, open_size, open_timestamp
+                   FROM trades
+                   WHERE token_id = ? AND status = 'open'
+                   ORDER BY id ASC LIMIT 1""",
+                (token_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            trade_id = row["id"]
+            open_price = row["open_price"]
+            open_size = row["open_size"]
+
+            # Calcul du PnL
+            actual_close_size = min(close_size, open_size)
+            pnl_usdc = (close_price - open_price) * actual_close_size
+            cost_basis = open_price * open_size
+            pnl_pct = (pnl_usdc / cost_basis * 100) if cost_basis > 0 else 0.0
+
+            # Durée du trade
+            try:
+                open_ts = datetime.fromisoformat(row["open_timestamp"])
+                if open_ts.tzinfo is None:
+                    open_ts = open_ts.replace(tzinfo=timezone.utc)
+                hold_duration = (now - open_ts).total_seconds()
+            except (ValueError, TypeError):
+                hold_duration = 0.0
+
+            cur.execute(
+                """UPDATE trades SET
+                       close_order_id = ?, close_price = ?, close_size = ?,
+                       close_timestamp = ?, pnl_usdc = ?, pnl_pct = ?,
+                       hold_duration_s = ?, status = 'closed'
+                   WHERE id = ?""",
+                (close_order_id, close_price, actual_close_size,
+                 now_iso, pnl_usdc, pnl_pct, hold_duration, trade_id),
+            )
+            return trade_id
+
+    def get_open_trades(self, token_id: str = None) -> list[dict]:
+        """Retourne les trades ouverts (optionnel: filtrer par token)."""
+        with self._cursor() as cur:
+            if token_id:
+                cur.execute(
+                    "SELECT * FROM trades WHERE status = 'open' AND token_id = ? ORDER BY id ASC",
+                    (token_id,),
+                )
+            else:
+                cur.execute("SELECT * FROM trades WHERE status = 'open' ORDER BY id ASC")
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_closed_trades(self, limit: int = 200, market_id: str = None) -> list[dict]:
+        """Retourne les trades fermés, optionnel: filtrer par marché."""
+        with self._cursor() as cur:
+            if market_id:
+                cur.execute(
+                    "SELECT * FROM trades WHERE status = 'closed' AND market_id = ? ORDER BY id DESC LIMIT ?",
+                    (market_id, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM trades WHERE status = 'closed' ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_all_trades(self, limit: int = 500) -> list[dict]:
+        """Retourne tous les trades (ouverts et fermés)."""
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+            return [dict(row) for row in cur.fetchall()]
+
+    # ── Strategy Snapshots ─────────────────────────────────────────
+
+    def record_strategy_snapshot(
+        self,
+        obi_threshold: float,
+        skew_factor: float,
+        min_spread: float,
+        order_size_pct: float,
+        balance_usdc: float,
+        total_positions: int,
+        net_exposure_usdc: float,
+        markets_scanned: int,
+        signals_generated: int,
+        signals_executed: int,
+        signals_rejected: int,
+    ):
+        """Enregistre un snapshot de l'état du cycle pour analyse post-hoc."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO strategy_snapshots
+                   (timestamp, obi_threshold, skew_factor, min_spread, order_size_pct,
+                    balance_usdc, total_positions, net_exposure_usdc,
+                    markets_scanned, signals_generated, signals_executed, signals_rejected)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now, obi_threshold, skew_factor, min_spread, order_size_pct,
+                 balance_usdc, total_positions, net_exposure_usdc,
+                 markets_scanned, signals_generated, signals_executed, signals_rejected),
+            )
+
+    # ── Analytics Cache ────────────────────────────────────────────
+
+    def get_analytics_cache(self, key: str, max_age_seconds: int = 300) -> Optional[dict]:
+        """Retourne le cache si < max_age_seconds, sinon None."""
+        with self._cursor() as cur:
+            cur.execute("SELECT value_json, computed_at FROM analytics_cache WHERE key = ?", (key,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            try:
+                computed = datetime.fromisoformat(row["computed_at"])
+                if computed.tzinfo is None:
+                    computed = computed.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - computed).total_seconds()
+                if age > max_age_seconds:
+                    return None
+                return json.loads(row["value_json"])
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return None
+
+    def set_analytics_cache(self, key: str, value: dict):
+        """Stocke un résultat d'analytics en cache."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO analytics_cache (key, value_json, computed_at) VALUES (?, ?, ?)",
+                (key, json.dumps(value, default=str), now),
+            )
+
+    # ── Agrégations Analytics ──────────────────────────────────────
+
+    def get_pnl_summary(self) -> dict:
+        """Retourne les métriques PnL globales des trades fermés."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*)                                 AS total_trades,
+                    COALESCE(SUM(pnl_usdc), 0)               AS total_pnl,
+                    SUM(CASE WHEN pnl_usdc > 0 THEN 1 ELSE 0 END) AS win_count,
+                    SUM(CASE WHEN pnl_usdc <= 0 THEN 1 ELSE 0 END) AS loss_count,
+                    COALESCE(AVG(CASE WHEN pnl_usdc > 0 THEN pnl_usdc END), 0) AS avg_win,
+                    COALESCE(AVG(CASE WHEN pnl_usdc <= 0 THEN pnl_usdc END), 0) AS avg_loss,
+                    COALESCE(MAX(pnl_usdc), 0)               AS best_trade,
+                    COALESCE(MIN(pnl_usdc), 0)               AS worst_trade,
+                    COALESCE(AVG(hold_duration_s), 0)         AS avg_hold_duration,
+                    COALESCE(SUM(CASE WHEN pnl_usdc > 0 THEN pnl_usdc ELSE 0 END), 0) AS gross_wins,
+                    COALESCE(SUM(CASE WHEN pnl_usdc < 0 THEN ABS(pnl_usdc) ELSE 0 END), 0) AS gross_losses
+                FROM trades WHERE status = 'closed'
+            """)
+            row = dict(cur.fetchone())
+            total = row["total_trades"]
+            row["win_rate"] = (row["win_count"] / total * 100) if total > 0 else 0.0
+            row["profit_factor"] = (
+                row["gross_wins"] / row["gross_losses"]
+                if row["gross_losses"] > 0 else float("inf")
+            )
+            # Nombre de trades ouverts
+            cur.execute("SELECT COUNT(*) AS cnt FROM trades WHERE status = 'open'")
+            row["open_trades"] = cur.fetchone()["cnt"]
+            return row
+
+    def get_pnl_by_market(self, limit: int = 20) -> list[dict]:
+        """PnL agrégé par marché, trié par PnL total DESC."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT
+                    market_id, question,
+                    COUNT(*) AS trades,
+                    COALESCE(SUM(pnl_usdc), 0) AS total_pnl,
+                    SUM(CASE WHEN pnl_usdc > 0 THEN 1 ELSE 0 END) AS wins,
+                    ROUND(AVG(pnl_usdc), 4) AS avg_pnl,
+                    ROUND(AVG(hold_duration_s), 0) AS avg_hold
+                FROM trades WHERE status = 'closed'
+                GROUP BY market_id
+                ORDER BY total_pnl DESC
+                LIMIT ?
+            """, (limit,))
+            rows = [dict(r) for r in cur.fetchall()]
+            for r in rows:
+                r["win_rate"] = (r["wins"] / r["trades"] * 100) if r["trades"] > 0 else 0.0
+            return rows
+
+    def get_pnl_by_regime(self) -> list[dict]:
+        """PnL agrégé par régime OBI (bullish/bearish/neutral)."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COALESCE(regime_at_open, 'unknown') AS regime,
+                    COUNT(*) AS trades,
+                    COALESCE(SUM(pnl_usdc), 0) AS total_pnl,
+                    SUM(CASE WHEN pnl_usdc > 0 THEN 1 ELSE 0 END) AS wins,
+                    ROUND(AVG(pnl_usdc), 4) AS avg_pnl
+                FROM trades WHERE status = 'closed'
+                GROUP BY regime_at_open
+            """)
+            rows = [dict(r) for r in cur.fetchall()]
+            for r in rows:
+                r["win_rate"] = (r["wins"] / r["trades"] * 100) if r["trades"] > 0 else 0.0
+            return rows
+
+    def get_balance_timeseries(self, limit: int = 500) -> list[dict]:
+        """Historique des soldes pour la equity curve (ordre chronologique)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT timestamp, balance FROM balance_history ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            rows.reverse()  # Ordre chronologique
+            return rows

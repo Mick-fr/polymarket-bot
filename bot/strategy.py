@@ -71,6 +71,12 @@ class Signal:
     size:            float           # shares (limit) ou USDC (market)
     confidence:      float           # 0.0 → 1.0
     reason:          str
+    # Contexte marché au moment du signal (pour analytics post-hoc)
+    obi_value:       float = 0.0
+    obi_regime:      str   = "neutral"
+    spread_at_signal: float = 0.0
+    volume_24h:      float = 0.0
+    mid_price:       float = 0.0
 
 
 @dataclass
@@ -534,6 +540,11 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     size=bid_size,
                     confidence=min(abs(obi_result.obi) + 0.5, 1.0),
                     reason=f"OBI={obi_result.obi:.3f} regime={obi_result.regime}",
+                    obi_value=obi_result.obi,
+                    obi_regime=obi_result.regime,
+                    spread_at_signal=market.spread,
+                    volume_24h=market.volume_24h,
+                    mid_price=mid,
                 ))
             if emit_sell:
                 signals.append(Signal(
@@ -546,6 +557,11 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     size=min(ask_size, qty_held),  # ne jamais vendre plus que detenu
                     confidence=min(abs(obi_result.obi) + 0.5, 1.0),
                     reason=f"OBI={obi_result.obi:.3f} regime={obi_result.regime}",
+                    obi_value=obi_result.obi,
+                    obi_regime=obi_result.regime,
+                    spread_at_signal=market.spread,
+                    volume_24h=market.volume_24h,
+                    mid_price=mid,
                 ))
             traded += 1
 

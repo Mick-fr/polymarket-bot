@@ -5,14 +5,17 @@ Routes :
   /           → Dashboard principal (protégé)
   /login      → Page de connexion
   /logout     → Déconnexion
+  /analytics  → Page d'analytique des trades (protégé)
   /health     → Health check (public, pour Uptime Kuma)
   /api/*      → Fragments htmx (protégés)
+  /api/analytics/* → Endpoints JSON analytics (protégés)
 """
 
 import logging
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
+from bot.analytics import TradeAnalytics, ParameterRecommender
 from bot.config import AppConfig
 from dashboard.auth import check_password, login_required
 from db.database import Database
@@ -320,5 +323,120 @@ def create_app(config: AppConfig, db: Database) -> Flask:
 
         return html
 
-    logger.info("Dashboard Flask initialisé avec toutes les routes.")
+    # ── Analytics ───────────────────────────────────────────────
+
+    analytics = TradeAnalytics(db)
+    recommender = ParameterRecommender(db, analytics)
+
+    @app.route("/analytics")
+    @login_required
+    def analytics_page():
+        """Page d'analytique des trades."""
+        return render_template("analytics.html")
+
+    @app.route("/api/analytics/summary")
+    @login_required
+    def api_analytics_summary():
+        """KPIs globaux de performance."""
+        cached = db.get_analytics_cache("summary", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.compute_performance_summary()
+        db.set_analytics_cache("summary", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/equity-curve")
+    @login_required
+    def api_analytics_equity_curve():
+        """Points pour le graphique equity curve."""
+        cached = db.get_analytics_cache("equity_curve", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.equity_curve()
+        db.set_analytics_cache("equity_curve", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/cumulative-pnl")
+    @login_required
+    def api_analytics_cumulative_pnl():
+        """PnL cumule trade par trade."""
+        cached = db.get_analytics_cache("cumulative_pnl", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.cumulative_pnl_curve()
+        db.set_analytics_cache("cumulative_pnl", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/daily-pnl")
+    @login_required
+    def api_analytics_daily_pnl():
+        """PnL par jour (bar chart)."""
+        cached = db.get_analytics_cache("daily_pnl", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.daily_pnl_bars()
+        db.set_analytics_cache("daily_pnl", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/by-market")
+    @login_required
+    def api_analytics_by_market():
+        """PnL agrege par marche."""
+        cached = db.get_analytics_cache("by_market", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.performance_by_market()
+        db.set_analytics_cache("by_market", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/by-regime")
+    @login_required
+    def api_analytics_by_regime():
+        """PnL par regime OBI."""
+        cached = db.get_analytics_cache("by_regime", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.performance_by_regime()
+        db.set_analytics_cache("by_regime", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/by-obi-bucket")
+    @login_required
+    def api_analytics_by_obi_bucket():
+        """PnL par tranche OBI."""
+        cached = db.get_analytics_cache("by_obi_bucket", max_age_seconds=300)
+        if cached:
+            return jsonify(cached)
+        data = analytics.performance_by_obi_bucket()
+        db.set_analytics_cache("by_obi_bucket", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/recommendations")
+    @login_required
+    def api_analytics_recommendations():
+        """Recommandations d'ajustement des parametres."""
+        cached = db.get_analytics_cache("recommendations", max_age_seconds=600)
+        if cached:
+            return jsonify(cached)
+        data = recommender.generate_recommendations()
+        db.set_analytics_cache("recommendations", data)
+        return jsonify(data)
+
+    @app.route("/api/analytics/trades")
+    @login_required
+    def api_analytics_trades():
+        """Derniers trades fermes (round-trips)."""
+        limit = request.args.get("limit", 50, type=int)
+        data = db.get_closed_trades(limit=limit)
+        return jsonify(data)
+
+    @app.route("/api/analytics/backfill", methods=["POST"])
+    @login_required
+    def api_analytics_backfill():
+        """Lance le backfill des trades a partir des ordres historiques."""
+        count = analytics.backfill_trades_from_orders()
+        db.add_log("INFO", "analytics", f"Backfill: {count} trades crees")
+        return jsonify({"trades_created": count})
+
+    logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics).")
     return app
