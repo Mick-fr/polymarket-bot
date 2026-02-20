@@ -427,19 +427,39 @@ class Trader:
 
     def _call_with_timeout(self, fn, timeout: float = 15.0, label: str = ""):
         """
-        Exécute fn() dans un thread séparé avec un timeout strict.
-        Lève concurrent.futures.TimeoutError si fn() ne répond pas dans `timeout` secondes.
-        Protège contre les appels CLOB bloquants (TCP hang, absence de timeout HTTP).
+        Exécute fn() dans un Thread daemon avec un timeout strict.
+        Si fn() ne répond pas dans `timeout` secondes, le thread est abandonné
+        (daemon=True → ne bloque pas l'arrêt du processus) et une RuntimeError est levée.
+
+        NE PAS utiliser ThreadPoolExecutor : son __exit__ attend la fin du thread
+        même après le timeout du future → blocage identique au problème initial.
         """
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(fn)
+        import threading
+        result = []
+        exc_holder = []
+
+        def _run():
             try:
-                return future.result(timeout=timeout)
-            except FuturesTimeout:
-                logger.warning("[Timeout] Appel CLOB %s dépassé (%.0fs) → abandon",
-                               label or fn.__name__, timeout)
-                raise
+                result.append(fn())
+            except Exception as e:
+                exc_holder.append(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            # Thread toujours bloqué → timeout dépassé
+            logger.warning("[Timeout] Appel CLOB '%s' dépassé (%.0fs) → abandon",
+                           label or getattr(fn, "__name__", str(fn)), timeout)
+            raise RuntimeError(f"Timeout CLOB ({timeout}s): {label}")
+
+        if exc_holder:
+            raise exc_holder[0]
+
+        if result:
+            return result[0]
+        return None
 
     def _fetch_balance(self) -> Optional[float]:
         """Récupère le solde USDC brut (total, fonds verrouillés inclus).

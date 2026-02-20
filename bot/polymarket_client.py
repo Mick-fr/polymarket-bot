@@ -183,12 +183,27 @@ class PolymarketClient:
 
     def is_alive(self, timeout: float = 10.0) -> bool:
         """Vérifie que l'API répond dans un délai donné (défaut 10s).
-        Utilise un thread avec timeout pour éviter tout blocage indéfini."""
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self.get_server_time)
-                future.result(timeout=timeout)
-            return True
-        except (FuturesTimeout, Exception):
+
+        Utilise un Thread daemon : si get_server_time() bloque (TCP hang),
+        le thread est abandonné après `timeout` secondes et le bot continue.
+        Attention : ThreadPoolExecutor.__exit__ attend la fin du thread même
+        après le timeout → bloque aussi. On utilise Thread.join(timeout) à la place.
+        """
+        import threading
+        result = []
+
+        def _check():
+            try:
+                self.get_server_time()
+                result.append(True)
+            except Exception:
+                result.append(False)
+
+        t = threading.Thread(target=_check, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        # Si le thread n'a pas fini dans le délai → timeout (API bloquée)
+        if t.is_alive():
+            logger.warning("[is_alive] get_server_time timeout (%.0fs) → API considérée morte", timeout)
             return False
+        return bool(result and result[0])
