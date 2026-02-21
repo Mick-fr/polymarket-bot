@@ -5,6 +5,7 @@ authentification, lecture de marchés, passage et annulation d'ordres.
 """
 
 import logging
+import time as _time
 from typing import Optional
 
 from py_clob_client.client import ClobClient
@@ -24,6 +25,28 @@ logger = logging.getLogger("bot.polymarket")
 # Mapping lisible pour les côtés d'ordre
 SIDE_MAP = {"buy": BUY, "sell": SELL}
 
+# FIXED: Adresses on-chain Polygon pour vérification isApprovedForAll via web3.
+# CTF Exchange : contrat ERC-1155 qui tient les shares conditionnels.
+# NegRisk Exchange : contrat alternatif pour les marchés neg-risk groupés.
+# Source : https://docs.polymarket.com/#contracts
+_CTF_EXCHANGE_ADDRESS     = "0x6319fb691efe847d96b3f8b4b872d3a39b336309"
+_NEG_RISK_EXCHANGE_ADDRESS = "0x4e2b6ffbed6a0d4f3bd96ab98ff4b6b24dd1b4df"
+_POLYGON_RPC               = "https://polygon-rpc.com"
+
+# ABI minimal ERC-1155 — uniquement isApprovedForAll (lecture seule, sans gas).
+_ERC1155_ABI_MINIMAL = [
+    {
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "operator", "type": "address"},
+        ],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
 
 class PolymarketClient:
     """Client authentifié pour le CLOB Polymarket."""
@@ -42,10 +65,10 @@ class PolymarketClient:
         self._neg_risk_confirmed: set[str] = set()
         # Tokens pour lesquels update_balance_allowance a été appelé mais allowance=0
         # persiste (probablement un contrat non standard ou délai API très long).
-        # On ne re-tente pas indéfiniment : après _MAX_ALLOWANCE_RETRIES tentatives,
+        # On ne re-tente pas indéfiniment : après _ALLOWANCE_MAX_RETRIES tentatives,
         # le token est mis en quarantaine → SELL bloqué comme s'il était neg-risk.
         self._allowance_retry_count: dict[str, int] = {}
-        self._ALLOWANCE_MAX_RETRIES = 3  # Au-delà → traiter comme neg-risk
+        self._ALLOWANCE_MAX_RETRIES = 2  # FIXED: réduit 3→2 (quarantine plus rapide)
         # Tokens pour lesquels update_balance_allowance vient d'être envoyé.
         # La propagation blockchain est asynchrone (typiquement 5-30 secondes).
         # Pendant ce délai, tout SELL doit être différé (retour False) pour éviter
@@ -56,6 +79,70 @@ class PolymarketClient:
         # Durée minimale d'attente après update_balance_allowance avant de retenter
         # un SELL. 40 secondes = marge confortable pour la propagation blockchain.
         self._ALLOWANCE_PROPAGATION_DELAY_S: float = 40.0
+        # FIXED: web3 instance lazy-init pour check on-chain isApprovedForAll.
+        # Initialisé à la première utilisation pour ne pas bloquer le démarrage
+        # si polygon-rpc.com est lent.
+        self._w3 = None
+        self._ctf_contract = None
+
+    def _get_w3(self):
+        """Retourne l'instance Web3 (lazy-init, singleton par session).
+
+        On se connecte à Polygon via RPC public. L'appel est synchrone et
+        bloquant mais ne se fait qu'une fois par session (ou à la première
+        tentative de vérif on-chain). Timeout implicite via les paramètres
+        de connexion de la bibliothèque web3.py.
+        """
+        if self._w3 is None:
+            try:
+                from web3 import Web3
+                w3 = Web3(Web3.HTTPProvider(
+                    _POLYGON_RPC,
+                    request_kwargs={"timeout": 10},
+                ))
+                if w3.is_connected():
+                    self._w3 = w3
+                    logger.debug("[Allowance/web3] Connecté à Polygon RPC.")
+                else:
+                    logger.warning("[Allowance/web3] Polygon RPC non disponible.")
+            except ImportError:
+                logger.warning("[Allowance/web3] web3 non installé — vérif on-chain désactivée.")
+            except Exception as e:
+                logger.warning("[Allowance/web3] Erreur init web3: %s", e)
+        return self._w3
+
+    def _check_onchain_approval(self, owner_address: str, is_neg_risk: bool = False) -> Optional[bool]:
+        """Vérifie on-chain (Polygon) si le contrat Exchange a l'approbation ERC-1155.
+
+        Appelle isApprovedForAll(owner, operator) sur le CTF Exchange ou le
+        NegRisk Exchange selon le type de token.
+
+        Retourne True si approuvé, False si non approuvé, None si erreur/indisponible.
+        Cette méthode ne lève jamais d'exception — elle loggue et retourne None.
+        """
+        w3 = self._get_w3()
+        if w3 is None:
+            return None
+        try:
+            from web3 import Web3
+            # FIXED: vérification isApprovedForAll on-chain (lecture seule, sans gas)
+            spender = _NEG_RISK_EXCHANGE_ADDRESS if is_neg_risk else _CTF_EXCHANGE_ADDRESS
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(_CTF_EXCHANGE_ADDRESS),
+                abi=_ERC1155_ABI_MINIMAL,
+            )
+            approved = contract.functions.isApprovedForAll(
+                Web3.to_checksum_address(owner_address),
+                Web3.to_checksum_address(spender),
+            ).call()
+            logger.debug(
+                "[Allowance/web3] isApprovedForAll(%s, %s) = %s",
+                owner_address[:10], spender[:10], approved,
+            )
+            return bool(approved)
+        except Exception as e:
+            logger.debug("[Allowance/web3] Erreur isApprovedForAll: %s", e)
+            return None
 
     def connect(self):
         """Initialise le client et dérive les credentials API (L1 → L2)."""
@@ -108,15 +195,43 @@ class PolymarketClient:
             logger.debug("Midpoint indisponible pour %s: %s", token_id, e)
             return None
 
-    def get_midpoint_robust(self, token_id: str) -> Optional[float]:
-        """Retourne le mid de marché via deux mécanismes en cascade.
+    def get_last_trade_price(self, token_id: str) -> Optional[float]:
+        """Retourne le prix du dernier trade via /last-trade-price.
 
-        1. /midpoint (un seul appel HTTP, direct et rapide).
-           → Retourne None quand le book est vide (marché inactif, 404).
-        2. Fallback : (best_bid + best_ask) / 2 via get_price(BUY) + get_price(SELL).
-           get_price() interroge le meilleur niveau du book — parfois disponible
-           même quand /midpoint répond None (ex: un seul côté du book peuplé).
-        3. Si les deux échouent → None (l'appelant utilisera le last_mid DB).
+        Utile comme dernier recours quand /midpoint ET get_price() retournent
+        None (book vide mais marché pas encore résolu — ex: faible activité).
+        Retourne un float dans [0.01, 0.99] ou None.
+        """
+        try:
+            # py-clob-client expose get_last_trade_price sur certaines versions
+            result = self.client.get_last_trade_price(token_id)
+            if result is None:
+                return None
+            # Certaines versions retournent un dict {"price": "0.53"}, d'autres un float
+            if isinstance(result, dict):
+                price_raw = result.get("price") or result.get("Price")
+            else:
+                price_raw = result
+            if price_raw is None:
+                return None
+            price_f = float(price_raw)
+            if 0.01 <= price_f <= 0.99:
+                return price_f
+            return None
+        except Exception as e:
+            logger.debug("[MidRobust] %s: /last-trade-price erreur: %s", token_id[:16], e)
+            return None
+
+    def get_midpoint_robust(self, token_id: str) -> Optional[float]:
+        """Retourne le mid de marché via trois mécanismes en cascade.
+
+        1. /midpoint — endpoint dédié, le plus direct.
+           → None si book vide (marché inactif).
+        2. (best_bid + best_ask) / 2 via get_price(BUY/SELL).
+           → Couvre les books partiels (/midpoint vide mais un côté dispo).
+        3. FIXED: /last-trade-price — dernier prix traité, stable même sur
+           marchés inactifs. Loggue "inactive" si seul ce mécanisme réussit.
+        4. None → l'appelant conserve le current_mid DB stale (TTL 5min).
 
         Retourne un float dans [0.01, 0.99] ou None.
         """
@@ -139,24 +254,33 @@ class PolymarketClient:
                 if 0.01 <= bid_f <= 0.99 and 0.01 <= ask_f <= 0.99 and bid_f < ask_f:
                     mid_f = (bid_f + ask_f) / 2.0
                     logger.debug(
-                        "[MidRobust] %s: /midpoint vide → fallback bid=%.4f ask=%.4f mid=%.4f",
-                        token_id[:16], bid_f, ask_f, mid_f,
+                        "[MidRobust] %s: /midpoint vide → bid/ask mid=%.4f",
+                        token_id[:16], mid_f,
                     )
                     return mid_f
-            # Un seul côté disponible : utiliser ce qu'on a
+            # Un seul côté disponible
             val = bid or ask
             if val is not None:
                 val_f = float(val)
                 if 0.01 <= val_f <= 0.99:
                     logger.debug(
-                        "[MidRobust] %s: un seul côté disponible (val=%.4f) → approx mid",
+                        "[MidRobust] %s: un côté bid/ask (val=%.4f) → approx mid",
                         token_id[:16], val_f,
                     )
                     return val_f
         except Exception as e:
             logger.debug("[MidRobust] %s: get_price fallback erreur: %s", token_id[:16], e)
 
-        return None  # Les deux mécanismes ont échoué
+        # FIXED: Tentative 3 : /last-trade-price (marché inactif mais pas résolu)
+        last = self.get_last_trade_price(token_id)
+        if last is not None:
+            logger.debug(
+                "[MidRobust] %s: book vide → last-trade-price=%.4f (marché inactif)",
+                token_id[:16], last,
+            )
+            return last
+
+        return None  # Les trois mécanismes ont échoué → mid DB stale conservé
 
     def get_price(self, token_id: str, side: str = "buy") -> Optional[float]:
         """Retourne le meilleur prix bid ou ask."""
@@ -380,13 +504,39 @@ class PolymarketClient:
 
             # 0d. Quarantaine : token ayant dépassé _ALLOWANCE_MAX_RETRIES tentatives
             #     d'approbation sans que l'allowance n'apparaisse en GET (même après délai).
-            #     Probable contrat non standard. Traité comme neg-risk : SELL bloqué.
+            #     Avant de bloquer définitivement, on vérifie on-chain via web3 :
+            #     l'UI Polymarket peut avoir approuvé depuis le dernier retry.
             retry_count = self._allowance_retry_count.get(token_id, 0)
             if retry_count >= self._ALLOWANCE_MAX_RETRIES:
+                # FIXED: vérification on-chain avant quarantine définitive
+                owner = getattr(self._config, "funder_address", "") or ""
+                if owner:
+                    is_neg = token_id in self._neg_risk_confirmed
+                    onchain = self._check_onchain_approval(owner, is_neg_risk=is_neg)
+                    if onchain is True:
+                        # L'UI a approuvé → reset quarantine + confirmer en cache
+                        logger.info(
+                            "[Allowance] Token %s: approuvé ON-CHAIN (isApprovedForAll=True) "
+                            "→ reset quarantine, SELL autorisé.",
+                            token_id[:16],
+                        )
+                        self._allowance_confirmed.add(token_id)
+                        self._allowance_retry_count.pop(token_id, None)
+                        self._allowance_pending_since.pop(token_id, None)
+                        return True
+                    elif onchain is False:
+                        logger.warning(
+                            "[Allowance] Token %s: QUARANTAINE (%d tentatives) + "
+                            "isApprovedForAll=False on-chain → SELL bloqué. "
+                            "Approuver via l'UI Polymarket (CTF Exchange: %s).",
+                            token_id[:16], retry_count, _CTF_EXCHANGE_ADDRESS[:10],
+                        )
+                        return False
+                    # onchain is None → web3 indisponible, fallback comportement classique
+                # Pas d'adresse owner ou web3 indisponible → quarantine classique
                 logger.warning(
-                    "[Allowance] Token %s: QUARANTAINE (%d tentatives sans succès) → "
-                    "allowance persistante à 0 malgré update. Approuver manuellement "
-                    "via l'UI Polymarket ou vérifier le contrat de ce token.",
+                    "[Allowance] Token %s: QUARANTAINE (%d tentatives sans succès, "
+                    "vérif on-chain indisponible) → SELL bloqué.",
                     token_id[:16], retry_count,
                 )
                 return False

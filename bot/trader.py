@@ -679,7 +679,7 @@ class Trader:
 
         # Tri par val_mid décroissant : liquider les plus grosses d'abord
         candidates.sort(key=lambda x: x["val_mid"], reverse=True)
-        max_to_sell = 3  # Limite par cycle pour éviter le flood
+        max_to_sell = 2  # FIXED: réduit 3→2 /cycle pour éviter le flood d'ordres market
         sold = 0
 
         logger.warning(
@@ -714,18 +714,60 @@ class Trader:
                     "[Liquidation] SELL market %s qty≈%.2f (%.2f USDC) → order_id=%s",
                     pos["question"], qty_sell, usdc_amount, order_id or "?",
                 )
-                # Enregistrer en DB
-                self.db.record_order(
-                    market_id=token_id,
-                    token_id=token_id,
-                    side="sell",
-                    order_type="market",
-                    price=pos["mid"],
-                    quantity=qty_sell,
-                    status="live",
-                    clob_order_id=order_id or "",
-                    market_question=pos["question"],
-                )
+                # FIXED: record_order prend size/amount_usdc/order_id — pas quantity/clob_order_id
+                try:
+                    self.db.record_order(
+                        market_id=token_id,
+                        token_id=token_id,
+                        side="sell",
+                        order_type="market",
+                        price=pos["mid"],
+                        size=qty_sell,
+                        amount_usdc=usdc_amount,
+                        status="live",
+                        order_id=order_id or None,
+                    )
+                except Exception as db_err:
+                    logger.warning(
+                        "[Liquidation] SELL API OK mais DB record_order échoué pour %s: %s "
+                        "(order_id=%s — position DB non mise à jour ce cycle)",
+                        token_id[:16], db_err, order_id,
+                    )
+
+                # FIXED: poll balance-allowance 10s post-fill → update position DB
+                # Un ordre market FOK est exécuté quasi-instantanément côté Polymarket.
+                # On attend 10s pour que le fill soit enregistré côté CLOB, puis on
+                # récupère le nouveau solde balance-allowance pour mettre à jour la DB.
+                try:
+                    time.sleep(10)
+                    new_allowance_info = self._call_with_timeout(
+                        lambda tid=token_id: self.pm_client.get_conditional_allowance(tid),
+                        timeout=6.0,
+                        label=f"poll_allowance_post_sell({token_id[:16]})",
+                    )
+                    if new_allowance_info:
+                        # Mettre à jour la position DB : déduire les shares vendus
+                        # update_position avec qty_delta négatif (SELL)
+                        self.db.update_position(
+                            token_id=token_id,
+                            market_id=token_id,
+                            question=pos["question"],
+                            side="YES",
+                            quantity_delta=-qty_sell,
+                            fill_price=pos["mid"],
+                        )
+                        logger.info(
+                            "[Liquidation] Position DB mise à jour: %s qty −%.2f "
+                            "(fill confirmé post-poll 10s)",
+                            token_id[:16], qty_sell,
+                        )
+                except Exception as poll_err:
+                    logger.warning(
+                        "[Liquidation] Poll post-fill échoué pour %s: %s "
+                        "(position DB sera reconciliée au prochain cycle)",
+                        token_id[:16], poll_err,
+                    )
+
                 sold += 1
             except Exception as e:
                 logger.warning(
