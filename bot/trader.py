@@ -1334,8 +1334,7 @@ class Trader:
         # Si qty_held - qty_locked < signal.size → 400 "not enough balance".
         if signal.side == "sell" and not self.config.bot.paper_trading:
             try:
-                pos = self.db.get_position(signal.token_id)
-                qty_held = float(pos.get("quantity", 0)) if pos else 0.0
+                qty_held = float(self.db.get_position(signal.token_id) or 0.0)  # FIXED: retourne float
                 # Somme des SELLs live dans la DB (shares déjà engagées/lockées)
                 qty_locked = self.db.get_live_sell_qty(signal.token_id)
                 qty_available = max(0.0, qty_held - qty_locked)
