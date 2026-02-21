@@ -587,9 +587,24 @@ class PolymarketClient:
 
             # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)
-            # FORCE fix: extraire sans aucun court-circuit (0 int est falsy mais valide)
-            _raw = info.get("allowance") if "allowance" in info else info.get("Allowance", "0")
-            logger.info("[Allowance] Token %s: raw allowance field = %r", token_id[:16], _raw)  # LOG
+            # Fix wrong spender key: API retourne {spender_addr: amount} pas {"allowance": amount}
+            is_neg = token_id in self._neg_risk_confirmed
+            spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_ADDRESS
+            # CTF Exchange proxy (spender réel pour les SELL côté CLOB)
+            _SPENDER_PROXY = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # FIXED: bon spender
+            _raw = (
+                info.get(spender)
+                or info.get(spender.lower())
+                or info.get(_SPENDER_PROXY)
+                or info.get(_SPENDER_PROXY.lower())
+                or info.get("allowance")
+                or info.get("Allowance")
+                or "0"
+            )
+            logger.info(
+                "[Allowance] Token %s: raw allowance field = %r (spender=%s)",  # LOG
+                token_id[:16], _raw, spender,
+            )
             try:
                 allowance = int(str(_raw).strip()) if str(_raw).strip() else 0
             except (ValueError, TypeError):
