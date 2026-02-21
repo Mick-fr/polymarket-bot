@@ -38,11 +38,15 @@ class Trader:
     # perturber la boucle principale (la purge prend typiquement < 50ms).
     _DB_PURGE_INTERVAL_CYCLES: int = 1350  # ≈ 3 heures à 8s/cycle
 
-    # NEW: TTL du cache des mids d'inventaire (secondes).
+    # TTL du cache des mids d'inventaire pour les 200 OK (secondes).
     # get_midpoint() coûte 1 requête HTTP par token. Avec 20 positions = 20 req/cycle
     # à 8s/cycle → trop agressif (rate-limit Polymarket ~120 req/min).
-    # On rafraîchit toutes les 60s seulement les positions sans mid récent.
-    _INVENTORY_MID_CACHE_TTL_S: float = 60.0
+    # On rafraîchit toutes les 60s les mids connus.
+    _INVENTORY_MID_TTL_OK_S: float = 60.0
+    # CHANGED: TTL distinct pour les 404 (book vide / marché inactif).
+    # Inutile de re-fetch un token sans liquidité à chaque cycle.
+    # 5 min = largement suffisant, évite ~90% des requêtes inutiles.
+    _INVENTORY_MID_TTL_404_S: float = 300.0
 
     def __init__(self, config: AppConfig, db: Database):
         self.config = config
@@ -54,12 +58,15 @@ class Trader:
         self._consecutive_errors = 0
         # Compteur de cycles depuis la dernière purge DB
         self._cycles_since_purge: int = 0
-        # NEW: cache {token_id: timestamp_last_fetched} pour _refresh_inventory_mids().
-        # Évite de refetcher les mids à chaque cycle (rate-limit Polymarket).
-        # Seuls les tokens dont le mid_updated_at est absent ou trop vieux
-        # sont rafraîchis. Reset à chaque redémarrage = toutes positions
-        # seront fetchées lors du premier cycle.
+        # Cache timestamps pour _refresh_inventory_mids().
+        # {token_id: timestamp_dernière_tentative} — distinct selon le résultat :
+        #   - 200 OK  → TTL _INVENTORY_MID_TTL_OK_S  (60s)
+        #   - 404/err → TTL _INVENTORY_MID_TTL_404_S (300s)  # CHANGED
+        # Reset à chaque redémarrage → toutes positions fetchées au 1er cycle.
         self._mid_last_fetched: dict[str, float] = {}
+        # CHANGED: set des tokens ayant retourné 404 lors de la dernière tentative.
+        # Utilisé pour choisir le bon TTL (404 = marché sans liquidité = moins urgent).
+        self._mid_404_tokens: set[str] = {}
         # NOTE: le tracking des SELL de liquidation est maintenant basé sur la DB
         # (orders WHERE side='sell' AND status='live' AND token a une position),
         # ce qui survit aux redémarrages. Plus de set en mémoire.
@@ -574,34 +581,33 @@ class Trader:
     def _refresh_inventory_mids(self) -> dict[str, float]:
         """Rafraîchit les mids de marché pour toutes les positions sans mid récent.
 
-        Appelé à l'étape 3b-bis de chaque cycle, AVANT _compute_portfolio_value(),
-        pour s'assurer que les positions hors univers OBI ce cycle ont quand même
-        un current_mid valide en DB.
+        Appelé à l'étape 3b de chaque cycle, AVANT _compute_portfolio_value().
 
-        Stratégie de cache (évite le rate-limit Polymarket ~120 req/min) :
-          - Un token n'est rafraîchi que si son mid n'a pas été mis à jour depuis
-            _INVENTORY_MID_CACHE_TTL_S (60s) par ce processus (via _mid_last_fetched),
-            OU s'il n'a jamais de current_mid valide en DB.
-          - Les tokens déjà mis à jour par strategy.py ce cycle (mid_updated_at récent)
-            sont ignorés pour ne pas doubler les requêtes.
-          - En cas d'erreur API pour un token, on loggue et on passe au suivant.
+        Stratégie de cache à deux vitesses (évite rate-limit Polymarket) :
+          • 200 OK  → TTL _INVENTORY_MID_TTL_OK_S  (60s)  : re-fetch dans 60s
+          • 404/err → TTL _INVENTORY_MID_TTL_404_S (300s) : book vide, inutile
+            de re-interroger souvent. On conserve le dernier current_mid DB connu
+            comme fallback (mid stale vaut mieux que avg_price corrompu).
 
-        Retourne : dict {token_id: mid_fetché} pour usage immédiat (log, etc.).
+        Retourne dict {token_id: mid_retenu} incluant les mids déjà en cache DB
+        (pour le log global inv_mid vs inv_avg).
         """
-        refreshed: dict[str, float] = {}
         now = time.time()
+        refreshed: dict[str, float] = {}   # mids effectivement fetchés ce cycle
 
+        # ── Lecture des positions ─────────────────────────────────────────────
         try:
             positions = self.db.get_all_positions()
         except Exception as e:
             logger.warning("[MidRefresh] Erreur lecture positions DB: %s", e)
             return refreshed
-
         if not positions:
             return refreshed
 
-        # Détermine quels tokens nécessitent un fetch
+        # ── Sélection des tokens à fetcher ────────────────────────────────────
         to_fetch: list[str] = []
+        skipped_cache: int  = 0
+
         for p in positions:
             token_id = p.get("token_id")
             if not token_id:
@@ -610,24 +616,34 @@ class Trader:
             if qty <= 0:
                 continue
 
-            stored_mid = float(p.get("current_mid") or 0)
-            last_fetched = self._mid_last_fetched.get(token_id, 0.0)
-            age_s = now - last_fetched
+            last_t    = self._mid_last_fetched.get(token_id, 0.0)
+            age_s     = now - last_t
+            # CHANGED: TTL selon le dernier résultat (404 → plus long délai)
+            ttl       = self._INVENTORY_MID_TTL_404_S if token_id in self._mid_404_tokens \
+                        else self._INVENTORY_MID_TTL_OK_S
 
-            # NEW: fetch si (a) pas de mid valide OU (b) mid trop vieux (> TTL)
-            needs_refresh = (stored_mid < 0.01 or stored_mid > 0.99) or (age_s >= self._INVENTORY_MID_CACHE_TTL_S)
-            if needs_refresh:
+            if age_s >= ttl:
                 to_fetch.append(token_id)
+            else:
+                skipped_cache += 1
 
         if not to_fetch:
-            logger.debug("[MidRefresh] Tous les mids d'inventaire sont à jour (%d positions).", len(positions))
+            logger.debug(
+                "[MidRefresh] Cache valide pour %d position(s) — aucun fetch nécessaire.",
+                skipped_cache,
+            )
             return refreshed
 
-        logger.info("[MidRefresh] Rafraîchissement mid pour %d/%d position(s) sans mid récent...",
-                    len(to_fetch), len(positions))
+        logger.info(
+            "[MidRefresh] Fetch mid pour %d/%d position(s) (cache OK: %d)...",
+            len(to_fetch), len(positions), skipped_cache,
+        )
 
-        fetched_ok = 0
-        fetched_err = 0
+        # ── Fetch token par token ─────────────────────────────────────────────
+        n_ok    = 0
+        n_404   = 0
+        n_err   = 0
+
         for token_id in to_fetch:
             try:
                 mid = self._call_with_timeout(
@@ -635,26 +651,38 @@ class Trader:
                     timeout=5.0,
                     label=f"get_midpoint({token_id[:16]})",
                 )
+
                 if mid is not None and 0.01 <= float(mid) <= 0.99:
+                    # ── 200 OK avec mid valide ────────────────────────────────
                     mid_f = float(mid)
                     self.db.update_position_mid(token_id, mid_f)
                     self._mid_last_fetched[token_id] = now
+                    self._mid_404_tokens.discard(token_id)   # plus en 404
                     refreshed[token_id] = mid_f
-                    fetched_ok += 1
+                    n_ok += 1
+
                 else:
-                    # Midpoint absent ou hors bornes → log debug uniquement
+                    # CHANGED: mid=None ou hors bornes = book vide (404-like)
+                    # → marquer TTL long, conserver l'ancien current_mid DB (stale)
+                    self._mid_last_fetched[token_id] = now
+                    self._mid_404_tokens.add(token_id)
                     logger.debug(
-                        "[MidRefresh] %s: mid invalide ou absent (val=%s) → fallback avg_price",
+                        "[MidRefresh] %s: mid absent/invalide (val=%s) → TTL 404 (5min), "
+                        "conservation mid DB existant comme fallback.",
                         token_id[:16], mid,
                     )
-                    fetched_err += 1
+                    n_404 += 1
+
             except Exception as e:
-                logger.debug("[MidRefresh] %s: erreur fetch mid: %s", token_id[:16], e)
-                fetched_err += 1
+                # Erreur réseau / timeout → TTL court (on réessaiera au prochain cycle)
+                self._mid_last_fetched[token_id] = now - self._INVENTORY_MID_TTL_OK_S + 16
+                logger.debug("[MidRefresh] %s: erreur réseau: %s", token_id[:16], e)
+                n_err += 1
 
         logger.info(
-            "[MidRefresh] Terminé: %d mid(s) ok, %d échec(s)/absent(s) sur %d token(s) à rafraîchir.",
-            fetched_ok, fetched_err, len(to_fetch),
+            "[MidRefresh] Terminé: %d OK, %d vide/404 (TTL 5min), %d erreur réseau "
+            "sur %d token(s) fetchés.",
+            n_ok, n_404, n_err, len(to_fetch),
         )
         return refreshed
 
@@ -663,68 +691,115 @@ class Trader:
 
         Affiche pour chaque position :
           - question (tronquée à 35 chars)
-          - qty
-          - avg (prix d'entrée DB)
-          - val_avg (qty × avg_price, valorisation historique)
-          - mid (current_mid DB, mis à jour chaque cycle par strategy.py)
-          - val_mid (qty × current_mid, valorisation au marché actuel)
-          - flag ⚠ si avg_price hors bornes ou mid absent
+          - qty, avg (prix entrée DB), val_avg (qty × avg)
+          - mid (current_mid DB) + source : "API" / "cache Xmin" / "N/A→avg"
+          - val_mid (qty × mid) si disponible, sinon "→avg"
+          - flag ⚠ si avg hors bornes
 
-        val_mid est la valorisation utilisée par _compute_portfolio_value() quand
-        current_mid est disponible. En son absence, val_avg est le fallback.
-
-        Appelé à l'étape 3b de chaque cycle, après _compute_portfolio_value().
+        Log global final : Mids récupérés X/N, inv_mid vs inv_avg.
+        Warning si cash bas et inventaire >> cash (suggestion liquidation).
         """
         try:
             positions = self.db.get_all_positions()
             if not positions:
                 return
-            inventory_total = portfolio_value - usdc_balance
-            lines = []
+
+            now = time.time()
+            lines          = []
+            inv_mid_total  = 0.0   # valorisation mid (quand disponible)
+            inv_avg_total  = 0.0   # valorisation avg (toujours calculée)
+            n_mid_ok       = 0
+            n_mid_missing  = 0
+
             for p in positions:
-                qty    = float(p.get("quantity", 0))
-                avg    = float(p.get("avg_price") or 0)
-                mid    = float(p.get("current_mid") or 0)
-                val_avg = qty * avg
-                val_mid = qty * mid if mid > 0 else None
-                # Flags de diagnostic
+                token_id = p.get("token_id", "")
+                qty      = float(p.get("quantity") or 0)
+                avg      = float(p.get("avg_price") or 0)
+                mid      = float(p.get("current_mid") or 0)
+                val_avg  = qty * avg if 0.01 <= avg <= 0.99 else qty * 0.50
+
+                inv_avg_total += val_avg
+
+                # ── Source du mid ──────────────────────────────────────────────
+                mid_valid = 0.01 <= mid <= 0.99
+                if mid_valid:
+                    last_t    = self._mid_last_fetched.get(token_id, 0.0)
+                    age_min   = (now - last_t) / 60.0
+                    # CHANGED: label "API" si fetché ce cycle (<2min), sinon "cache Xmin"
+                    if age_min < 2.0:
+                        mid_src = "API"
+                    else:
+                        mid_src = f"cache {age_min:.0f}min"
+                    val_mid   = qty * mid
+                    inv_mid_total += val_mid
+                    n_mid_ok  += 1
+                else:
+                    mid_src = "N/A→avg"
+                    val_mid = None
+                    inv_mid_total += val_avg   # fallback avg dans le total
+                    n_mid_missing += 1
+
+                # ── Flags ──────────────────────────────────────────────────────
                 flags = []
-                if avg <= 0.0 or avg > 1.0:
+                if avg < 0.01 or avg > 0.99:
                     flags.append("⚠ avg hors bornes")
-                if mid <= 0.0:
-                    flags.append("⚠ mid absent")
-                elif not (0.01 <= mid <= 0.99):
-                    flags.append("⚠ mid hors bornes")
+                if token_id in self._mid_404_tokens:
+                    flags.append("book vide")
                 flag_str = "  " + ", ".join(flags) if flags else ""
-                question = (p.get("question") or p.get("token_id", "?")[:20])[:35]
+
+                question = (p.get("question") or token_id[:20])[:35]
                 if val_mid is not None:
                     lines.append(
                         f"  {question:<35} qty={qty:>7.2f}"
                         f"  avg={avg:.4f}  val_avg={val_avg:>7.4f}"
-                        f"  mid={mid:.4f}  val_mid={val_mid:>7.4f} USDC{flag_str}"
+                        f"  mid={mid:.4f} ({mid_src})  val_mid={val_mid:>7.4f} USDC{flag_str}"
                     )
                 else:
                     lines.append(
                         f"  {question:<35} qty={qty:>7.2f}"
                         f"  avg={avg:.4f}  val_avg={val_avg:>7.4f}"
-                        f"  mid=N/A{flag_str}"
+                        f"  mid=N/A ({mid_src}){flag_str}"
                     )
+
+            inventory_total = portfolio_value - usdc_balance
             logger.info(
                 "[Portfolio] Breakdown inventaire (%.4f USDC total, %d position(s)):\n%s",
                 inventory_total, len(positions), "\n".join(lines),
             )
+
+            # CHANGED: log global inv_mid vs inv_avg pour diagnostic rapide
+            logger.info(
+                "[Portfolio] Mids récupérés: %d/%d OK, %d absent(s)/404 "
+                "→ inv_mid=%.2f USDC vs inv_avg=%.2f USDC (écart: %+.2f)",
+                n_mid_ok, len(positions), n_mid_missing,
+                inv_mid_total, inv_avg_total,
+                inv_mid_total - inv_avg_total,
+            )
+
+            # CHANGED: warning si cash bas et inventaire très supérieur au cash
+            if usdc_balance < 10.0 and inv_mid_total > usdc_balance * 4:
+                logger.warning(
+                    "[Portfolio] ⚠ CASH BAS: cash=%.2f USDC, inv_mid=%.2f USDC "
+                    "(ratio ×%.1f). Envisager liquidation partielle (SELL 20%% des "
+                    "positions > 1 USDC).",
+                    usdc_balance, inv_mid_total,
+                    inv_mid_total / usdc_balance if usdc_balance > 0 else 0,
+                )
+
         except Exception as e:
             logger.debug("[Portfolio] Erreur breakdown: %s", e)
 
     def _compute_portfolio_value(self, usdc_balance: float) -> float:
         """
-        Calcule la valeur totale du portefeuille en USDC :
-          Portfolio = USDC liquides + valeur de l'inventaire
+        Calcule la valeur totale du portefeuille en USDC.
 
         Valorisation des shares par priorité (plus fiable → moins fiable) :
-          1. current_mid DB [0.01, 0.99] — prix de marché récent (mis à jour chaque cycle)
+          1. current_mid DB [0.01, 0.99] — prix de marché récent
+             (mis à jour par _refresh_inventory_mids() + strategy.py)
           2. avg_price DB [0.01, 0.99] — prix d'entrée historique (fallback)
-          3. 0.50 — estimation conservatrice si les deux sont corrompus
+             Utilisé quand current_mid est absent (ex: token 404 au 1er cycle)
+             ou pour les marchés sans liquidité persistante.
+          3. Position ignorée si avg_price aussi hors bornes (protège le HWM).
 
         Utilisé pour le High Water Mark et le circuit breaker.
         En cas d'erreur DB, retourne usdc_balance (mode dégradé safe).
@@ -734,38 +809,35 @@ class Trader:
             inventory_value = 0.0
             skipped = []
             for p in positions:
-                qty = float(p.get("quantity", 0))
+                qty = float(p.get("quantity") or 0)
                 if qty <= 0:
                     continue
-                # ── 1. current_mid DB (valorisation au prix de marché récent) ──
+                # ── 1. current_mid DB ──────────────────────────────────────────
                 stored_mid = float(p.get("current_mid") or 0)
                 if 0.01 <= stored_mid <= 0.99:
                     inventory_value += qty * stored_mid
                     continue
-                # ── 2. avg_price DB (fallback prix d'entrée) ──────────────────
+                # ── 2. avg_price DB [0.01, 0.99] ──────────────────────────────
                 raw_price = float(p.get("avg_price") or 0)
                 if 0.01 <= raw_price <= 0.99:
                     inventory_value += qty * raw_price
                     continue
-                # ── 3. avg_price hors bornes → ignorer / estimer ──────────────
+                # ── 3. avg_price hors bornes → exclure du HWM ─────────────────
                 skipped.append((p.get("token_id", "?")[:16], qty, raw_price))
-                # Estimation conservatrice : 0.50 (on préfère ne pas l'inclure
-                # pour ne pas gonfler le HWM artificiellement)
 
             if skipped:
                 logger.warning(
-                    "[Portfolio] %d position(s) sans valorisation fiable "
-                    "(current_mid absent et avg_price hors bornes [0.01,0.99]): %s. "
-                    "Lancer sanitize_positions() ou mettre à jour via dashboard.",
+                    "[Portfolio] %d position(s) exclue(s) du HWM — mid et avg_price "
+                    "hors bornes [0.01,0.99]: %s. Lancer sanitize_positions().",
                     len(skipped),
-                    [(tid, f"qty={q:.2f}", f"avg={p:.4f}") for tid, q, p in skipped],
+                    [(tid, f"qty={q:.2f}", f"avg={av:.4f}") for tid, q, av in skipped],
                 )
 
             total = usdc_balance + inventory_value
             if inventory_value > 0:
                 logger.debug(
                     "[Portfolio] USDC=%.4f + inventaire=%.4f → total=%.4f USDC "
-                    "(%d position(s), %d ignorée(s))",
+                    "(%d position(s), %d exclue(s))",
                     usdc_balance, inventory_value, total,
                     len(positions) - len(skipped), len(skipped),
                 )
