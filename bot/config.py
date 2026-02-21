@@ -58,6 +58,11 @@ class BotConfig:
     # Exposition nette maximale par marché (fraction du solde disponible)
     # Ex : 0.20 = 20% du solde. Augmenter si le portefeuille est petit (< 100 USDC).
     max_exposure_pct: float = 0.20
+    # Stop-loss par position : si la perte latente (avg_price - mid) / avg_price >= seuil,
+    # le bot émet un SELL market pour couper immédiatement.
+    # Ex : 0.25 = coupe si la position a perdu 25% de sa valeur.
+    # 0.0 = désactivé.
+    position_stop_loss_pct: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,7 @@ def load_config() -> AppConfig:
             paper_trading=os.getenv("BOT_PAPER_TRADING", "false").lower() == "true",
             paper_balance=float(os.getenv("BOT_PAPER_BALANCE", "1000.0")),
             max_exposure_pct=float(os.getenv("BOT_MAX_EXPOSURE_PCT", "0.20")),
+            position_stop_loss_pct=float(os.getenv("BOT_STOP_LOSS_PCT", "0.25")),
         ),
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),

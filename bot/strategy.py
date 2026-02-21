@@ -360,13 +360,17 @@ class OBIMarketMakingStrategy(BaseStrategy):
                  max_order_size_usdc: float = 5.0,
                  max_markets: int = 5,
                  paper_trading: bool = True,
-                 max_exposure_pct: float = 0.20):
+                 max_exposure_pct: float = 0.20,
+                 stop_loss_pct: float = 0.25):
         super().__init__(client)
         self.db = db
         self.max_order_size_usdc = max_order_size_usdc
         self.max_markets = max_markets
         self.paper_trading = paper_trading
         self.max_exposure_pct = max_exposure_pct   # configurable via BOT_MAX_EXPOSURE_PCT
+        # Stop-loss par position : si la perte latente >= seuil, SELL market forcé.
+        # 0.0 = désactivé.
+        self.stop_loss_pct = stop_loss_pct
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
         # Suivi prix precedents pour news-breaker {token_id: (price, timestamp)}
@@ -549,16 +553,55 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     mid_price=mid,
                 ))
             if emit_sell:
+                # ── Stop-loss : SELL market si perte latente >= stop_loss_pct ──
+                # Récupère avg_price depuis la DB pour comparer au mid actuel.
+                # Si la position a perdu trop de valeur, on coupe immédiatement
+                # avec un SELL market (FOK) au lieu d'attendre un SELL limit.
+                sell_type = "limit"
+                sell_price = ask_price
+                sell_reason = f"OBI={obi_result.obi:.3f} regime={obi_result.regime}"
+
+                if self.stop_loss_pct > 0 and self.db:
+                    try:
+                        pos_row = next(
+                            (p for p in self.db.get_all_positions()
+                             if p["token_id"] == market.yes_token_id),
+                            None,
+                        )
+                        avg_p = float(pos_row["avg_price"]) if pos_row and pos_row.get("avg_price") else None
+                        if avg_p and avg_p > 0:
+                            loss_pct = (avg_p - mid) / avg_p
+                            if loss_pct >= self.stop_loss_pct:
+                                sell_type = "market"
+                                sell_price = None   # Market order : pas de prix limite
+                                sell_reason = (
+                                    f"STOP-LOSS: perte latente {loss_pct*100:.1f}% "
+                                    f"(avg={avg_p:.4f} mid={mid:.4f})"
+                                )
+                                logger.warning(
+                                    "[STOP-LOSS] '%s' perte latente %.1f%% "
+                                    "(avg=%.4f mid=%.4f) → SELL market forcé",
+                                    market.question[:40], loss_pct * 100, avg_p, mid,
+                                )
+                                if self.db:
+                                    self.db.add_log(
+                                        "WARNING", "strategy",
+                                        f"STOP-LOSS: {market.question[:60]} "
+                                        f"perte={loss_pct*100:.1f}% avg={avg_p:.4f} mid={mid:.4f}",
+                                    )
+                    except Exception as sl_err:
+                        logger.debug("[STOP-LOSS] Erreur calcul perte latente: %s", sl_err)
+
                 signals.append(Signal(
                     token_id=market.yes_token_id,
                     market_id=market.market_id,
                     market_question=market.question,
                     side="sell",
-                    order_type="limit",
-                    price=ask_price,
+                    order_type=sell_type,
+                    price=sell_price,
                     size=min(ask_size, qty_held),  # ne jamais vendre plus que detenu
-                    confidence=min(abs(obi_result.obi) + 0.5, 1.0),
-                    reason=f"OBI={obi_result.obi:.3f} regime={obi_result.regime}",
+                    confidence=1.0 if sell_type == "market" else min(abs(obi_result.obi) + 0.5, 1.0),
+                    reason=sell_reason,
                     obi_value=obi_result.obi,
                     obi_regime=obi_result.regime,
                     spread_at_signal=market.spread,
@@ -574,33 +617,44 @@ class OBIMarketMakingStrategy(BaseStrategy):
     def _compute_quotes(self, mid: float, spread: float,
                         obi: OBIResult) -> tuple[float, float]:
         """
-        Calcule bid et ask avec skew proportionnel continu (Set B / Tweak 2).
+        Calcule bid et ask avec skew ASYMETRIQUE base sur l'OBI.
 
-        Ancien modele (3 branches rigides) :
-          Neutre  : bid = mid - half, ask = mid + half
-          Bullish : bid = mid,        ask = mid + 2 ticks (fixe)
-          Bearish : bid = mid - 2t,   ask = mid (fixe)
+        Logique de market making correcte :
+          - OBI > 0 (pression acheteuse) → monter l'ASK (vendre plus cher aux acheteurs),
+            descendre le BID (eviter de surpayer) → l'ASK devient plus agressif.
+          - OBI < 0 (pression vendeuse) → monter le BID (acheter moins cher),
+            descendre l'ASK (eviter de bloquer nos ventes) → le BID devient plus attractif.
+          - OBI = 0 → symetrique : bid = mid - half, ask = mid + half.
 
-        Nouveau modele (continu) :
-          skew_ticks = round(obi * OBI_SKEW_FACTOR)   # [-3, +3] ticks
-          bid = mid - half + skew * TICK_SIZE
-          ask = mid + half + skew * TICK_SIZE
+        Formule asymetrique :
+          ask_skew = +round(obi *  OBI_SKEW_FACTOR) ticks   # monte si OBI > 0
+          bid_skew = -round(obi *  OBI_SKEW_FACTOR) ticks   # descend si OBI > 0
 
-          OBI > 0 (bullish) → les deux quotes montent → bid plus agressif
-          OBI < 0 (bearish) → les deux quotes descendent → ask plus agressif
-          OBI = 0           → symetrique autour du mid
+          bid = mid - half + bid_skew * TICK_SIZE
+          ask = mid + half + ask_skew * TICK_SIZE
 
-        Avantage : un OBI de 0.25 et un OBI de 0.90 ne produisent plus le
-        meme decalage. Gradation fine = plus de fills a faible signal,
-        plus de protection a fort signal.
+        Exemple OBI = +0.40 (pression acheteuse) :
+          skew_ticks = round(0.40 * 3) = 1
+          bid = mid - half - 1 tick  (on n'achete plus agressivement)
+          ask = mid + half + 1 tick  (on vend plus cher)
+          → spread total = spread + 2 ticks (protection contre execution adverse)
+
+        Exemple OBI = -0.40 (pression vendeuse) :
+          skew_ticks = round(0.40 * 3) = 1
+          bid = mid - half + 1 tick  (on acheite moins cher, market maker passif)
+          ask = mid + half - 1 tick  (on vend au mid, attire les vendeurs)
+          → on capte les vendeurs presses
         """
         half = spread / 2.0
 
-        # Skew proportionnel : nombre de ticks de decalage
-        skew_ticks = round(obi.obi * OBI_SKEW_FACTOR)
+        # Skew proportionnel asymetrique
+        skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
+        direction = 1 if obi.obi >= 0 else -1
 
-        bid = mid - half + skew_ticks * TICK_SIZE
-        ask = mid + half + skew_ticks * TICK_SIZE
+        # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)
+        # OBI negatif → bid monte, ask descend (opportunite BUY, protection SELL)
+        bid = mid - half - direction * skew_ticks * TICK_SIZE
+        ask = mid + half + direction * skew_ticks * TICK_SIZE
 
         # Arrondi au tick
         bid = round(round(bid / TICK_SIZE) * TICK_SIZE, 4)

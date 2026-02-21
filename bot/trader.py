@@ -84,6 +84,7 @@ class Trader:
             max_markets=5,
             paper_trading=self.config.bot.paper_trading,
             max_exposure_pct=self.config.bot.max_exposure_pct,
+            stop_loss_pct=self.config.bot.position_stop_loss_pct,
         )
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
@@ -193,13 +194,22 @@ class Trader:
         self._check_ctf_arb(balance, eligible_markets)
 
         # 8. Exécution avec gestion de l'inventaire post-fill
+        # residual_balance suit le solde consommé au fil des ordres du cycle :
+        # chaque BUY approuvé déduit son coût pour que le check de réserve
+        # du signal suivant reflète le solde réel restant (et non le solde initial).
         logger.info("[Cycle] Étape 8: exécution %d signal(s)", len(signals))
         cycle_executed = 0
         cycle_rejected = 0
+        residual_balance = balance
         for sig in signals:
-            approved = self._execute_signal(sig, balance, portfolio_value=portfolio_value)
+            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value)
             if approved:
                 cycle_executed += 1
+                # Déduire le coût estimé pour les BUY (SELL ne consomme pas de cash)
+                if sig.side == "buy" and sig.price:
+                    residual_balance = max(0.0, residual_balance - sig.size * sig.price)
+                elif sig.side == "buy" and sig.order_type == "market":
+                    residual_balance = max(0.0, residual_balance - sig.size)
             else:
                 cycle_rejected += 1
 

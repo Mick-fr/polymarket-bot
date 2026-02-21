@@ -146,13 +146,10 @@ class RiskManager:
                 "none",
             )
 
-        # ── 7. Confiance minimale ─────────────────────────────────────────────
-        if signal.confidence < 0.5:
-            return RiskVerdict(
-                False,
-                f"Confiance trop faible: {signal.confidence:.2f} < 0.50",
-                "none",
-            )
+        # ── 7. [SUPPRIMÉ] Confiance minimale ────────────────────────────────────
+        # Le filtre confidence était inopérant : tous les signaux OBI ont une
+        # confidence entre 0.70 et 1.00 (min = abs(0.20) + 0.50 = 0.70 > seuil 0.50).
+        # Jamais un signal n'a été rejeté par cette règle. Supprimé pour clarté.
 
         # ── 8. Fractional sizing : expo nette max 5% du solde ─────────────────
         frac = self._check_fractional_sizing(signal, current_balance, order_cost)
