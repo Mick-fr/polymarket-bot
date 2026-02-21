@@ -243,6 +243,17 @@ class Database:
             )
             return [dict(row) for row in cur.fetchall()]
 
+    def get_live_sell_qty(self, token_id: str) -> float:
+        """Retourne la somme des sizes SELL live pour ce token (shares lockées)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(SUM(size), 0) AS locked FROM orders
+                   WHERE status = 'live' AND side = 'sell' AND token_id = ?""",
+                (token_id,),
+            )
+            row = cur.fetchone()
+            return float(row["locked"]) if row else 0.0
+
     def has_live_sell(self, token_id: str) -> bool:
         """Retourne True si un SELL limit est actuellement live en DB pour ce token.
 

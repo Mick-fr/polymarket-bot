@@ -1329,6 +1329,30 @@ class Trader:
                 )
                 return False
 
+        # ── Garde SELL: balance shares disponibles vs ordres ouverts ──────────
+        # Les shares lockées dans des SELLs ouverts réduisent la balance CLOB.
+        # Si qty_held - qty_locked < signal.size → 400 "not enough balance".
+        if signal.side == "sell" and not self.config.bot.paper_trading:
+            try:
+                pos = self.db.get_position(signal.token_id)
+                qty_held = float(pos.get("quantity", 0)) if pos else 0.0
+                # Somme des SELLs live dans la DB (shares déjà engagées/lockées)
+                qty_locked = self.db.get_live_sell_qty(signal.token_id)
+                qty_available = max(0.0, qty_held - qty_locked)
+                logger.info(  # LOG
+                    "[Execute] SELL %s: held=%.2f locked=%.2f available=%.2f required=%.2f",
+                    signal.token_id[:16], qty_held, qty_locked, qty_available, signal.size,
+                )
+                if signal.size > qty_available * 0.99:
+                    logger.warning(
+                        "[Execute] SELL skippé %s: qty=%.2f > available=%.2f "
+                        "(shares lockées par ordres ouverts → 400 évité)",
+                        signal.token_id[:16], signal.size, qty_available,
+                    )
+                    return False
+            except Exception as _be:
+                logger.debug("[Execute] balance check pre-SELL erreur: %s", _be)
+
         # ── Allowance ERC-1155 synchrone avant SELL ────────────────────────
         # L'approbation au démarrage (update_balance_allowance) retourne une
         # réponse vide : l'API Polymarket propage l'autorisation de façon
