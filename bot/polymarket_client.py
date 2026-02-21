@@ -360,6 +360,25 @@ class PolymarketClient:
         - side   : 'buy' ou 'sell'
         Retourne la réponse de l'API.
         """
+        # LOG: diagnostic pre-order balance/allowance
+        if side.lower() == "sell":
+            is_neg = token_id in self._neg_risk_confirmed
+            _pre_info = self.get_conditional_allowance(token_id)
+            logger.info(
+                "[PreOrder] SELL %s: neg_risk=%s allowance_confirmed=%s raw_info=%s",
+                token_id[:16], is_neg,
+                token_id in self._allowance_confirmed,
+                _pre_info,
+            )
+            # FIX: NegRisk SELL → log warning explicite, skip envoi inutile
+            if is_neg and token_id not in self._allowance_confirmed:
+                logger.warning(
+                    "[PreOrder] SELL BLOQUÉ: token %s est NegRisk et non confirmé "
+                    "→ approuver manuellement via UI Polymarket (NegRisk Exchange: %s)",
+                    token_id[:16], _NEG_RISK_CTF_EXCHANGE,
+                )
+                return {"errorMsg": "neg_risk_allowance_not_confirmed", "status": "blocked"}
+
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
