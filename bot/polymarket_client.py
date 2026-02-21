@@ -589,38 +589,25 @@ class PolymarketClient:
             info = self.get_conditional_allowance(token_id)
             is_neg = token_id in self._neg_risk_confirmed
             spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_SPENDER
-            # FIX: case-insensitive scan — "or" court-circuite sur "0" (truthy string)
-            # → on cherche la plus grande valeur parmi toutes les clés candidates
-            logger.info("[Allowance] Token %s: info keys = %s", token_id[:16], list(info.keys()))  # LOG
-            _candidates = [
-                spender, spender.lower(), spender.upper(),
-                _CTF_EXCHANGE_SPENDER, _CTF_EXCHANGE_SPENDER.lower(),
-                "allowance", "Allowance",
-            ]
-            _raw = "0"
-            for _k in _candidates:
-                _v = info.get(_k)
-                if _v is not None:
-                    logger.info("[Allowance] Token %s: found key %r → %r", token_id[:16], _k, _v)  # LOG
-                    try:
-                        if int(str(_v).strip()) > int(str(_raw).strip() or "0"):
-                            _raw = str(_v).strip()
-                    except (ValueError, TypeError):
-                        pass
-            # FIX: scan case-insensitive sur toutes les clés du dict
-            _info_lower = {k.lower(): v for k, v in info.items()}
-            for _k_norm in [spender.lower(), _CTF_EXCHANGE_SPENDER.lower()]:
-                _v = _info_lower.get(_k_norm)
-                if _v is not None:
-                    try:
-                        if int(str(_v).strip()) > int(_raw or "0"):
-                            _raw = str(_v).strip()
-                            logger.info("[Allowance] Token %s: case-insensitive match %r → %r", token_id[:16], _k_norm, _raw)  # LOG
-                    except (ValueError, TypeError):
-                        pass
-            logger.info("[Allowance] Token %s: raw for spender %s = %r", token_id[:16], spender, _raw)  # LOG
+            # FIX: API peut retourner {"allowances": {addr: val}} ou {addr: val} ou {"allowance": val}
+            # Descendre dans le sous-dict "allowances" si présent
+            _allowances_sub = info.get("allowances") or info.get("Allowances") or {}
+            _search_in = {**info, **(_allowances_sub if isinstance(_allowances_sub, dict) else {})}
+            logger.info(  # LOG
+                "[Allowance] Token %s: keys=%s sub_keys=%s",
+                token_id[:16], list(info.keys()), list(_allowances_sub.keys()) if isinstance(_allowances_sub, dict) else [],
+            )
+            # FIX: case-insensitive — normalise toutes les clés en lowercase
+            _norm = {k.lower(): v for k, v in _search_in.items()}
+            logger.info("[Allowance] Token %s: normalized keys=%s", token_id[:16], list(_norm.keys()))  # LOG
+            _raw_v = (
+                _norm.get(spender.lower())
+                or _norm.get(_CTF_EXCHANGE_SPENDER.lower())
+                or _norm.get("allowance")
+            )
+            logger.info("[Allowance] Token %s: raw for spender %s = %r", token_id[:16], spender, _raw_v)  # LOG
             try:
-                allowance = int(_raw) if _raw else 0
+                allowance = int(str(_raw_v).strip()) if _raw_v is not None else 0
             except (ValueError, TypeError):
                 allowance = 0
 
