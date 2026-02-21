@@ -593,7 +593,18 @@ class PolymarketClient:
             except (ValueError, TypeError):
                 allowance = 0
 
-            if allowance > 0:
+            _UINT256_MAX = 2**256 - 1  # FIXED: unlimited approval sentinel
+            _is_unlimited = (allowance == _UINT256_MAX or allowance > 2**255)
+            if _is_unlimited:
+                is_neg = token_id in self._neg_risk_confirmed
+                spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_ADDRESS
+                logger.info(  # LOG
+                    "[Allowance] Token %s: Unlimited approval (max uint) detected "
+                    "for spender %s → approved.",
+                    token_id[:16], spender,
+                )
+
+            if allowance > 0 or _is_unlimited:  # FIXED: uint256.max was parsed as > 0 but guard both
                 logger.debug(
                     "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
                 )
