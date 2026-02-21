@@ -458,6 +458,16 @@ class Trader:
                     logger.info("[Cancel+Replace] Annulés sélectivement: %s",
                                 [oid[:16] for oid in valid_ids])
 
+            # Mettre à jour le statut en DB pour les ordres annulés.
+            # Sans ça, les ordres BUY annulés restent 'live' en DB → _has_live_sell()
+            # peut les trouver faussement et bloquer de futurs SELL sur ces tokens.
+            for clob_id in to_cancel:
+                if clob_id:
+                    try:
+                        self.db.update_order_status_by_clob_id(clob_id, "cancelled")
+                    except Exception:
+                        pass  # Méthode optionnelle — pas bloquant
+
             self.db.add_log(
                 "INFO", "trader",
                 f"[Cancel+Replace] {len(to_cancel)} annulé(s), {len(preserved)} préservé(s)",
@@ -731,9 +741,25 @@ class Trader:
         # active → erreur 400. Solution : rappeler ensure_conditional_allowance
         # juste avant chaque SELL de façon synchrone pour forcer la mise à jour.
         # Coût : 1-2 requêtes GET/GET supplémentaires par SELL (négligeable).
+        #
+        # Tokens neg-risk : ensure_conditional_allowance() retourne False quand
+        # le token utilise le NegRisk Exchange (contrat différent, non gérable
+        # automatiquement). Dans ce cas, on bloque le SELL pour éviter l'erreur
+        # 400 et logguer clairement le problème.
         if signal.side == "sell" and not self.config.bot.paper_trading:
             try:
-                self.pm_client.ensure_conditional_allowance(signal.token_id)
+                allowance_ok = self.pm_client.ensure_conditional_allowance(signal.token_id)
+                if not allowance_ok:
+                    logger.warning(
+                        "[Execute] SELL bloqué [%s]: allowance ERC-1155 non confirmée "
+                        "(token neg-risk — approuver manuellement via l'UI Polymarket)",
+                        signal.token_id[:16],
+                    )
+                    self.db.add_log(
+                        "WARNING", "trader",
+                        f"SELL bloqué {signal.token_id[:16]}: neg-risk, allowance manuelle requise",
+                    )
+                    return False
             except Exception as _ae:
                 logger.debug("[Execute] ensure_allowance pre-SELL erreur: %s", _ae)
 

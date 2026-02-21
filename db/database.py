@@ -204,13 +204,25 @@ class Database:
             return cur.lastrowid
 
     def update_order_status(self, local_id: int, status: str, order_id: Optional[str] = None, error: Optional[str] = None):
-        """Met à jour le statut d'un ordre."""
+        """Met à jour le statut d'un ordre par son ID local (DB)."""
         with self._cursor() as cur:
             cur.execute(
                 """UPDATE orders
                    SET status = ?, order_id = COALESCE(?, order_id), error = COALESCE(?, error)
                    WHERE id = ?""",
                 (status, order_id, error, local_id),
+            )
+
+    def update_order_status_by_clob_id(self, clob_id: str, status: str):
+        """Met à jour le statut d'un ordre par son ID CLOB (order_id externe).
+        Utilisé après cancel+replace pour marquer les ordres annulés comme 'cancelled'
+        en DB, évitant que _has_live_sell() les retrouve et bloque de futurs SELL."""
+        if not clob_id:
+            return
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE orders SET status = ? WHERE order_id = ? AND status = 'live'",
+                (status, clob_id),
             )
 
     def get_recent_orders(self, limit: int = 50) -> list[dict]:
