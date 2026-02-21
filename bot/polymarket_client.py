@@ -587,24 +587,28 @@ class PolymarketClient:
 
             # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)
-            allowance_raw = info.get("allowance") or info.get("Allowance") or "0"
+            # FORCE fix: lire tous les champs possibles sans court-circuit sur falsy
+            allowance_raw = info.get("allowance") if info.get("allowance") is not None \
+                else info.get("Allowance", "0")
+            logger.debug("[Allowance] Raw allowance value: %s", allowance_raw)  # LOG
             try:
-                allowance = int(allowance_raw)
+                allowance = int(str(allowance_raw).strip() or "0")
             except (ValueError, TypeError):
                 allowance = 0
 
-            _UINT256_MAX = 2**256 - 1  # FIXED: unlimited approval sentinel
-            _is_unlimited = (allowance == _UINT256_MAX or allowance > 2**255)
+            # FORCE fix: allowance uint256.max = approved
+            _is_unlimited = (allowance > 10**75 or allowance == 2**256 - 1)
             if _is_unlimited:
-                is_neg = token_id in self._neg_risk_confirmed
-                spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_ADDRESS
-                logger.info(  # LOG
-                    "[Allowance] Token %s: Unlimited approval (max uint) detected "
-                    "for spender %s → approved.",
-                    token_id[:16], spender,
+                logger.info(
+                    "[Allowance] Token %s: Unlimited approval detected (allowance=%s) → approved.",
+                    token_id[:16], allowance_raw,
                 )
+                self._allowance_confirmed.add(token_id)
+                self._allowance_pending_since.pop(token_id, None)
+                self._allowance_retry_count.pop(token_id, None)
+                return True
 
-            if allowance > 0 or _is_unlimited:  # FIXED: uint256.max was parsed as > 0 but guard both
+            if allowance > 0:
                 logger.debug(
                     "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
                 )
