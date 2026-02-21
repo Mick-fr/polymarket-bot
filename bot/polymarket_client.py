@@ -414,7 +414,9 @@ class PolymarketClient:
                 asset_type=AssetType.CONDITIONAL,
                 token_id=token_id,
             )
-            return self.client.get_balance_allowance(params) or {}
+            result = self.client.get_balance_allowance(params) or {}
+            logger.info("RAW balance-allowance %s: %s", token_id[:16], result)  # LOG ADDED
+            return result
         except Exception as e:
             logger.debug("get_conditional_allowance(%s): %s", token_id[:16], e)
             return {}
