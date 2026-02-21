@@ -332,6 +332,28 @@ class Trader:
         """
         try:
             logger.info("[Purge] Nettoyage DB (données > %d jours)...", days)
+
+            # 1. Sanitisation des positions corrompues (avg_price hors bornes)
+            san = self.db.sanitize_positions()
+            if san["corrected_avg_price"] > 0:
+                logger.warning(
+                    "[Purge] %d position(s) avec avg_price corrompu (hors [0,1]) "
+                    "remis à 0.50 : %s",
+                    san["corrected_avg_price"],
+                    [(d["token_id"], f"était {d['old_avg']:.4f}") for d in san["details"]],
+                )
+                self.db.add_log(
+                    "WARNING", "trader",
+                    f"[Purge] avg_price corrigé sur {san['corrected_avg_price']} position(s) "
+                    f"(valeurs hors bornes → 0.50)",
+                )
+            if san["removed_zero_qty"] > 0:
+                logger.info(
+                    "[Purge] %d position(s) orpheline(s) supprimée(s) (qty <= 0)",
+                    san["removed_zero_qty"],
+                )
+
+            # 2. Purge des données anciennes
             result = self.db.purge_old_data(days=days)
             total = result.get("rows_deleted", 0)
             by_table = result.get("by_table", {})
@@ -541,19 +563,41 @@ class Trader:
         Note : les shares sont valorisées au prix d'entrée (avg_price) et non
         au prix de marché, pour éviter des fluctuations HWM trop fréquentes.
         En cas d'erreur DB, retourne usdc_balance (mode dégradé safe).
+
+        Validation : avg_price est borné à [0.0, 1.0] — un share Polymarket
+        ne peut jamais valoir plus de 1.00 USDC. Une valeur hors bornes indique
+        une corruption de la DB (ex: amount_usdc stocké à la place du prix
+        unitaire). Dans ce cas, un warning est loggué et la position ignorée
+        pour éviter un HWM artificiel déclenchant un faux circuit breaker.
         """
         try:
             positions = self.db.get_all_positions()
-            inventory_value = sum(
-                float(p.get("quantity", 0)) * float(p.get("avg_price") or 0)
-                for p in positions
-            )
+            inventory_value = 0.0
+            skipped = []
+            for p in positions:
+                qty = float(p.get("quantity", 0))
+                raw_price = float(p.get("avg_price") or 0)
+                if raw_price < 0.0 or raw_price > 1.0:
+                    # avg_price hors bornes → position corrompue, ignorer
+                    skipped.append((p.get("token_id", "?")[:16], qty, raw_price))
+                    continue
+                inventory_value += qty * raw_price
+
+            if skipped:
+                logger.warning(
+                    "[Portfolio] %d position(s) ignorée(s) — avg_price hors bornes [0,1]: %s. "
+                    "Corriger via: UPDATE positions SET avg_price = <prix_reel> WHERE token_id = '<id>'",
+                    len(skipped),
+                    [(tid, f"qty={q:.2f}", f"avg={p:.4f}") for tid, q, p in skipped],
+                )
+
             total = usdc_balance + inventory_value
             if inventory_value > 0:
                 logger.debug(
                     "[Portfolio] USDC=%.4f + inventaire=%.4f → total=%.4f USDC "
-                    "(%d position(s))",
-                    usdc_balance, inventory_value, total, len(positions),
+                    "(%d position(s), %d ignorée(s))",
+                    usdc_balance, inventory_value, total,
+                    len(positions) - len(skipped), len(skipped),
                 )
             return total
         except Exception as e:

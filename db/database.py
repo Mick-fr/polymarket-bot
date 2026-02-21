@@ -400,6 +400,71 @@ class Database:
             cur.execute("SELECT * FROM positions WHERE quantity != 0.0")
             return [dict(row) for row in cur.fetchall()]
 
+    def sanitize_positions(self) -> dict:
+        """Détecte et corrige les avg_price aberrants dans la table positions.
+
+        Un share Polymarket vaut toujours entre 0.01 et 0.99 USDC.
+        Un avg_price hors de [0.001, 1.0] indique une corruption de données
+        (ex: amount_usdc total stocké à la place du prix unitaire, ou division
+        par zéro aboutissant à un prix nul).
+
+        Actions :
+          - avg_price > 1.0 : probablement amount_usdc stocké au lieu du prix
+            unitaire → on ne peut pas deviner le prix réel sans la quantité.
+            On plafonne à 0.50 (prix médian neutre) et on loggue le problème.
+          - avg_price <= 0.0 : prix nul/négatif → on remplace par 0.50.
+          - quantity <= 0 avec la position existante : nettoyage des positions
+            épuisées ou négatives (ne devraient pas exister, mais par sécurité).
+
+        Retourne un dict résumant les corrections effectuées.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        corrected_price = []
+        removed_zero_qty = 0
+
+        with self._cursor() as cur:
+            cur.execute("SELECT token_id, quantity, avg_price FROM positions")
+            rows = cur.fetchall()
+
+        for row in rows:
+            token_id = row["token_id"]
+            qty = row["quantity"]
+            avg = row["avg_price"] or 0.0
+
+            # Positions à quantity nulle ou négative (orphelines)
+            if qty <= 0.0:
+                with self._cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM positions WHERE token_id = ? AND quantity <= 0.0",
+                        (token_id,),
+                    )
+                    if cur.rowcount > 0:
+                        removed_zero_qty += 1
+                continue
+
+            # avg_price hors bornes valides
+            if avg > 1.0 or avg <= 0.0:
+                # Meilleure estimation conservative : 0.50 (prix médian)
+                # L'utilisateur devra corriger manuellement si nécessaire
+                corrected_avg = 0.50
+                with self._cursor() as cur:
+                    cur.execute(
+                        "UPDATE positions SET avg_price = ?, updated_at = ? WHERE token_id = ?",
+                        (corrected_avg, now, token_id),
+                    )
+                corrected_price.append({
+                    "token_id": token_id[:20],
+                    "qty": qty,
+                    "old_avg": avg,
+                    "new_avg": corrected_avg,
+                })
+
+        return {
+            "corrected_avg_price": len(corrected_price),
+            "removed_zero_qty": removed_zero_qty,
+            "details": corrected_price,
+        }
+
     # ── Cooldowns (news-breaker) ─────────────────────────────────
 
     def set_cooldown(self, token_id: str, duration_seconds: float, reason: str = ""):
