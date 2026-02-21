@@ -65,6 +65,11 @@ class Trader:
 
         self._connect()
 
+        # Vérifier et mettre à jour les allowances ERC-1155 pour tous les tokens
+        # en inventaire au démarrage (évite les erreur 400 sur les SELL existants)
+        if not self.config.bot.paper_trading:
+            self._ensure_inventory_allowances()
+
         # Reset HWM au démarrage pour éviter un circuit breaker immédiat
         # (le solde peut avoir changé entre deux sessions via fills ou dépôts)
         balance = self._fetch_balance()
@@ -104,6 +109,60 @@ class Trader:
                 self._handle_error(e)
 
         self._shutdown()
+
+    def _ensure_inventory_allowances(self):
+        """
+        Vérifie et met à jour les allowances ERC-1155 (CONDITIONAL) pour tous les
+        tokens actuellement en inventaire dans la DB.
+
+        Problème résolu : quand le bot tente de SELL un token, Polymarket exige que
+        le contrat CTF Exchange ait l'approbation ERC-1155 (setApprovalForAll) pour
+        transférer les shares. Si cette approbation manque → erreur 400
+        "not enough balance / allowance".
+
+        Cette méthode est appelée :
+          - Au démarrage (pour les positions accumulées lors de sessions précédentes)
+          - Après chaque fill BUY confirmé (pour préparer le SELL futur)
+
+        L'appel à update_balance_allowance() déclenche la transaction on-chain
+        de setApprovalForAll via le wallet signataire du bot.
+        """
+        try:
+            positions = self.db.get_all_positions()
+            if not positions:
+                logger.debug("[Allowance] Aucune position en inventaire à vérifier.")
+                return
+
+            token_ids = [p["token_id"] for p in positions if p.get("token_id")]
+            logger.info(
+                "[Allowance] Vérification ERC-1155 pour %d token(s) en inventaire...",
+                len(token_ids),
+            )
+            self.db.add_log(
+                "INFO", "trader",
+                f"Vérification allowances ERC-1155 pour {len(token_ids)} position(s)",
+            )
+
+            results = self._call_with_timeout(
+                lambda: self.pm_client.ensure_allowances_for_tokens(token_ids),
+                timeout=30.0,
+                label="ensure_allowances_for_tokens",
+            )
+
+            if results:
+                failures = [tid for tid, ok in results.items() if not ok]
+                if failures:
+                    logger.warning(
+                        "[Allowance] %d token(s) sans allowance confirmée: %s",
+                        len(failures),
+                        [t[:16] for t in failures],
+                    )
+                    self.db.add_log(
+                        "WARNING", "trader",
+                        f"Allowance ERC-1155 manquante pour {len(failures)} token(s)",
+                    )
+        except Exception as e:
+            logger.warning("[Allowance] Erreur vérification inventaire: %s", e)
 
     def _connect(self):
         """Connexion au CLOB avec retry."""
@@ -749,6 +808,20 @@ class Trader:
                     balance_delta = -cost if signal.side == "buy" else cost
                     current = self.db.get_latest_balance() or self.config.bot.paper_balance
                     self.db.record_balance(max(0.0, current + balance_delta))
+
+                # ── Allowance ERC-1155 après fill BUY ──────────────────────────
+                # Après un fill BUY, s'assurer que l'allowance ERC-1155 existe pour
+                # pouvoir SELL ce token plus tard (sans erreur 400).
+                # Appel asynchrone (daemon thread) pour ne pas bloquer le cycle.
+                if signal.side == "buy" and not self.config.bot.paper_trading:
+                    import threading
+                    def _check_allowance():
+                        try:
+                            self.pm_client.ensure_conditional_allowance(signal.token_id)
+                        except Exception:
+                            pass
+                    t = threading.Thread(target=_check_allowance, daemon=True)
+                    t.start()
 
                 # ── Analytics : ouvrir/fermer un trade round-trip ──
                 try:
