@@ -32,6 +32,12 @@ OBI_POLL_INTERVAL = 8
 class Trader:
     """Moteur principal du bot de trading OBI."""
 
+    # Nombre de cycles entre deux purges automatiques de la DB.
+    # À 8s/cycle : 10800 cycles/jour. On purge toutes les 1350 cycles ≈ 3h.
+    # Assez fréquent pour éviter une DB volumineuse, assez rare pour ne pas
+    # perturber la boucle principale (la purge prend typiquement < 50ms).
+    _DB_PURGE_INTERVAL_CYCLES: int = 1350  # ≈ 3 heures à 8s/cycle
+
     def __init__(self, config: AppConfig, db: Database):
         self.config = config
         self.db = db
@@ -40,6 +46,8 @@ class Trader:
         self.strategy: Optional[BaseStrategy] = None
         self._running = False
         self._consecutive_errors = 0
+        # Compteur de cycles depuis la dernière purge DB
+        self._cycles_since_purge: int = 0
         # NOTE: le tracking des SELL de liquidation est maintenant basé sur la DB
         # (orders WHERE side='sell' AND status='live' AND token a une position),
         # ce qui survit aux redémarrages. Plus de set en mémoire.
@@ -62,6 +70,9 @@ class Trader:
 
         os_signal.signal(os_signal.SIGTERM, self._handle_shutdown)
         os_signal.signal(os_signal.SIGINT, self._handle_shutdown)
+
+        # Purge des données anciennes au démarrage (nettoyage DB)
+        self._run_db_purge()
 
         self._connect()
 
@@ -296,7 +307,50 @@ class Trader:
         except Exception as se:
             logger.debug("[Analytics] Erreur snapshot: %s", se)
 
+        # 10. Purge DB périodique (tous les _DB_PURGE_INTERVAL_CYCLES cycles)
+        self._cycles_since_purge += 1
+        if self._cycles_since_purge >= self._DB_PURGE_INTERVAL_CYCLES:
+            self._run_db_purge()
+            self._cycles_since_purge = 0
+
         logger.info("[Cycle] ── Cycle terminé. Prochain dans %ds. ──────────", OBI_POLL_INTERVAL)
+
+    def _run_db_purge(self, days: int = 30):
+        """Lance la purge des données anciennes de la DB de manière non-bloquante.
+
+        Appelé :
+          - Au démarrage du bot (nettoyage initial avant connexion CLOB)
+          - Périodiquement toutes les _DB_PURGE_INTERVAL_CYCLES cycles (≈ 3h)
+
+        La purge est synchrone mais rapide (SQLite DELETE avec index < 50ms).
+        Elle ne bloque pas le cycle de trading car elle s'exécute après la
+        completion de toutes les étapes actives du cycle.
+
+        Args:
+            days: Rétention des logs/ordres/snapshots en jours (défaut 30).
+                  Les trades fermés sont conservés 2× plus longtemps (60 jours).
+        """
+        try:
+            logger.info("[Purge] Nettoyage DB (données > %d jours)...", days)
+            result = self.db.purge_old_data(days=days)
+            total = result.get("rows_deleted", 0)
+            by_table = result.get("by_table", {})
+            if total > 0:
+                details = ", ".join(
+                    f"{tbl}:{cnt}" for tbl, cnt in by_table.items() if cnt > 0
+                )
+                logger.info(
+                    "[Purge] %d ligne(s) supprimée(s) — %s",
+                    total, details,
+                )
+                self.db.add_log(
+                    "INFO", "trader",
+                    f"[Purge] DB nettoyée: {total} ligne(s) — {details}",
+                )
+            else:
+                logger.debug("[Purge] Aucune donnée à supprimer (DB propre).")
+        except Exception as e:
+            logger.warning("[Purge] Erreur lors du nettoyage DB: %s", e)
 
     def _reconcile_fills(self):
         """

@@ -46,6 +46,16 @@ class PolymarketClient:
         # le token est mis en quarantaine → SELL bloqué comme s'il était neg-risk.
         self._allowance_retry_count: dict[str, int] = {}
         self._ALLOWANCE_MAX_RETRIES = 3  # Au-delà → traiter comme neg-risk
+        # Tokens pour lesquels update_balance_allowance vient d'être envoyé.
+        # La propagation blockchain est asynchrone (typiquement 5-30 secondes).
+        # Pendant ce délai, tout SELL doit être différé (retour False) pour éviter
+        # l'erreur 400 "not enough balance / allowance".
+        # Structure : {token_id: timestamp_envoi_float}
+        # Nettoyé automatiquement quand l'allowance est confirmée en GET.
+        self._allowance_pending_since: dict[str, float] = {}
+        # Durée minimale d'attente après update_balance_allowance avant de retenter
+        # un SELL. 40 secondes = marge confortable pour la propagation blockchain.
+        self._ALLOWANCE_PROPAGATION_DELAY_S: float = 40.0
 
     def connect(self):
         """Initialise le client et dérive les credentials API (L1 → L2)."""
@@ -252,8 +262,13 @@ class PolymarketClient:
         doivent être approuvés manuellement via l'UI Polymarket.
         Cette méthode détecte les tokens neg-risk et loggue un warning.
 
-        Retourne True si l'allowance est présente ou mise à jour avec succès.
-        Retourne False si neg-risk (non gérable automatiquement) ou erreur.
+        Retourne True  → allowance active, SELL peut être soumis.
+        Retourne False → SELL doit être différé :
+          - token neg-risk (contrat NegRisk Exchange, approbation manuelle requise)
+          - update_balance_allowance envoyé, propagation blockchain en cours
+            (délai de _ALLOWANCE_PROPAGATION_DELAY_S secondes)
+          - token en quarantaine (max retries dépassé)
+          - erreur réseau ou API
         """
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
@@ -292,10 +307,30 @@ class PolymarketClient:
                     pass
                 return False  # Signale que ce token peut poser problème
 
-            # 0c. Quarantaine : token ayant dépassé _ALLOWANCE_MAX_RETRIES tentatives
-            #     d'approbation sans que l'allowance n'apparaisse en GET.
-            #     Probable contrat non standard ou délai API extrêmement long.
-            #     Traité comme neg-risk : SELL bloqué, warning loggué.
+            # 0c. Token en attente de propagation blockchain : update_balance_allowance
+            #     a été envoyé récemment mais la blockchain n'a pas encore propagé
+            #     l'autorisation. Différer le SELL pour éviter l'erreur 400.
+            import time as _time
+            pending_since = self._allowance_pending_since.get(token_id)
+            if pending_since is not None:
+                elapsed = _time.time() - pending_since
+                if elapsed < self._ALLOWANCE_PROPAGATION_DELAY_S:
+                    logger.info(
+                        "[Allowance] Token %s: approbation ERC-1155 en cours de propagation "
+                        "(%.0fs / %.0fs) → SELL différé au prochain cycle.",
+                        token_id[:16], elapsed, self._ALLOWANCE_PROPAGATION_DELAY_S,
+                    )
+                    return False  # SELL différé, pas bloqué définitivement
+                # Délai écoulé → vérifier si l'allowance est maintenant active
+                logger.debug(
+                    "[Allowance] Token %s: délai propagation écoulé (%.0fs), re-vérification...",
+                    token_id[:16], elapsed,
+                )
+                # Continuer vers le GET ci-dessous pour confirmer
+
+            # 0d. Quarantaine : token ayant dépassé _ALLOWANCE_MAX_RETRIES tentatives
+            #     d'approbation sans que l'allowance n'apparaisse en GET (même après délai).
+            #     Probable contrat non standard. Traité comme neg-risk : SELL bloqué.
             retry_count = self._allowance_retry_count.get(token_id, 0)
             if retry_count >= self._ALLOWANCE_MAX_RETRIES:
                 logger.warning(
@@ -306,7 +341,7 @@ class PolymarketClient:
                 )
                 return False
 
-            # 1. Vérifier l'allowance actuelle
+            # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)
             allowance_raw = info.get("allowance") or info.get("Allowance") or "0"
             try:
@@ -319,17 +354,20 @@ class PolymarketClient:
                     "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
                 )
                 self._allowance_confirmed.add(token_id)
-                # Réinitialiser le compteur de retries si l'allowance finit par apparaître
+                # Nettoyage : supprimer pending et retry_count devenus inutiles
+                self._allowance_pending_since.pop(token_id, None)
                 self._allowance_retry_count.pop(token_id, None)
                 return True
 
-            # 2. Allowance insuffisante → déclencher l'approbation
-            #    Incrémenter le compteur de retries pour ce token
+            # 2. Allowance toujours à 0 → envoyer update_balance_allowance
+            #    et marquer le token comme "pending" (propagation en cours).
+            #    Le SELL sera différé jusqu'à _ALLOWANCE_PROPAGATION_DELAY_S secondes.
             self._allowance_retry_count[token_id] = retry_count + 1
             logger.info(
-                "[Allowance] Token %s: allowance=0 → approbation ERC-1155... "
-                "(tentative %d/%d)",
+                "[Allowance] Token %s: allowance=0 → envoi approbation ERC-1155 "
+                "(tentative %d/%d) — SELL différé %ds pour propagation.",
                 token_id[:16], retry_count + 1, self._ALLOWANCE_MAX_RETRIES,
+                int(self._ALLOWANCE_PROPAGATION_DELAY_S),
             )
             params = BalanceAllowanceParams(
                 asset_type=AssetType.CONDITIONAL,
@@ -339,11 +377,13 @@ class PolymarketClient:
             logger.info(
                 "[Allowance] Token %s: approbation envoyée → %s", token_id[:16], resp
             )
-            # NOTE : on NE met PAS en cache ici car allowance=0 persiste malgré update.
-            # On retourne True pour laisser passer CE SELL (l'update vient juste d'être
-            # envoyé, il peut mettre quelques secondes à propager). Si l'erreur 400 se
-            # répète au cycle suivant, le compteur augmentera jusqu'à quarantaine.
-            return True
+            # Enregistrer le timestamp d'envoi → le prochain appel verra le délai
+            # et différera le SELL sans erreur 400.
+            self._allowance_pending_since[token_id] = _time.time()
+            # Retourner False : le SELL de ce cycle est différé (l'update vient d'être
+            # envoyé, la propagation n'est pas encore active). Le cycle suivant,
+            # le check "pending_since" prendra le relais jusqu'à expiration du délai.
+            return False
 
         except Exception as e:
             logger.warning(

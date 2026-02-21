@@ -463,6 +463,93 @@ class Database:
                 (now, level, source, message),
             )
 
+    def purge_old_data(self, days: int = 30) -> dict:
+        """Nettoie les données anciennes pour éviter la croissance incontrôlée de la DB.
+
+        Supprime :
+          - logs           : entrées de plus de `days` jours
+          - balance_history: snapshots de plus de `days` jours (1 par cycle × 10800 cycles/jour)
+          - orders         : ordres terminaux (cancelled, error, rejected) de plus de `days` jours
+          - strategy_snapshots : snapshots de plus de `days` jours (analytics rétrospectif)
+          - trades closed  : trades fermés de plus de `days * 2` jours (rétention plus longue)
+          - analytics_cache : invalidé à chaque purge (données stale)
+          - cooldowns      : nettoyage des entrées expirées (toujours fait, sans limite de jours)
+
+        Préservé indéfiniment :
+          - positions       : inventaire actuel (ne jamais supprimer)
+          - trades 'open'   : round-trips en cours (ne jamais supprimer)
+          - bot_state       : kill_switch, HWM, daily_loss (configuration)
+          - orders 'live'   : ordres actifs dans le carnet (ne pas toucher)
+
+        Retourne un dict {table: rows_deleted} pour audit.
+
+        Thread-safe : utilise le même _cursor() que toutes les autres méthodes.
+        Non-bloquant pour la boucle principale : appelé une seule fois au démarrage
+        du bot (pas de purge mid-cycle).
+        """
+        cutoff_dt = datetime.now(timezone.utc)
+        # Calculer la date seuil ISO pour comparaison avec les timestamps TEXT
+        # SQLite stocke les timestamps comme TEXT ISO8601 → comparaison lexicographique OK
+        from datetime import timedelta
+        cutoff_main = (cutoff_dt - timedelta(days=days)).isoformat()
+        cutoff_trades = (cutoff_dt - timedelta(days=days * 2)).isoformat()
+
+        deleted = {}
+
+        with self._cursor() as cur:
+            # 1. Logs système
+            cur.execute(
+                "DELETE FROM logs WHERE timestamp < ?",
+                (cutoff_main,),
+            )
+            deleted["logs"] = cur.rowcount
+
+            # 2. Historique des soldes
+            cur.execute(
+                "DELETE FROM balance_history WHERE timestamp < ?",
+                (cutoff_main,),
+            )
+            deleted["balance_history"] = cur.rowcount
+
+            # 3. Ordres terminaux anciens (cancelled, error, rejected)
+            #    Les ordres 'live', 'pending', 'submitted', 'matched' sont préservés
+            cur.execute(
+                """DELETE FROM orders
+                   WHERE timestamp < ?
+                     AND status IN ('cancelled', 'error', 'rejected')""",
+                (cutoff_main,),
+            )
+            deleted["orders"] = cur.rowcount
+
+            # 4. Snapshots de stratégie (données analytics rétrospectives)
+            cur.execute(
+                "DELETE FROM strategy_snapshots WHERE timestamp < ?",
+                (cutoff_main,),
+            )
+            deleted["strategy_snapshots"] = cur.rowcount
+
+            # 5. Trades fermés (rétention 2× plus longue pour les analyses PnL)
+            cur.execute(
+                "DELETE FROM trades WHERE status = 'closed' AND close_timestamp < ?",
+                (cutoff_trades,),
+            )
+            deleted["trades"] = cur.rowcount
+
+            # 6. Cache analytics (invalider complètement — données potentiellement stale)
+            cur.execute("DELETE FROM analytics_cache")
+            deleted["analytics_cache"] = cur.rowcount
+
+            # 7. Cooldowns expirés (indépendant de `days`, toujours nettoyés)
+            import time as _time
+            cur.execute(
+                "DELETE FROM cooldowns WHERE until_ts < ?",
+                (_time.time(),),
+            )
+            deleted["cooldowns"] = cur.rowcount
+
+        total_deleted = sum(deleted.values())
+        return {"rows_deleted": total_deleted, "by_table": deleted, "cutoff_days": days}
+
     def get_recent_logs(self, limit: int = 100, level: Optional[str] = None) -> list[dict]:
         """Retourne les derniers logs, filtrable par niveau."""
         with self._cursor() as cur:
