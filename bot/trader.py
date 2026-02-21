@@ -233,8 +233,8 @@ class Trader:
                     raw_balance = info.get("balance", "0") or "0"
                     clob_qty = float(raw_balance) / 1e6
 
-                    if clob_qty < db_qty * 0.5:
-                        # Désynchronisation significative : CLOB < 50% de la DB
+                    if clob_qty < db_qty * 0.5 or clob_qty > db_qty * 2.0:
+                        # Désync dans les deux sens : CLOB << DB ou CLOB >> DB
                         logger.warning(
                             "[Sync] DÉSYNC token %s: DB=%.4f → CLOB=%.4f shares "
                             "(raw=%s). Correction DB.",
@@ -1417,6 +1417,14 @@ class Trader:
                         signal.token_id[:16], qty_available, _POLY_MIN_SIZE,
                     )
                     return False
+                if signal.size < _POLY_MIN_SIZE:
+                    # signal.size (DB qty) < 5 mais CLOB en a assez → désync → vendre 5 shares
+                    adjusted = min(qty_available, _POLY_MIN_SIZE)
+                    logger.warning(
+                        "[Execute] SELL %s: signal.size=%.4f < min=%.1f → ajusté à %.1f (clob=%.2f)",
+                        signal.token_id[:16], signal.size, _POLY_MIN_SIZE, adjusted, qty_available,
+                    )
+                    signal.size = adjusted
                 if signal.size > qty_available:  # FIXED: strict, pas *0.99
                     logger.warning(
                         "[Execute] SELL skippé %s: qty=%.2f > clob_available=%.4f "
