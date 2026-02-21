@@ -108,6 +108,56 @@ class PolymarketClient:
             logger.debug("Midpoint indisponible pour %s: %s", token_id, e)
             return None
 
+    def get_midpoint_robust(self, token_id: str) -> Optional[float]:
+        """Retourne le mid de marché via deux mécanismes en cascade.
+
+        1. /midpoint (un seul appel HTTP, direct et rapide).
+           → Retourne None quand le book est vide (marché inactif, 404).
+        2. Fallback : (best_bid + best_ask) / 2 via get_price(BUY) + get_price(SELL).
+           get_price() interroge le meilleur niveau du book — parfois disponible
+           même quand /midpoint répond None (ex: un seul côté du book peuplé).
+        3. Si les deux échouent → None (l'appelant utilisera le last_mid DB).
+
+        Retourne un float dans [0.01, 0.99] ou None.
+        """
+        # ── Tentative 1 : /midpoint ────────────────────────────────────────────
+        try:
+            mid = self.client.get_midpoint(token_id)
+            if mid is not None:
+                mid_f = float(mid)
+                if 0.01 <= mid_f <= 0.99:
+                    return mid_f
+        except Exception as e:
+            logger.debug("[MidRobust] %s: /midpoint erreur: %s", token_id[:16], e)
+
+        # ── Tentative 2 : (bid + ask) / 2 via get_price ───────────────────────
+        try:
+            bid = self.client.get_price(token_id, side="BUY")
+            ask = self.client.get_price(token_id, side="SELL")
+            if bid is not None and ask is not None:
+                bid_f, ask_f = float(bid), float(ask)
+                if 0.01 <= bid_f <= 0.99 and 0.01 <= ask_f <= 0.99 and bid_f < ask_f:
+                    mid_f = (bid_f + ask_f) / 2.0
+                    logger.debug(
+                        "[MidRobust] %s: /midpoint vide → fallback bid=%.4f ask=%.4f mid=%.4f",
+                        token_id[:16], bid_f, ask_f, mid_f,
+                    )
+                    return mid_f
+            # Un seul côté disponible : utiliser ce qu'on a
+            val = bid or ask
+            if val is not None:
+                val_f = float(val)
+                if 0.01 <= val_f <= 0.99:
+                    logger.debug(
+                        "[MidRobust] %s: un seul côté disponible (val=%.4f) → approx mid",
+                        token_id[:16], val_f,
+                    )
+                    return val_f
+        except Exception as e:
+            logger.debug("[MidRobust] %s: get_price fallback erreur: %s", token_id[:16], e)
+
+        return None  # Les deux mécanismes ont échoué
+
     def get_price(self, token_id: str, side: str = "buy") -> Optional[float]:
         """Retourne le meilleur prix bid ou ask."""
         try:

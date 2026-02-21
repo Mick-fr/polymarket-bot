@@ -64,9 +64,10 @@ class Trader:
         #   - 404/err → TTL _INVENTORY_MID_TTL_404_S (300s)  # CHANGED
         # Reset à chaque redémarrage → toutes positions fetchées au 1er cycle.
         self._mid_last_fetched: dict[str, float] = {}
-        # CHANGED: set des tokens ayant retourné 404 lors de la dernière tentative.
+        # Set des tokens ayant retourné None/404 lors de la dernière tentative.
         # Utilisé pour choisir le bon TTL (404 = marché sans liquidité = moins urgent).
-        self._mid_404_tokens: set[str] = {}
+        # FIXED: était {} (dict vide) — corrigé en set() pour cohérence avec .add()/.discard()
+        self._mid_404_tokens: set[str] = set()
         # NOTE: le tracking des SELL de liquidation est maintenant basé sur la DB
         # (orders WHERE side='sell' AND status='live' AND token a une position),
         # ce qui survit aux redémarrages. Plus de set en mémoire.
@@ -279,9 +280,19 @@ class Trader:
             balance, portfolio_value, self.db.get_high_water_mark(),
         )
 
+        # 5b. Sizing adaptatif : si cash très bas, élargir temporairement max_exposure_pct
+        # pour permettre au moins 1 BUY ou 1 SELL sans blocage immédiat.
+        # N'est PAS persisté en config — actif uniquement pour ce cycle.
+        effective_max_expo = self._get_effective_max_exposure(balance)
+
+        # 5c. Liquidation partielle auto si cash très bas et inventaire >> cash.
+        # Déclenché ici (après cancel+replace) pour éviter les doubles SELL.
+        if not self.config.bot.paper_trading:
+            self._maybe_liquidate_partial(balance, portfolio_value)
+
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
-        logger.info("[Cycle] Étape 6: analyse OBI → signaux")
+        logger.info("[Cycle] Étape 6: analyse OBI → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
         signals = self.strategy.analyze(balance=balance)
         logger.info("[Cycle] Étape 6: %d signal(s) généré(s)", len(signals))
 
@@ -578,6 +589,151 @@ class Trader:
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
 
+    # ── Sizing adaptatif & liquidation partielle ─────────────────────────────
+
+    def _get_effective_max_exposure(self, balance: float) -> float:
+        """Retourne le max_exposure_pct effectif pour ce cycle.
+
+        Si le cash disponible est très bas (< 10 USDC), on élargit temporairement
+        le plafond d'exposition à 35% pour éviter que tous les signaux BUY soient
+        rejetés en fractional sizing quand l'inventaire dépasse déjà la limite normale.
+
+        Ce n'est PAS persisté en config — actif uniquement pour le cycle courant.
+        Valeur par défaut : config.max_exposure_pct (20%).
+        """
+        base_pct = getattr(self.config.bot, "max_exposure_pct", 0.20)
+        if balance < 10.0:
+            adaptive_pct = 0.35
+            if adaptive_pct > base_pct:
+                logger.info(
+                    "[SizingAdaptatif] Cash bas (%.2f USDC) → max_expo élargi "
+                    "%.0f%% → %.0f%% pour ce cycle.",
+                    balance, base_pct * 100, adaptive_pct * 100,
+                )
+                # Patch temporaire sur le RiskManager pour ce cycle uniquement
+                try:
+                    object.__setattr__(self.risk.config, "max_exposure_pct", adaptive_pct)
+                except (AttributeError, TypeError):
+                    pass  # config frozen dataclass → on ignore si indisponible
+                return adaptive_pct
+        else:
+            # Restaurer la valeur par défaut si elle avait été patchée
+            if getattr(self.risk.config, "max_exposure_pct", base_pct) != base_pct:
+                try:
+                    object.__setattr__(self.risk.config, "max_exposure_pct", base_pct)
+                except (AttributeError, TypeError):
+                    pass
+        return base_pct
+
+    def _maybe_liquidate_partial(self, balance: float, portfolio_value: float) -> None:
+        """Déclenche une liquidation partielle si le cash est trop bas vs l'inventaire.
+
+        Condition : cash < 10 USDC ET inv_mid > cash × 5.
+        Action : market SELL 20% des positions dont val_mid > 1 USDC,
+                 dans la limite de 3 positions par cycle (évite le flood).
+
+        Utilise current_mid DB (mis à jour par _refresh_inventory_mids) pour
+        calculer val_mid. Ne touche pas aux positions déjà avec un SELL live.
+
+        Ne fait rien en paper trading — appelé seulement depuis _cycle() en mode réel.
+        """
+        inv_value = portfolio_value - balance
+        if balance >= 10.0 or inv_value <= balance * 5:
+            return  # Pas de déclenchement
+
+        try:
+            positions = self.db.get_all_positions()
+        except Exception as e:
+            logger.warning("[Liquidation] Erreur lecture positions: %s", e)
+            return
+
+        # Positions éligibles : val_mid > 1 USDC, pas de SELL live déjà en place
+        candidates = []
+        for p in positions:
+            token_id = p.get("token_id", "")
+            qty      = float(p.get("quantity") or 0)
+            mid      = float(p.get("current_mid") or 0)
+            if qty <= 0 or not (0.01 <= mid <= 0.99):
+                continue
+            val_mid = qty * mid
+            if val_mid < 1.0:
+                continue
+            # Pas de SELL déjà dans le carnet pour ce token
+            if self.db.has_live_sell(token_id):
+                continue
+            candidates.append({
+                "token_id": token_id,
+                "qty":      qty,
+                "mid":      mid,
+                "val_mid":  val_mid,
+                "question": (p.get("question") or token_id[:20])[:40],
+            })
+
+        if not candidates:
+            logger.info(
+                "[Liquidation] Cash bas (%.2f USDC, inv=%.2f) mais aucune position "
+                "éligible (val_mid > 1 USDC sans SELL live).",
+                balance, inv_value,
+            )
+            return
+
+        # Tri par val_mid décroissant : liquider les plus grosses d'abord
+        candidates.sort(key=lambda x: x["val_mid"], reverse=True)
+        max_to_sell = 3  # Limite par cycle pour éviter le flood
+        sold = 0
+
+        logger.warning(
+            "[Liquidation] ⚠ DÉCLENCHEMENT: cash=%.2f USDC, inv_mid=%.2f USDC "
+            "(ratio ×%.1f ≥ ×5). Liquidation partielle (20%% × %d position(s)).",
+            balance, inv_value,
+            inv_value / balance if balance > 0 else 0,
+            min(len(candidates), max_to_sell),
+        )
+
+        for pos in candidates[:max_to_sell]:
+            token_id = pos["token_id"]
+            qty_sell  = round(pos["qty"] * 0.20, 2)  # 20% de la position
+            if qty_sell < 1.0:
+                qty_sell = 1.0  # minimum 1 share
+            if qty_sell > pos["qty"]:
+                qty_sell = pos["qty"]
+
+            try:
+                # place_market_order attend un amount en USDC.
+                # Pour un SELL : qty_sell shares × mid ≈ montant USDC à céder.
+                usdc_amount = round(qty_sell * pos["mid"], 4)
+                resp = self._call_with_timeout(
+                    lambda tid=token_id, amt=usdc_amount: self.pm_client.place_market_order(
+                        token_id=tid, amount=amt, side="sell"
+                    ),
+                    timeout=12.0,
+                    label=f"liquidation_partial({token_id[:16]})",
+                )
+                order_id = resp.get("orderID") or resp.get("id") if isinstance(resp, dict) else None
+                logger.info(
+                    "[Liquidation] SELL market %s qty≈%.2f (%.2f USDC) → order_id=%s",
+                    pos["question"], qty_sell, usdc_amount, order_id or "?",
+                )
+                # Enregistrer en DB
+                self.db.record_order(
+                    market_id=token_id,
+                    token_id=token_id,
+                    side="sell",
+                    order_type="market",
+                    price=pos["mid"],
+                    quantity=qty_sell,
+                    status="live",
+                    clob_order_id=order_id or "",
+                    market_question=pos["question"],
+                )
+                sold += 1
+            except Exception as e:
+                logger.warning(
+                    "[Liquidation] Échec SELL market %s: %s", token_id[:16], e
+                )
+
+        logger.info("[Liquidation] %d/%d SELL market soumis ce cycle.", sold, len(candidates[:max_to_sell]))
+
     def _refresh_inventory_mids(self) -> dict[str, float]:
         """Rafraîchit les mids de marché pour toutes les positions sans mid récent.
 
@@ -646,35 +802,37 @@ class Trader:
 
         for token_id in to_fetch:
             try:
+                # CHANGED: get_midpoint_robust() = /midpoint puis fallback (bid+ask)/2
                 mid = self._call_with_timeout(
-                    lambda tid=token_id: self.pm_client.get_midpoint(tid),
-                    timeout=5.0,
-                    label=f"get_midpoint({token_id[:16]})",
+                    lambda tid=token_id: self.pm_client.get_midpoint_robust(tid),
+                    timeout=8.0,
+                    label=f"get_midpoint_robust({token_id[:16]})",
                 )
 
                 if mid is not None and 0.01 <= float(mid) <= 0.99:
-                    # ── 200 OK avec mid valide ────────────────────────────────
+                    # ── Mid valide (via /midpoint ou bid+ask fallback) ─────────
                     mid_f = float(mid)
                     self.db.update_position_mid(token_id, mid_f)
                     self._mid_last_fetched[token_id] = now
-                    self._mid_404_tokens.discard(token_id)   # plus en 404
+                    self._mid_404_tokens.discard(token_id)
                     refreshed[token_id] = mid_f
                     n_ok += 1
 
                 else:
-                    # CHANGED: mid=None ou hors bornes = book vide (404-like)
-                    # → marquer TTL long, conserver l'ancien current_mid DB (stale)
+                    # Les deux mécanismes ont échoué (book vraiment vide).
+                    # → TTL long, on conserve le current_mid DB stale comme fallback.
+                    # Ne PAS écraser current_mid en DB ici.
                     self._mid_last_fetched[token_id] = now
                     self._mid_404_tokens.add(token_id)
                     logger.debug(
-                        "[MidRefresh] %s: mid absent/invalide (val=%s) → TTL 404 (5min), "
-                        "conservation mid DB existant comme fallback.",
-                        token_id[:16], mid,
+                        "[MidRefresh] %s: /midpoint + bid/ask vides → TTL 5min, "
+                        "conservation mid DB stale.",
+                        token_id[:16],
                     )
                     n_404 += 1
 
             except Exception as e:
-                # Erreur réseau / timeout → TTL court (on réessaiera au prochain cycle)
+                # Erreur réseau / timeout → TTL court (réessai au prochain cycle)
                 self._mid_last_fetched[token_id] = now - self._INVENTORY_MID_TTL_OK_S + 16
                 logger.debug("[MidRefresh] %s: erreur réseau: %s", token_id[:16], e)
                 n_err += 1
