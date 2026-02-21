@@ -557,9 +557,17 @@ class Trader:
     def _log_inventory_breakdown(self, usdc_balance: float, portfolio_value: float):
         """Loggue le détail de chaque position en inventaire (niveau INFO).
 
-        Affiche pour chaque position : question (tronquée), qty, avg_price DB,
-        valeur calculée (qty × avg_price), et signale les avg_price hors bornes.
-        Utile pour diagnostiquer les écarts entre portfolio DB et dashboard Polymarket.
+        Affiche pour chaque position :
+          - question (tronquée à 35 chars)
+          - qty
+          - avg (prix d'entrée DB)
+          - val_avg (qty × avg_price, valorisation historique)
+          - mid (current_mid DB, mis à jour chaque cycle par strategy.py)
+          - val_mid (qty × current_mid, valorisation au marché actuel)
+          - flag ⚠ si avg_price hors bornes ou mid absent
+
+        val_mid est la valorisation utilisée par _compute_portfolio_value() quand
+        current_mid est disponible. En son absence, val_avg est le fallback.
 
         Appelé à l'étape 3b de chaque cycle, après _compute_portfolio_value().
         """
@@ -570,14 +578,33 @@ class Trader:
             inventory_total = portfolio_value - usdc_balance
             lines = []
             for p in positions:
-                qty = float(p.get("quantity", 0))
-                avg = float(p.get("avg_price") or 0)
-                val = qty * avg
-                flag = " ⚠ avg_price hors bornes!" if (avg <= 0.0 or avg > 1.0) else ""
+                qty    = float(p.get("quantity", 0))
+                avg    = float(p.get("avg_price") or 0)
+                mid    = float(p.get("current_mid") or 0)
+                val_avg = qty * avg
+                val_mid = qty * mid if mid > 0 else None
+                # Flags de diagnostic
+                flags = []
+                if avg <= 0.0 or avg > 1.0:
+                    flags.append("⚠ avg hors bornes")
+                if mid <= 0.0:
+                    flags.append("⚠ mid absent")
+                elif not (0.01 <= mid <= 0.99):
+                    flags.append("⚠ mid hors bornes")
+                flag_str = "  " + ", ".join(flags) if flags else ""
                 question = (p.get("question") or p.get("token_id", "?")[:20])[:35]
-                lines.append(
-                    f"  {question:<35} qty={qty:>7.2f}  avg={avg:.4f}  val={val:>7.4f} USDC{flag}"
-                )
+                if val_mid is not None:
+                    lines.append(
+                        f"  {question:<35} qty={qty:>7.2f}"
+                        f"  avg={avg:.4f}  val_avg={val_avg:>7.4f}"
+                        f"  mid={mid:.4f}  val_mid={val_mid:>7.4f} USDC{flag_str}"
+                    )
+                else:
+                    lines.append(
+                        f"  {question:<35} qty={qty:>7.2f}"
+                        f"  avg={avg:.4f}  val_avg={val_avg:>7.4f}"
+                        f"  mid=N/A{flag_str}"
+                    )
             logger.info(
                 "[Portfolio] Breakdown inventaire (%.4f USDC total, %d position(s)):\n%s",
                 inventory_total, len(positions), "\n".join(lines),
@@ -588,21 +615,15 @@ class Trader:
     def _compute_portfolio_value(self, usdc_balance: float) -> float:
         """
         Calcule la valeur totale du portefeuille en USDC :
-          Portfolio = USDC liquides + valeur de l'inventaire (shares × avg_price)
+          Portfolio = USDC liquides + valeur de l'inventaire
 
-        Utilisé exclusivement pour le High Water Mark et le circuit breaker,
-        afin d'éviter les faux déclenchements lors d'un BUY normal.
-        Exemple : solde 32 USDC + 10 shares @ 0.45 = 32 + 4.5 = 36.5 USDC.
+        Valorisation des shares par priorité (plus fiable → moins fiable) :
+          1. current_mid DB [0.01, 0.99] — prix de marché récent (mis à jour chaque cycle)
+          2. avg_price DB [0.01, 0.99] — prix d'entrée historique (fallback)
+          3. 0.50 — estimation conservatrice si les deux sont corrompus
 
-        Note : les shares sont valorisées au prix d'entrée (avg_price) et non
-        au prix de marché, pour éviter des fluctuations HWM trop fréquentes.
+        Utilisé pour le High Water Mark et le circuit breaker.
         En cas d'erreur DB, retourne usdc_balance (mode dégradé safe).
-
-        Validation : avg_price est borné à [0.0, 1.0] — un share Polymarket
-        ne peut jamais valoir plus de 1.00 USDC. Une valeur hors bornes indique
-        une corruption de la DB (ex: amount_usdc stocké à la place du prix
-        unitaire). Dans ce cas, un warning est loggué et la position ignorée
-        pour éviter un HWM artificiel déclenchant un faux circuit breaker.
         """
         try:
             positions = self.db.get_all_positions()
@@ -610,17 +631,28 @@ class Trader:
             skipped = []
             for p in positions:
                 qty = float(p.get("quantity", 0))
-                raw_price = float(p.get("avg_price") or 0)
-                if raw_price < 0.0 or raw_price > 1.0:
-                    # avg_price hors bornes → position corrompue, ignorer
-                    skipped.append((p.get("token_id", "?")[:16], qty, raw_price))
+                if qty <= 0:
                     continue
-                inventory_value += qty * raw_price
+                # ── 1. current_mid DB (valorisation au prix de marché récent) ──
+                stored_mid = float(p.get("current_mid") or 0)
+                if 0.01 <= stored_mid <= 0.99:
+                    inventory_value += qty * stored_mid
+                    continue
+                # ── 2. avg_price DB (fallback prix d'entrée) ──────────────────
+                raw_price = float(p.get("avg_price") or 0)
+                if 0.01 <= raw_price <= 0.99:
+                    inventory_value += qty * raw_price
+                    continue
+                # ── 3. avg_price hors bornes → ignorer / estimer ──────────────
+                skipped.append((p.get("token_id", "?")[:16], qty, raw_price))
+                # Estimation conservatrice : 0.50 (on préfère ne pas l'inclure
+                # pour ne pas gonfler le HWM artificiellement)
 
             if skipped:
                 logger.warning(
-                    "[Portfolio] %d position(s) ignorée(s) — avg_price hors bornes [0,1]: %s. "
-                    "Corriger via: UPDATE positions SET avg_price = <prix_reel> WHERE token_id = '<id>'",
+                    "[Portfolio] %d position(s) sans valorisation fiable "
+                    "(current_mid absent et avg_price hors bornes [0.01,0.99]): %s. "
+                    "Lancer sanitize_positions() ou mettre à jour via dashboard.",
                     len(skipped),
                     [(tid, f"qty={q:.2f}", f"avg={p:.4f}") for tid, q, p in skipped],
                 )

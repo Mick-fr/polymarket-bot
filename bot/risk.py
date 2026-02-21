@@ -211,31 +211,43 @@ class RiskManager:
     def _get_current_exposure_usdc(self, token_id: str, mid_price: float) -> float:
         """Calcule l'exposition actuelle en USDC pour un token.
 
-        Utilise le mid_price actuel du marché (issu du carnet d'ordres CLOB,
-        déjà présent dans Signal.mid_price) plutôt que avg_price de la DB.
+        Priorité de valorisation (du plus fiable au moins fiable) :
+          1. mid_price du Signal courant (carnet d'ordres CLOB en temps réel)
+          2. current_mid stocké en DB (mis à jour chaque cycle par strategy.py)
+          3. avg_price DB clamped [0.01, 0.99] (prix d'entrée, dernier recours)
+          4. Estimation conservatrice 0.50 (si avg_price corrompu)
 
-        Pourquoi mid_price et non avg_price :
-          - avg_price est le prix d'achat historique, pas la valeur actuelle.
-          - avg_price peut être corrompu (> 1.0) suite à un bug DB antérieur.
-          - Le fractional sizing doit refléter la valeur de marché réelle pour
-            éviter les faux rejets (expo calculée >> expo réelle).
-
-        Fallback sur avg_price DB si mid_price invalide (0 ou absent),
-        avec clamp [0.01, 0.99] pour se protéger de corruptions résiduelles.
+        Les niveaux 2-4 s'appliquent quand le token n'est PAS dans les marchés
+        éligibles ce cycle (pas de Signal → mid_price = 0).
         """
         qty_held = self.db.get_position(token_id)
         if qty_held <= 0:
             return 0.0
 
+        # ── 1. Signal mid_price (temps réel, le plus fiable) ──────────────────
         if mid_price > 0.0:
-            # Valeur de marché actuelle : qty × mid courant
             return qty_held * mid_price
 
-        # Fallback : avg_price DB avec garde-fou [0.01, 0.99]
+        # ── 2. current_mid DB (mis à jour chaque cycle par strategy.py) ───────
+        pos = self.db.get_position_row(token_id)
+        if pos:
+            stored_mid = float(pos.get("current_mid") or 0)
+            if 0.01 <= stored_mid <= 0.99:
+                logger.debug(
+                    "[RiskManager] %s: mid_price absent, fallback current_mid_db=%.4f",
+                    token_id[:16], stored_mid,
+                )
+                return qty_held * stored_mid
+
+        # ── 3/4. avg_price DB avec garde-fou [0.01, 0.99] ─────────────────────
         raw = self.db.get_position_usdc(token_id)
         avg_price = raw / qty_held if qty_held > 0 else 0.0
         if avg_price < 0.01 or avg_price > 0.99:
             # avg_price corrompu → estimation conservatrice à 0.50
+            logger.debug(
+                "[RiskManager] %s: avg_price=%.4f hors bornes → fallback 0.50",
+                token_id[:16], avg_price,
+            )
             return qty_held * 0.50
         return raw
 

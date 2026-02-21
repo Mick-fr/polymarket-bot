@@ -94,6 +94,8 @@ class Database:
                 side        TEXT    NOT NULL DEFAULT 'YES',
                 quantity    REAL    NOT NULL DEFAULT 0.0,
                 avg_price   REAL,
+                current_mid REAL,
+                mid_updated_at TEXT,
                 updated_at  TEXT    NOT NULL
             );
 
@@ -157,6 +159,14 @@ class Database:
             );
         """)
         conn.commit()
+        # Migration : ajouter current_mid et mid_updated_at sur les DB existantes
+        # SQLite ne supporte pas IF NOT EXISTS sur ALTER TABLE → on teste l'existence
+        for col, typedef in [("current_mid", "REAL"), ("mid_updated_at", "TEXT")]:
+            try:
+                conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {typedef}")
+                conn.commit()
+            except Exception:
+                pass  # Colonne déjà existante → ignoré
 
     # ── Kill Switch ──────────────────────────────────────────────
 
@@ -385,6 +395,17 @@ class Database:
             row = cur.fetchone()
             return row["quantity"] if row else 0.0
 
+    def get_position_row(self, token_id: str) -> dict | None:
+        """Retourne la ligne complète de position pour un token (None si absente).
+
+        Inclut current_mid et mid_updated_at, utiles pour le RiskManager quand
+        un token n'est pas dans les marchés éligibles ce cycle (pas de Signal).
+        """
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM positions WHERE token_id = ?", (token_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def get_position_usdc(self, token_id: str, current_mid: float = 0.0) -> float:
         """Retourne l'exposition en USDC pour un token.
 
@@ -419,6 +440,26 @@ class Database:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM positions WHERE quantity != 0.0")
             return [dict(row) for row in cur.fetchall()]
+
+    def update_position_mid(self, token_id: str, current_mid: float):
+        """Enregistre le mid de marché actuel pour un token en inventaire.
+
+        Appelé à chaque cycle par la stratégie pour chaque marché analysé.
+        Permet au RiskManager de valoriser l'exposition au prix de marché réel
+        même si le token n'a pas généré de signal ce cycle.
+
+        current_mid doit être dans [0.01, 0.99] — un mid hors bornes est ignoré.
+        """
+        if not (0.01 <= current_mid <= 0.99):
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET current_mid = ?, mid_updated_at = ?
+                   WHERE token_id = ?""",
+                (current_mid, now, token_id),
+            )
 
     def sanitize_positions(self) -> dict:
         """Détecte et corrige les avg_price aberrants dans la table positions.
