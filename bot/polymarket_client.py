@@ -35,6 +35,17 @@ class PolymarketClient:
         # Évite de re-vérifier + re-approuver à chaque SELL (10 req/cycle inutiles).
         # Invalider en cas de redémarrage (recréation de l'objet = set vide).
         self._allowance_confirmed: set[str] = set()
+        # Cache des tokens détectés comme neg-risk dans cette session.
+        # get_neg_risk() coûte 1 requête HTTP par appel. Sans cache, chaque cycle
+        # vérifie à nouveau tous les tokens neg-risk en inventaire (2 req × N tokens).
+        # Un token neg-risk ne change pas de type au cours d'une session → cache permanent.
+        self._neg_risk_confirmed: set[str] = set()
+        # Tokens pour lesquels update_balance_allowance a été appelé mais allowance=0
+        # persiste (probablement un contrat non standard ou délai API très long).
+        # On ne re-tente pas indéfiniment : après _MAX_ALLOWANCE_RETRIES tentatives,
+        # le token est mis en quarantaine → SELL bloqué comme s'il était neg-risk.
+        self._allowance_retry_count: dict[str, int] = {}
+        self._ALLOWANCE_MAX_RETRIES = 3  # Au-delà → traiter comme neg-risk
 
     def connect(self):
         """Initialise le client et dérive les credentials API (L1 → L2)."""
@@ -204,9 +215,23 @@ class PolymarketClient:
         qui a ses propres règles d'approbation — l'approbation ERC-1155 standard
         ne couvre pas ce contrat. Ces tokens nécessitent une configuration via l'UI
         Polymarket ou une transaction directe avec le contrat NegRisk.
+
+        Cache session : une fois détecté comme neg-risk, le token est mémorisé
+        pour éviter un appel réseau à chaque cycle (coût : 1 req HTTP / appel).
+        Un token neg-risk ne change pas de type en cours de session.
         """
+        # Cache hit : déjà détecté comme neg-risk → retour immédiat sans réseau
+        if token_id in self._neg_risk_confirmed:
+            return True
+        # Cache hit : déjà confirmé comme non-neg-risk (allowance standard OK)
+        if token_id in self._allowance_confirmed:
+            return False
         try:
-            return bool(self.client.get_neg_risk(token_id))
+            result = bool(self.client.get_neg_risk(token_id))
+            if result:
+                self._neg_risk_confirmed.add(token_id)
+                logger.debug("[NegRisk] Token %s: confirmé neg-risk (mis en cache)", token_id[:16])
+            return result
         except Exception as e:
             logger.debug("[NegRisk] Token %s: erreur get_neg_risk: %s", token_id[:16], e)
             return False
@@ -267,6 +292,20 @@ class PolymarketClient:
                     pass
                 return False  # Signale que ce token peut poser problème
 
+            # 0c. Quarantaine : token ayant dépassé _ALLOWANCE_MAX_RETRIES tentatives
+            #     d'approbation sans que l'allowance n'apparaisse en GET.
+            #     Probable contrat non standard ou délai API extrêmement long.
+            #     Traité comme neg-risk : SELL bloqué, warning loggué.
+            retry_count = self._allowance_retry_count.get(token_id, 0)
+            if retry_count >= self._ALLOWANCE_MAX_RETRIES:
+                logger.warning(
+                    "[Allowance] Token %s: QUARANTAINE (%d tentatives sans succès) → "
+                    "allowance persistante à 0 malgré update. Approuver manuellement "
+                    "via l'UI Polymarket ou vérifier le contrat de ce token.",
+                    token_id[:16], retry_count,
+                )
+                return False
+
             # 1. Vérifier l'allowance actuelle
             info = self.get_conditional_allowance(token_id)
             allowance_raw = info.get("allowance") or info.get("Allowance") or "0"
@@ -280,11 +319,17 @@ class PolymarketClient:
                     "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
                 )
                 self._allowance_confirmed.add(token_id)
+                # Réinitialiser le compteur de retries si l'allowance finit par apparaître
+                self._allowance_retry_count.pop(token_id, None)
                 return True
 
             # 2. Allowance insuffisante → déclencher l'approbation
+            #    Incrémenter le compteur de retries pour ce token
+            self._allowance_retry_count[token_id] = retry_count + 1
             logger.info(
-                "[Allowance] Token %s: allowance=0 → approbation ERC-1155...", token_id[:16]
+                "[Allowance] Token %s: allowance=0 → approbation ERC-1155... "
+                "(tentative %d/%d)",
+                token_id[:16], retry_count + 1, self._ALLOWANCE_MAX_RETRIES,
             )
             params = BalanceAllowanceParams(
                 asset_type=AssetType.CONDITIONAL,
@@ -294,7 +339,10 @@ class PolymarketClient:
             logger.info(
                 "[Allowance] Token %s: approbation envoyée → %s", token_id[:16], resp
             )
-            self._allowance_confirmed.add(token_id)
+            # NOTE : on NE met PAS en cache ici car allowance=0 persiste malgré update.
+            # On retourne True pour laisser passer CE SELL (l'update vient juste d'être
+            # envoyé, il peut mettre quelques secondes à propager). Si l'erreur 400 se
+            # répète au cycle suivant, le compteur augmentera jusqu'à quarantaine.
             return True
 
         except Exception as e:
