@@ -724,6 +724,19 @@ class Trader:
                 )
                 return False
 
+        # ── Allowance ERC-1155 synchrone avant SELL ────────────────────────
+        # L'approbation au démarrage (update_balance_allowance) retourne une
+        # réponse vide : l'API Polymarket propage l'autorisation de façon
+        # asynchrone. Si le SELL arrive trop tôt, l'allowance n'est pas encore
+        # active → erreur 400. Solution : rappeler ensure_conditional_allowance
+        # juste avant chaque SELL de façon synchrone pour forcer la mise à jour.
+        # Coût : 1-2 requêtes GET/GET supplémentaires par SELL (négligeable).
+        if signal.side == "sell" and not self.config.bot.paper_trading:
+            try:
+                self.pm_client.ensure_conditional_allowance(signal.token_id)
+            except Exception as _ae:
+                logger.debug("[Execute] ensure_allowance pre-SELL erreur: %s", _ae)
+
         verdict = self.risk.check(signal, current_balance, portfolio_value=portfolio_value)
 
         if not verdict.approved:
