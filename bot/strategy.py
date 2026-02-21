@@ -410,9 +410,9 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 logger.debug("[OBI] '%s' re-cotation trop rapide, skip.", market.question[:40])
                 continue
 
-            # ── Carnet d'ordres YES ──
+            # ── Carnet d'ordres YES (avec timeout 12s pour éviter blocage TCP) ──
             try:
-                ob = self.client.get_order_book(market.yes_token_id)
+                ob = self._get_order_book_timeout(market.yes_token_id, timeout=12.0)
             except Exception as e:
                 logger.info("[OBI] Impossible de recuperer le carnet pour %s: %s",
                             market.yes_token_id[:16], e)
@@ -633,6 +633,34 @@ class OBIMarketMakingStrategy(BaseStrategy):
     def get_last_quoted_mid(self, token_id: str) -> Optional[float]:
         """Retourne le dernier mid cote pour ce token (pour cancel conditionnel)."""
         return self._last_quoted_mid.get(token_id)
+
+    def _get_order_book_timeout(self, token_id: str, timeout: float = 12.0):
+        """
+        Wrapper get_order_book avec timeout strict via Thread daemon.
+        Évite que l'appel CLOB ne bloque le cycle entier si TCP hang.
+        """
+        import threading
+        result = []
+        exc_holder = []
+
+        def _run():
+            try:
+                result.append(self.client.get_order_book(token_id))
+            except Exception as e:
+                exc_holder.append(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            logger.warning("[OBI] get_order_book timeout (%.0fs) pour %s → skip marche",
+                           timeout, token_id[:16])
+            raise RuntimeError(f"get_order_book timeout ({timeout}s): {token_id[:16]}")
+
+        if exc_holder:
+            raise exc_holder[0]
+        return result[0] if result else None
 
     def get_eligible_markets(self) -> list[EligibleMarket]:
         """Retourne les marches eligibles en cache (sans re-appeler Gamma)."""

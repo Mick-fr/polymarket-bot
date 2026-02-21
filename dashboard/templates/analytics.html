@@ -93,8 +93,16 @@
 
         <!-- Tableau top marches -->
         <div class="card">
-            <div class="card-header"><span class="card-title">Tableau des Marches</span></div>
+            <div class="card-header"><span class="card-title">Tableau des Marches (fermés)</span></div>
             <div class="table-wrap" id="markets-table">
+                <table><thead><tr><th colspan="6" style="text-align:center; color:var(--text-dim);">Chargement...</th></tr></thead></table>
+            </div>
+        </div>
+
+        <!-- Trades ouverts -->
+        <div class="card">
+            <div class="card-header"><span class="card-title">Positions Ouvertes (BUY sans SELL)</span></div>
+            <div class="table-wrap" id="open-trades-table">
                 <table><thead><tr><th colspan="6" style="text-align:center; color:var(--text-dim);">Chargement...</th></tr></thead></table>
             </div>
         </div>
@@ -399,6 +407,47 @@ async function loadByObiBucket() {
     } catch(e) { console.error('By OBI error:', e); }
 }
 
+// ── Open Trades ───────────────────────────────────────────────
+async function loadOpenTrades() {
+    try {
+        const resp = await fetch('/api/analytics/open-trades');
+        const data = await resp.json();
+        if (!data.length) {
+            document.getElementById('open-trades-table').innerHTML =
+                '<table><thead><tr><th colspan="6" style="text-align:center; color:var(--text-dim);">Aucune position ouverte.</th></tr></thead></table>';
+            return;
+        }
+        const now = Date.now();
+        let rows = data.map(t => {
+            const question = (t.question || '').substring(0, 40);
+            const cost = ((t.open_size || 0) * (t.open_price || 0)).toFixed(2);
+            const obi = t.obi_at_open !== null && t.obi_at_open !== undefined ? t.obi_at_open.toFixed(3) : 'N/A';
+            const regime = t.regime_at_open || 'N/A';
+            const regimeClass = regime === 'bullish' ? 'text-green' : regime === 'bearish' ? 'text-red' : '';
+            // Durée depuis l'ouverture
+            let holdStr = 'N/A';
+            if (t.open_timestamp) {
+                const openMs = new Date(t.open_timestamp).getTime();
+                const diffMin = Math.round((now - openMs) / 60000);
+                holdStr = diffMin > 60 ? (diffMin/60).toFixed(1) + 'h' : diffMin + 'min';
+            }
+            return `<tr>
+                <td title="${(t.question||'').replace(/"/g,'&quot;')}">${question}…</td>
+                <td>${(t.open_size||0).toFixed(2)}</td>
+                <td>${(t.open_price||0).toFixed(4)}</td>
+                <td>$${cost}</td>
+                <td>${obi} <span class="${regimeClass}">(${regime})</span></td>
+                <td>${holdStr}</td>
+            </tr>`;
+        }).join('');
+        document.getElementById('open-trades-table').innerHTML = `
+            <table>
+                <thead><tr><th>Question</th><th>Qty</th><th>Prix d'entrée</th><th>Coût USDC</th><th>OBI (régime)</th><th>Durée</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+    } catch(e) { console.error('Open trades error:', e); }
+}
+
 // ── Recommendations ───────────────────────────────────────────
 async function loadRecommendations() {
     try {
@@ -475,6 +524,7 @@ async function loadAll() {
         loadByMarket(),
         loadByRegime(),
         loadByObiBucket(),
+        loadOpenTrades(),
         loadRecommendations(),
     ]);
 }

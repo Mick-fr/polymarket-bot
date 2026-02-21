@@ -194,8 +194,14 @@ class Trader:
 
         # 8. Exécution avec gestion de l'inventaire post-fill
         logger.info("[Cycle] Étape 8: exécution %d signal(s)", len(signals))
+        cycle_executed = 0
+        cycle_rejected = 0
         for sig in signals:
-            self._execute_signal(sig, balance, portfolio_value=portfolio_value)
+            approved = self._execute_signal(sig, balance, portfolio_value=portfolio_value)
+            if approved:
+                cycle_executed += 1
+            else:
+                cycle_rejected += 1
 
         # 9. Snapshot de stratégie pour analytics
         logger.info("[Cycle] Étape 9: snapshot analytics")
@@ -205,10 +211,6 @@ class Trader:
             positions = self.db.get_all_positions()
             net_exposure = sum(p.get("quantity", 0) * (p.get("avg_price", 0) or 0)
                                for p in positions)
-            # Compter ordres du cycle : submitted/matched/filled = exécutés, rejected = rejetés
-            recent = self.db.get_recent_orders(limit=len(signals) * 2) if signals else []
-            cycle_executed = sum(1 for o in recent if o.get("status") in ("filled", "matched", "live", "submitted"))
-            cycle_rejected = sum(1 for o in recent if o.get("status") == "rejected")
             self.db.record_strategy_snapshot(
                 obi_threshold=OBI_BULLISH_THRESHOLD,
                 skew_factor=OBI_SKEW_FACTOR,
@@ -219,8 +221,8 @@ class Trader:
                 net_exposure_usdc=net_exposure,
                 markets_scanned=len(eligible_markets),
                 signals_generated=len(signals),
-                signals_executed=len(signals),
-                signals_rejected=0,
+                signals_executed=cycle_executed,
+                signals_rejected=cycle_rejected,
             )
         except Exception as se:
             logger.debug("[Analytics] Erreur snapshot: %s", se)
@@ -613,8 +615,9 @@ class Trader:
             self._execute_signal(sig, balance)
 
     def _execute_signal(self, signal: Signal, current_balance: float,
-                        portfolio_value: float = 0.0):
-        """Vérifie le risque, exécute, met à jour l'inventaire."""
+                        portfolio_value: float = 0.0) -> bool:
+        """Vérifie le risque, exécute, met à jour l'inventaire.
+        Retourne True si le signal a été approuvé par le RiskManager, False sinon."""
         verdict = self.risk.check(signal, current_balance, portfolio_value=portfolio_value)
 
         if not verdict.approved:
@@ -625,7 +628,7 @@ class Trader:
             )
             if verdict.action in ("cancel_bids", "liquidate", "kill_switch"):
                 self.db.add_log("WARNING", "risk", f"Rejeté [{verdict.action}]: {verdict.reason}")
-            return
+            return False
 
         local_id = self.db.record_order(
             market_id=signal.market_id,
@@ -770,6 +773,9 @@ class Trader:
             logger.error("Erreur exécution ordre: %s", e)
             self.db.update_order_status(local_id, "error", error=str(e))
             self.db.add_log("ERROR", "trader", f"Erreur ordre: {e}")
+            return True  # Approuvé par risk, mais erreur d'exécution
+
+        return True  # Signal approuvé et traité
 
     def _simulate_order(self, signal: Signal) -> dict:
         """Simule un fill immédiat pour le paper trading (aucun ordre réel envoyé)."""

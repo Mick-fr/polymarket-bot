@@ -430,6 +430,13 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         data = db.get_closed_trades(limit=limit)
         return jsonify(data)
 
+    @app.route("/api/analytics/open-trades")
+    @login_required
+    def api_analytics_open_trades():
+        """Trades ouverts (positions en cours sans SELL correspondant)."""
+        data = db.get_open_trades()
+        return jsonify(data)
+
     @app.route("/api/analytics/backfill", methods=["POST"])
     @login_required
     def api_analytics_backfill():
