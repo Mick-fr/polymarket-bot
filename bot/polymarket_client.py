@@ -587,21 +587,19 @@ class PolymarketClient:
 
             # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)
-            # FORCE fix: lire tous les champs possibles sans court-circuit sur falsy
-            allowance_raw = info.get("allowance") if info.get("allowance") is not None \
-                else info.get("Allowance", "0")
-            logger.debug("[Allowance] Raw allowance value: %s", allowance_raw)  # LOG
+            # FORCE fix: extraire sans aucun court-circuit (0 int est falsy mais valide)
+            _raw = info.get("allowance") if "allowance" in info else info.get("Allowance", "0")
+            logger.info("[Allowance] Token %s: raw allowance field = %r", token_id[:16], _raw)  # LOG
             try:
-                allowance = int(str(allowance_raw).strip() or "0")
+                allowance = int(str(_raw).strip()) if str(_raw).strip() else 0
             except (ValueError, TypeError):
                 allowance = 0
 
-            # FORCE fix: allowance uint256.max = approved
-            _is_unlimited = (allowance > 10**75 or allowance == 2**256 - 1)
-            if _is_unlimited:
+            # FORCE fix: uint256.max (2^256-1) ou >= 2^255 = unlimited approval
+            if allowance >= 2**255 or allowance == 2**256 - 1:
                 logger.info(
-                    "[Allowance] Token %s: Unlimited approval detected (allowance=%s) → approved.",
-                    token_id[:16], allowance_raw,
+                    "[Allowance] Token %s: Unlimited max uint detected → confirmed (skip approbation).",
+                    token_id[:16],
                 )
                 self._allowance_confirmed.add(token_id)
                 self._allowance_pending_since.pop(token_id, None)
@@ -609,11 +607,8 @@ class PolymarketClient:
                 return True
 
             if allowance > 0:
-                logger.debug(
-                    "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
-                )
+                logger.debug("[Allowance] Token %s: allowance OK (%s)", token_id[:16], _raw)
                 self._allowance_confirmed.add(token_id)
-                # Nettoyage : supprimer pending et retry_count devenus inutiles
                 self._allowance_pending_since.pop(token_id, None)
                 self._allowance_retry_count.pop(token_id, None)
                 return True
