@@ -38,6 +38,12 @@ class Trader:
     # perturber la boucle principale (la purge prend typiquement < 50ms).
     _DB_PURGE_INTERVAL_CYCLES: int = 1350  # ≈ 3 heures à 8s/cycle
 
+    # NEW: TTL du cache des mids d'inventaire (secondes).
+    # get_midpoint() coûte 1 requête HTTP par token. Avec 20 positions = 20 req/cycle
+    # à 8s/cycle → trop agressif (rate-limit Polymarket ~120 req/min).
+    # On rafraîchit toutes les 60s seulement les positions sans mid récent.
+    _INVENTORY_MID_CACHE_TTL_S: float = 60.0
+
     def __init__(self, config: AppConfig, db: Database):
         self.config = config
         self.db = db
@@ -48,6 +54,12 @@ class Trader:
         self._consecutive_errors = 0
         # Compteur de cycles depuis la dernière purge DB
         self._cycles_since_purge: int = 0
+        # NEW: cache {token_id: timestamp_last_fetched} pour _refresh_inventory_mids().
+        # Évite de refetcher les mids à chaque cycle (rate-limit Polymarket).
+        # Seuls les tokens dont le mid_updated_at est absent ou trop vieux
+        # sont rafraîchis. Reset à chaque redémarrage = toutes positions
+        # seront fetchées lors du premier cycle.
+        self._mid_last_fetched: dict[str, float] = {}
         # NOTE: le tracking des SELL de liquidation est maintenant basé sur la DB
         # (orders WHERE side='sell' AND status='live' AND token a une position),
         # ce qui survit aux redémarrages. Plus de set en mémoire.
@@ -222,14 +234,19 @@ class Trader:
             balance_raw = self.db.get_latest_balance() or 0.0
         logger.info("[Cycle] Étape 3: solde brut = %.4f USDC", balance_raw)
 
-        # 3b. Valeur totale du portfolio (USDC + inventaire au prix d'entrée)
+        # 3b. Valeur totale du portfolio (USDC + inventaire valorisé au marché)
         # → utilisée pour le High Water Mark et le circuit breaker.
-        # Évite de déclencher le CB lors d'un BUY normal (argent converti en shares, pas perdu).
-        # Uniquement DB locale : ne peut PAS bloquer sur réseau.
-        logger.info("[Cycle] Étape 3b: calcul valeur portfolio (DB locale)")
+        # Étape 3b-bis : rafraîchit les mids de marché pour les positions hors
+        # univers OBI ce cycle (tokens non analysés par strategy.py).
+        # Limité par cache TTL=60s pour éviter le rate-limit Polymarket.
+        logger.info("[Cycle] Étape 3b: rafraîchissement mids inventaire")
+        self._refresh_inventory_mids()  # NEW: met à jour current_mid en DB avant calcul
+
+        # Calcul portfolio avec current_mid prioritaire (fallback avg_price si absent)
+        logger.info("[Cycle] Étape 3b: calcul valeur portfolio")
         portfolio_value = self._compute_portfolio_value(balance_raw)
         self.risk.update_high_water_mark(portfolio_value)
-        # Breakdown inventaire détaillé (DEBUG) : qty, avg_price, valeur par position
+        # Breakdown inventaire détaillé : qty, avg_price, current_mid, val_mid par position
         self._log_inventory_breakdown(balance_raw, portfolio_value)
         logger.info(
             "[Cycle] Étape 3b: portfolio=%.4f USDC (USDC=%.4f + inventaire=%.4f) | HWM=%.4f",
@@ -553,6 +570,93 @@ class Trader:
             )
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
+
+    def _refresh_inventory_mids(self) -> dict[str, float]:
+        """Rafraîchit les mids de marché pour toutes les positions sans mid récent.
+
+        Appelé à l'étape 3b-bis de chaque cycle, AVANT _compute_portfolio_value(),
+        pour s'assurer que les positions hors univers OBI ce cycle ont quand même
+        un current_mid valide en DB.
+
+        Stratégie de cache (évite le rate-limit Polymarket ~120 req/min) :
+          - Un token n'est rafraîchi que si son mid n'a pas été mis à jour depuis
+            _INVENTORY_MID_CACHE_TTL_S (60s) par ce processus (via _mid_last_fetched),
+            OU s'il n'a jamais de current_mid valide en DB.
+          - Les tokens déjà mis à jour par strategy.py ce cycle (mid_updated_at récent)
+            sont ignorés pour ne pas doubler les requêtes.
+          - En cas d'erreur API pour un token, on loggue et on passe au suivant.
+
+        Retourne : dict {token_id: mid_fetché} pour usage immédiat (log, etc.).
+        """
+        refreshed: dict[str, float] = {}
+        now = time.time()
+
+        try:
+            positions = self.db.get_all_positions()
+        except Exception as e:
+            logger.warning("[MidRefresh] Erreur lecture positions DB: %s", e)
+            return refreshed
+
+        if not positions:
+            return refreshed
+
+        # Détermine quels tokens nécessitent un fetch
+        to_fetch: list[str] = []
+        for p in positions:
+            token_id = p.get("token_id")
+            if not token_id:
+                continue
+            qty = float(p.get("quantity") or 0)
+            if qty <= 0:
+                continue
+
+            stored_mid = float(p.get("current_mid") or 0)
+            last_fetched = self._mid_last_fetched.get(token_id, 0.0)
+            age_s = now - last_fetched
+
+            # NEW: fetch si (a) pas de mid valide OU (b) mid trop vieux (> TTL)
+            needs_refresh = (stored_mid < 0.01 or stored_mid > 0.99) or (age_s >= self._INVENTORY_MID_CACHE_TTL_S)
+            if needs_refresh:
+                to_fetch.append(token_id)
+
+        if not to_fetch:
+            logger.debug("[MidRefresh] Tous les mids d'inventaire sont à jour (%d positions).", len(positions))
+            return refreshed
+
+        logger.info("[MidRefresh] Rafraîchissement mid pour %d/%d position(s) sans mid récent...",
+                    len(to_fetch), len(positions))
+
+        fetched_ok = 0
+        fetched_err = 0
+        for token_id in to_fetch:
+            try:
+                mid = self._call_with_timeout(
+                    lambda tid=token_id: self.pm_client.get_midpoint(tid),
+                    timeout=5.0,
+                    label=f"get_midpoint({token_id[:16]})",
+                )
+                if mid is not None and 0.01 <= float(mid) <= 0.99:
+                    mid_f = float(mid)
+                    self.db.update_position_mid(token_id, mid_f)
+                    self._mid_last_fetched[token_id] = now
+                    refreshed[token_id] = mid_f
+                    fetched_ok += 1
+                else:
+                    # Midpoint absent ou hors bornes → log debug uniquement
+                    logger.debug(
+                        "[MidRefresh] %s: mid invalide ou absent (val=%s) → fallback avg_price",
+                        token_id[:16], mid,
+                    )
+                    fetched_err += 1
+            except Exception as e:
+                logger.debug("[MidRefresh] %s: erreur fetch mid: %s", token_id[:16], e)
+                fetched_err += 1
+
+        logger.info(
+            "[MidRefresh] Terminé: %d mid(s) ok, %d échec(s)/absent(s) sur %d token(s) à rafraîchir.",
+            fetched_ok, fetched_err, len(to_fetch),
+        )
+        return refreshed
 
     def _log_inventory_breakdown(self, usdc_balance: float, portfolio_value: float):
         """Loggue le détail de chaque position en inventaire (niveau INFO).
