@@ -1410,6 +1410,13 @@ class Trader:
                     "[Execute] SELL %s: clob_balance=%.4f locked=%.2f available=%.4f required=%.2f",
                     signal.token_id[:16], clob_balance, qty_locked, qty_available, signal.size,
                 )
+                _POLY_MIN_SIZE = 5.0  # minimum Polymarket: 5 shares
+                if qty_available < _POLY_MIN_SIZE:
+                    logger.warning(
+                        "[Execute] SELL skippé %s: clob_available=%.4f < min=%.1f shares (400 évité)",
+                        signal.token_id[:16], qty_available, _POLY_MIN_SIZE,
+                    )
+                    return False
                 if signal.size > qty_available:  # FIXED: strict, pas *0.99
                     logger.warning(
                         "[Execute] SELL skippé %s: qty=%.2f > clob_available=%.4f "
