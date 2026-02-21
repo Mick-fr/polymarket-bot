@@ -452,6 +452,20 @@ class Database:
             cur.execute("SELECT * FROM positions WHERE quantity != 0.0")
             return [dict(row) for row in cur.fetchall()]
 
+    def set_position_quantity(self, token_id: str, new_quantity: float):
+        """Force la quantité d'une position à une valeur précise (sync CLOB→DB).
+
+        Utilisé au démarrage pour corriger les désynchronisations entre la DB locale
+        et le solde réel du CLOB (ex: fills externes, marchés résolus partiellement).
+        Si new_quantity <= 0, la position est mise à 0 (mais la ligne reste).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE positions SET quantity = ?, updated_at = ? WHERE token_id = ?",
+                (max(0.0, new_quantity), now, token_id),
+            )
+
     def update_position_mid(self, token_id: str, current_mid: float):
         """Enregistre le mid de marché actuel pour un token en inventaire.
 

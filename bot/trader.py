@@ -100,6 +100,9 @@ class Trader:
         # en inventaire au démarrage (évite les erreur 400 sur les SELL existants)
         if not self.config.bot.paper_trading:
             self._ensure_inventory_allowances()
+            # Synchroniser les quantités DB avec le solde CLOB réel.
+            # Corrige les phantoms (DB qty >> CLOB qty) qui gonflent la valorisation.
+            self._sync_positions_from_clob()
 
         # Reset HWM au démarrage pour éviter un circuit breaker immédiat
         # (le solde peut avoir changé entre deux sessions via fills ou dépôts)
@@ -194,6 +197,71 @@ class Trader:
                     )
         except Exception as e:
             logger.warning("[Allowance] Erreur vérification inventaire: %s", e)
+
+    def _sync_positions_from_clob(self):
+        """Synchronise la quantité des positions DB avec le solde CLOB réel.
+
+        Problème : la DB locale peut afficher qty=20 alors que le CLOB ne connaît
+        que 0.12 shares (fills partiels non enregistrés, résolution de marché,
+        trades externes). Cela gonfle la valorisation et génère des SELL trop
+        grandes → erreurs 400.
+
+        Algorithme :
+          Pour chaque position DB avec quantity > 0 :
+            1. Fetch balance CLOB via get_conditional_allowance(token_id)
+            2. clob_qty = balance / 1e6
+            3. Si clob_qty < db_qty * 0.5 → désync significatif :
+               - Mettre à jour DB avec clob_qty
+               - Logger WARNING avec l'écart
+          Seuil 50% pour ignorer les écarts mineurs (rounding, partiel récent).
+        """
+        try:
+            positions = self.db.get_all_positions()
+            if not positions:
+                logger.debug("[Sync] Aucune position à synchroniser.")
+                return
+
+            logger.info("[Sync] Synchronisation CLOB→DB pour %d position(s)...", len(positions))
+            synced = 0
+            for pos in positions:
+                token_id = pos.get("token_id", "")
+                db_qty = float(pos.get("quantity", 0.0))
+                if db_qty <= 0 or not token_id:
+                    continue
+                try:
+                    info = self.pm_client.get_conditional_allowance(token_id)
+                    raw_balance = info.get("balance", "0") or "0"
+                    clob_qty = float(raw_balance) / 1e6
+
+                    if clob_qty < db_qty * 0.5:
+                        # Désynchronisation significative : CLOB < 50% de la DB
+                        logger.warning(
+                            "[Sync] DÉSYNC token %s: DB=%.4f → CLOB=%.4f shares "
+                            "(raw=%s). Correction DB.",
+                            token_id[:16], db_qty, clob_qty, raw_balance,
+                        )
+                        self.db.add_log(
+                            "WARNING", "trader",
+                            f"Sync CLOB: token {token_id[:16]} DB={db_qty:.4f} → CLOB={clob_qty:.4f}",
+                        )
+                        self.db.set_position_quantity(token_id, clob_qty)
+                        synced += 1
+                    else:
+                        logger.debug(
+                            "[Sync] token %s OK: DB=%.4f CLOB=%.4f",
+                            token_id[:16], db_qty, clob_qty,
+                        )
+                except Exception as exc:
+                    logger.debug("[Sync] Erreur fetch CLOB pour %s: %s", token_id[:16], exc)
+
+            if synced:
+                logger.info("[Sync] %d position(s) corrigée(s) depuis le CLOB.", synced)
+                self.db.add_log("INFO", "trader", f"Sync CLOB: {synced} position(s) corrigée(s)")
+            else:
+                logger.info("[Sync] Toutes les positions DB sont cohérentes avec le CLOB.")
+
+        except Exception as e:
+            logger.warning("[Sync] Erreur synchronisation CLOB→DB: %s", e)
 
     def _connect(self):
         """Connexion au CLOB avec retry."""
