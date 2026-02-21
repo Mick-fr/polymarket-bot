@@ -719,10 +719,24 @@ class Trader:
         candidates = []
         for p in positions:
             token_id = p.get("token_id", "")
-            qty      = float(p.get("quantity") or 0)
+            db_qty   = float(p.get("quantity") or 0)
             mid      = float(p.get("current_mid") or 0)
-            if qty <= 0 or not (0.01 <= mid <= 0.99):
+            if db_qty <= 0 or not (0.01 <= mid <= 0.99):
                 continue
+            # Utiliser la balance CLOB comme source de vérité pour qty
+            try:
+                _clob_info = self.pm_client.get_conditional_allowance(token_id)
+                clob_qty = float(_clob_info.get("balance", "0") or "0") / 1e6
+            except Exception:
+                clob_qty = db_qty  # fallback DB si CLOB indisponible
+            qty = clob_qty if clob_qty > 0 else db_qty
+            # Sync DB si désync bidirectionnelle détectée
+            if abs(clob_qty - db_qty) / max(db_qty, 0.001) > 0.5:
+                logger.warning(
+                    "[Liquidation] Sync on-the-fly %s: DB=%.4f → CLOB=%.4f",
+                    token_id[:16], db_qty, clob_qty,
+                )
+                self.db.set_position_quantity(token_id, clob_qty)
             val_mid = qty * mid
             if val_mid < 1.0:
                 continue
