@@ -193,6 +193,20 @@ class PolymarketClient:
             logger.debug("get_conditional_allowance(%s): %s", token_id[:16], e)
             return {}
 
+    def is_neg_risk_token(self, token_id: str) -> bool:
+        """
+        Retourne True si ce token utilise le mécanisme NegRisk de Polymarket.
+        Les tokens neg-risk utilisent un contrat d'exchange différent (NegRisk Exchange)
+        qui a ses propres règles d'approbation — l'approbation ERC-1155 standard
+        ne couvre pas ce contrat. Ces tokens nécessitent une configuration via l'UI
+        Polymarket ou une transaction directe avec le contrat NegRisk.
+        """
+        try:
+            return bool(self.client.get_neg_risk(token_id))
+        except Exception as e:
+            logger.debug("[NegRisk] Token %s: erreur get_neg_risk: %s", token_id[:16], e)
+            return False
+
     def ensure_conditional_allowance(self, token_id: str) -> bool:
         """
         S'assure que le CTF Exchange a l'allowance ERC-1155 pour ce token.
@@ -202,14 +216,44 @@ class PolymarketClient:
         de transférer les shares (setApprovalForAll). Sans ça → erreur 400
         "not enough balance / allowance".
 
-        L'endpoint /balance-allowance/update déclenche cette approbation
-        on-chain via le wallet signataire.
+        ATTENTION — Tokens neg-risk :
+        Les marchés binaires groupés (neg-risk) utilisent le NegRisk Exchange,
+        un contrat différent du CTF Exchange standard. L'endpoint
+        /balance-allowance/update ne couvre PAS ce contrat. Ces tokens
+        doivent être approuvés manuellement via l'UI Polymarket.
+        Cette méthode détecte les tokens neg-risk et loggue un warning.
 
-        Retourne True si l'allowance est déjà présente ou a été mise à jour.
-        Retourne False en cas d'erreur.
+        Retourne True si l'allowance est présente ou mise à jour avec succès.
+        Retourne False si neg-risk (non gérable automatiquement) ou erreur.
         """
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            # 0. Détecter les tokens neg-risk — contrat différent, on ne peut pas
+            #    appeler update_balance_allowance pour eux via cette API
+            if self.is_neg_risk_token(token_id):
+                logger.warning(
+                    "[Allowance] Token %s: NEG-RISK détecté → allowance non gérée "
+                    "automatiquement. Ce token utilise le NegRisk Exchange. "
+                    "Approuver manuellement via l'UI Polymarket si SELL échoue.",
+                    token_id[:16],
+                )
+                # On tente quand même update_balance_allowance : certaines versions
+                # de l'API Polymarket le supportent pour les neg-risk également.
+                # Si ça échoue, ce n'est pas bloquant (le warning suffit).
+                try:
+                    params = BalanceAllowanceParams(
+                        asset_type=AssetType.CONDITIONAL,
+                        token_id=token_id,
+                    )
+                    self.client.update_balance_allowance(params)
+                    logger.info(
+                        "[Allowance] Token %s (neg-risk): approbation envoyée → OK",
+                        token_id[:16],
+                    )
+                except Exception:
+                    pass
+                return False  # Signale que ce token peut poser problème
 
             # 1. Vérifier l'allowance actuelle
             info = self.get_conditional_allowance(token_id)

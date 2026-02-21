@@ -683,10 +683,47 @@ class Trader:
             )
             self._execute_signal(sig, balance)
 
+    def _has_live_sell(self, token_id: str) -> bool:
+        """
+        Retourne True si un ordre SELL limit est déjà dans le carnet CLOB pour
+        ce token (status='live' dans la DB).
+
+        Utilisé pour éviter le double-SELL : quand un SELL de liquidation est
+        préservé d'un cycle précédent, les shares sont déjà "engagées" dans
+        cet ordre. Tenter un deuxième SELL sur le même token consommerait
+        plus de shares que disponibles → erreur 400 "not enough balance".
+
+        Exemple observé : Cavaliers (5 shares) SELL @ 0.56 préservé (cycle 1).
+        Au cycle 3, la stratégie génère un nouveau SELL @ 0.56 → erreur 400 car
+        le SELL du cycle 1 est encore ouvert et les 5 shares sont déjà engagées.
+        """
+        try:
+            live_sells = [
+                o for o in self.db.get_live_orders()
+                if o.get("side") == "sell" and o.get("token_id") == token_id
+            ]
+            return len(live_sells) > 0
+        except Exception:
+            return False
+
     def _execute_signal(self, signal: Signal, current_balance: float,
                         portfolio_value: float = 0.0) -> bool:
         """Vérifie le risque, exécute, met à jour l'inventaire.
         Retourne True si le signal a été approuvé par le RiskManager, False sinon."""
+
+        # ── Garde SELL : éviter le double-SELL sur même token ──────────────
+        # Si un SELL limit est déjà dans le carnet pour ce token (préservé du
+        # cycle précédent), les shares sont déjà engagées → ne pas en envoyer
+        # un deuxième, sinon erreur 400 "not enough balance / allowance".
+        if signal.side == "sell" and signal.order_type == "limit" and not self.config.bot.paper_trading:
+            if self._has_live_sell(signal.token_id):
+                logger.info(
+                    "[Execute] SELL skippé: ordre SELL live déjà dans le carnet "
+                    "pour %s (shares engagées, attente de fill)",
+                    signal.token_id[:16],
+                )
+                return False
+
         verdict = self.risk.check(signal, current_balance, portfolio_value=portfolio_value)
 
         if not verdict.approved:
