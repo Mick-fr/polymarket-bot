@@ -26,15 +26,15 @@ logger = logging.getLogger("bot.polymarket")
 SIDE_MAP = {"buy": BUY, "sell": SELL}
 
 # FIXED: Adresses on-chain Polygon corrigées (source : Polymarket docs + etherscan).
-# CTF Exchange (opérateur pour les tokens conditionnels standard) :
+# CTF Exchange ERC-1155 (contrat shares, isApprovedForAll) :
 #   0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
-# NegRisk CTF Exchange (opérateur pour les tokens neg-risk groupés) :
+# NegRisk CTF Exchange :
 #   0xC5d563A36AE78145C45a50134d48A1215220f80a
-# L'appel ERC-1155 isApprovedForAll est :
-#   shares_contract.isApprovedForAll(owner_wallet, exchange_operator)
-# Le contrat ERC-1155 qui détient les shares est le CTF Exchange dans les deux cas.
+# FIXED: spender réel pour balance-allowance API (clé dans le dict retourné) :
+#   0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E  ← CTF Exchange principal (CLOB)
 _CTF_EXCHANGE_ADDRESS      = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 _NEG_RISK_CTF_EXCHANGE     = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+_CTF_EXCHANGE_SPENDER      = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # FIXED: bon spender CLOB
 _POLYGON_RPC               = "https://polygon-rpc.com"
 
 # ABI minimal ERC-1155 — uniquement isApprovedForAll (lecture seule, sans gas).
@@ -587,23 +587,21 @@ class PolymarketClient:
 
             # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)
-            # Fix wrong spender key: API retourne {spender_addr: amount} pas {"allowance": amount}
+            # FIXED: bon spender = _CTF_EXCHANGE_SPENDER (0x4bFb...) — clé réelle dans le dict API
             is_neg = token_id in self._neg_risk_confirmed
-            spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_ADDRESS
-            # CTF Exchange proxy (spender réel pour les SELL côté CLOB)
-            _SPENDER_PROXY = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # FIXED: bon spender
+            spender = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_SPENDER  # FIXED
             _raw = (
                 info.get(spender)
                 or info.get(spender.lower())
-                or info.get(_SPENDER_PROXY)
-                or info.get(_SPENDER_PROXY.lower())
+                or info.get(_CTF_EXCHANGE_SPENDER)
+                or info.get(_CTF_EXCHANGE_SPENDER.lower())
                 or info.get("allowance")
                 or info.get("Allowance")
                 or "0"
             )
             logger.info(
-                "[Allowance] Token %s: raw allowance field = %r (spender=%s)",  # LOG
-                token_id[:16], _raw, spender,
+                "[Allowance] Token %s: raw for spender %s = %r",  # LOG
+                token_id[:16], spender, _raw,
             )
             try:
                 allowance = int(str(_raw).strip()) if str(_raw).strip() else 0
