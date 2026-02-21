@@ -385,14 +385,34 @@ class Database:
             row = cur.fetchone()
             return row["quantity"] if row else 0.0
 
-    def get_position_usdc(self, token_id: str) -> float:
-        """Retourne l'exposition en USDC = quantity * avg_price (signé, 0.0 si aucune position)."""
+    def get_position_usdc(self, token_id: str, current_mid: float = 0.0) -> float:
+        """Retourne l'exposition en USDC pour un token.
+
+        Si current_mid > 0 : utilise quantity * current_mid (valeur de marché actuelle).
+        Sinon : utilise quantity * avg_price (prix d'achat DB, fallback conservateur).
+
+        Dans les deux cas, avg_price est borné à [0.01, 0.99] pour se protéger
+        des corruptions DB (valeurs > 1.0 ou nulles). Si hors bornes, estimation
+        à 0.50 (prix médian neutre).
+
+        Retourne 0.0 si aucune position.
+        """
         with self._cursor() as cur:
             cur.execute("SELECT quantity, avg_price FROM positions WHERE token_id = ?", (token_id,))
             row = cur.fetchone()
             if not row:
                 return 0.0
-            return row["quantity"] * row["avg_price"]
+            qty = row["quantity"]
+            if qty == 0:
+                return 0.0
+            # Priorité : mid courant (valeur marché réelle)
+            if current_mid > 0.0:
+                return qty * current_mid
+            # Fallback : avg_price avec garde-fou
+            avg = row["avg_price"] or 0.0
+            if avg < 0.01 or avg > 0.99:
+                avg = 0.50  # Estimation conservatrice si corrompu
+            return qty * avg
 
     def get_all_positions(self) -> list[dict]:
         """Retourne toutes les positions actives (quantity != 0)."""

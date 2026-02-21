@@ -208,16 +208,50 @@ class RiskManager:
             )
         return None
 
+    def _get_current_exposure_usdc(self, token_id: str, mid_price: float) -> float:
+        """Calcule l'exposition actuelle en USDC pour un token.
+
+        Utilise le mid_price actuel du marché (issu du carnet d'ordres CLOB,
+        déjà présent dans Signal.mid_price) plutôt que avg_price de la DB.
+
+        Pourquoi mid_price et non avg_price :
+          - avg_price est le prix d'achat historique, pas la valeur actuelle.
+          - avg_price peut être corrompu (> 1.0) suite à un bug DB antérieur.
+          - Le fractional sizing doit refléter la valeur de marché réelle pour
+            éviter les faux rejets (expo calculée >> expo réelle).
+
+        Fallback sur avg_price DB si mid_price invalide (0 ou absent),
+        avec clamp [0.01, 0.99] pour se protéger de corruptions résiduelles.
+        """
+        qty_held = self.db.get_position(token_id)
+        if qty_held <= 0:
+            return 0.0
+
+        if mid_price > 0.0:
+            # Valeur de marché actuelle : qty × mid courant
+            return qty_held * mid_price
+
+        # Fallback : avg_price DB avec garde-fou [0.01, 0.99]
+        raw = self.db.get_position_usdc(token_id)
+        avg_price = raw / qty_held if qty_held > 0 else 0.0
+        if avg_price < 0.01 or avg_price > 0.99:
+            # avg_price corrompu → estimation conservatrice à 0.50
+            return qty_held * 0.50
+        return raw
+
     def _check_fractional_sizing(self, signal: Signal, balance: float,
                                   order_cost: float) -> RiskVerdict | None:
         """
         L'exposition nette en USDC sur un marché ne doit pas dépasser
         config.max_exposure_pct * balance (défaut : 20%, configurable via BOT_MAX_EXPOSURE_PCT).
-        current_exposure_usdc = shares_nettes * prix (stocké en USDC dans la DB).
+        Utilise le mid_price actuel du signal pour valoriser l'exposition existante.
         """
         max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
         max_exposure = balance * max_exposure_pct
-        current_exposure_usdc = self.db.get_position_usdc(signal.token_id)
+        # Exposition actuelle au prix de marché (mid), pas au prix d'achat
+        current_exposure_usdc = self._get_current_exposure_usdc(
+            signal.token_id, getattr(signal, "mid_price", 0.0)
+        )
 
         # Delta USDC de ce nouvel ordre
         delta = order_cost if signal.side == "buy" else -order_cost
@@ -239,13 +273,16 @@ class RiskManager:
           ratio = exposition_nette_USDC / max_autorisée
           > 0.6 → Cancel bids, Ask only
           = 1.0 → Liquidation unilatérale (Ask only)
+        Utilise le mid_price actuel du signal pour valoriser l'exposition existante.
         """
         max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
         max_exposure = balance * max_exposure_pct
         if max_exposure <= 0:
             return None
 
-        net_exposure  = abs(self.db.get_position_usdc(signal.token_id))
+        net_exposure = abs(self._get_current_exposure_usdc(
+            signal.token_id, getattr(signal, "mid_price", 0.0)
+        ))
         ratio         = net_exposure / max_exposure
 
         if ratio >= INVENTORY_SKEW_LIQ:

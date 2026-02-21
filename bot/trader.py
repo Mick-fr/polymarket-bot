@@ -229,9 +229,12 @@ class Trader:
         logger.info("[Cycle] Étape 3b: calcul valeur portfolio (DB locale)")
         portfolio_value = self._compute_portfolio_value(balance_raw)
         self.risk.update_high_water_mark(portfolio_value)
+        # Breakdown inventaire détaillé (DEBUG) : qty, avg_price, valeur par position
+        self._log_inventory_breakdown(balance_raw, portfolio_value)
         logger.info(
-            "[Cycle] Étape 3b: portfolio=%.4f USDC (USDC=%.4f + inventaire) | HWM=%.4f",
-            portfolio_value, balance_raw, self.db.get_high_water_mark(),
+            "[Cycle] Étape 3b: portfolio=%.4f USDC (USDC=%.4f + inventaire=%.4f) | HWM=%.4f",
+            portfolio_value, balance_raw, portfolio_value - balance_raw,
+            self.db.get_high_water_mark(),
         )
 
         # 4. Cancel+replace : annuler les BUY ouverts AVANT de lire le solde disponible.
@@ -550,6 +553,37 @@ class Trader:
             )
         except Exception as e:
             logger.warning("[Cancel+Replace] Erreur annulation: %s", e)
+
+    def _log_inventory_breakdown(self, usdc_balance: float, portfolio_value: float):
+        """Loggue le détail de chaque position en inventaire (niveau INFO).
+
+        Affiche pour chaque position : question (tronquée), qty, avg_price DB,
+        valeur calculée (qty × avg_price), et signale les avg_price hors bornes.
+        Utile pour diagnostiquer les écarts entre portfolio DB et dashboard Polymarket.
+
+        Appelé à l'étape 3b de chaque cycle, après _compute_portfolio_value().
+        """
+        try:
+            positions = self.db.get_all_positions()
+            if not positions:
+                return
+            inventory_total = portfolio_value - usdc_balance
+            lines = []
+            for p in positions:
+                qty = float(p.get("quantity", 0))
+                avg = float(p.get("avg_price") or 0)
+                val = qty * avg
+                flag = " ⚠ avg_price hors bornes!" if (avg <= 0.0 or avg > 1.0) else ""
+                question = (p.get("question") or p.get("token_id", "?")[:20])[:35]
+                lines.append(
+                    f"  {question:<35} qty={qty:>7.2f}  avg={avg:.4f}  val={val:>7.4f} USDC{flag}"
+                )
+            logger.info(
+                "[Portfolio] Breakdown inventaire (%.4f USDC total, %d position(s)):\n%s",
+                inventory_total, len(positions), "\n".join(lines),
+            )
+        except Exception as e:
+            logger.debug("[Portfolio] Erreur breakdown: %s", e)
 
     def _compute_portfolio_value(self, usdc_balance: float) -> float:
         """
