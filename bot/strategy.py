@@ -506,6 +506,16 @@ class OBIMarketMakingStrategy(BaseStrategy):
             net_exposure_usdc = qty_held * mid
             inv_ratio = net_exposure_usdc / max_exposure if max_exposure > 0 else 0.0
 
+            # ── Mise à jour du mid courant en DB ──
+            # Permet au RiskManager de valoriser l'exposition au prix de marché réel
+            # même si ce token ne génère pas de signal ce cycle (ex: filtre OBI).
+            # Aussi utilisé par _compute_portfolio_value() pour le HWM/circuit breaker.
+            if self.db and qty_held > 0:
+                try:
+                    self.db.update_position_mid(market.yes_token_id, mid)
+                except Exception:
+                    pass  # Non bloquant — dégradé silencieux
+
             # Decision : quelle(s) face(s) coter ce cycle
             #
             # PAPER TRADING : fill immediat → jamais BUY+SELL simultane.
