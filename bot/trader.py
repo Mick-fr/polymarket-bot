@@ -1330,23 +1330,23 @@ class Trader:
                 return False
 
         # ── Garde SELL: balance shares disponibles vs ordres ouverts ──────────
-        # Les shares lockées dans des SELLs ouverts réduisent la balance CLOB.
-        # Si qty_held - qty_locked < signal.size → 400 "not enough balance".
+        # FIX: utiliser balance CLOB réelle (raw/1e6) pas qty DB (peut être désynchronisée).
+        # Ex: DB dit held=20 mais CLOB balance='120000' = 0.12 shares → 400 garanti.
         if signal.side == "sell" and not self.config.bot.paper_trading:
             try:
-                qty_held = float(self.db.get_position(signal.token_id) or 0.0)  # FIXED: retourne float
-                # Somme des SELLs live dans la DB (shares déjà engagées/lockées)
+                _pre = self.pm_client.get_conditional_allowance(signal.token_id)
+                clob_balance = float(_pre.get("balance", "0")) / 1e6  # FIXED: scaling 10^6
                 qty_locked = self.db.get_live_sell_qty(signal.token_id)
-                qty_available = max(0.0, qty_held - qty_locked)
-                logger.info(  # LOG
-                    "[Execute] SELL %s: held=%.2f locked=%.2f available=%.2f required=%.2f",
-                    signal.token_id[:16], qty_held, qty_locked, qty_available, signal.size,
+                qty_available = max(0.0, clob_balance - qty_locked)
+                logger.info(
+                    "[Execute] SELL %s: clob_balance=%.4f locked=%.2f available=%.4f required=%.2f",
+                    signal.token_id[:16], clob_balance, qty_locked, qty_available, signal.size,
                 )
-                if signal.size > qty_available * 0.99:
+                if signal.size > qty_available:  # FIXED: strict, pas *0.99
                     logger.warning(
-                        "[Execute] SELL skippé %s: qty=%.2f > available=%.2f "
-                        "(shares lockées par ordres ouverts → 400 évité)",
-                        signal.token_id[:16], signal.size, qty_available,
+                        "[Execute] SELL skippé %s: qty=%.2f > clob_available=%.4f "
+                        "(raw_balance=%s/1e6 → 400 évité)",
+                        signal.token_id[:16], signal.size, qty_available, _pre.get("balance"),
                     )
                     return False
             except Exception as _be:
