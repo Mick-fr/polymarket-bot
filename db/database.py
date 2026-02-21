@@ -233,6 +233,25 @@ class Database:
             )
             return [dict(row) for row in cur.fetchall()]
 
+    def has_live_sell(self, token_id: str) -> bool:
+        """Retourne True si un SELL limit est actuellement live en DB pour ce token.
+
+        Contrairement à get_live_orders(), cette méthode ne filtre PAS par âge
+        et ne marque pas d'ordres comme 'cancelled'. Elle est utilisée uniquement
+        pour détecter les SELL de liquidation préservés entre cycles.
+
+        Un SELL limit live peut rester dans le carnet CLOB pendant plusieurs
+        minutes (ou heures) sans se filler — il ne doit pas être considéré stale.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*) AS cnt FROM orders
+                   WHERE status = 'live' AND side = 'sell' AND token_id = ?""",
+                (token_id,),
+            )
+            row = cur.fetchone()
+            return (row["cnt"] if row else 0) > 0
+
     def get_live_orders(self, max_age_seconds: int = 60) -> list[dict]:
         """Retourne les ordres live récents (posés depuis < max_age_seconds).
         Les ordres live plus anciens sont considérés comme obsolètes et marqués cancelled."""

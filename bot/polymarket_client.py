@@ -31,6 +31,10 @@ class PolymarketClient:
     def __init__(self, config: PolymarketConfig):
         self._config = config
         self._client: Optional[ClobClient] = None
+        # Cache des allowances ERC-1155 déjà confirmées dans cette session.
+        # Évite de re-vérifier + re-approuver à chaque SELL (10 req/cycle inutiles).
+        # Invalider en cas de redémarrage (recréation de l'objet = set vide).
+        self._allowance_confirmed: set[str] = set()
 
     def connect(self):
         """Initialise le client et dérive les credentials API (L1 → L2)."""
@@ -229,6 +233,14 @@ class PolymarketClient:
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
+            # 0b. Cache session : si déjà approuvé dans cette session, retourner True
+            #     directement sans aucune requête réseau. Reset à chaque redémarrage.
+            if token_id in self._allowance_confirmed:
+                logger.debug(
+                    "[Allowance] Token %s: allowance OK (cache session)", token_id[:16]
+                )
+                return True
+
             # 0. Détecter les tokens neg-risk — contrat différent, on ne peut pas
             #    appeler update_balance_allowance pour eux via cette API
             if self.is_neg_risk_token(token_id):
@@ -267,6 +279,7 @@ class PolymarketClient:
                 logger.debug(
                     "[Allowance] Token %s: allowance OK (%s)", token_id[:16], allowance_raw
                 )
+                self._allowance_confirmed.add(token_id)
                 return True
 
             # 2. Allowance insuffisante → déclencher l'approbation
@@ -281,6 +294,7 @@ class PolymarketClient:
             logger.info(
                 "[Allowance] Token %s: approbation envoyée → %s", token_id[:16], resp
             )
+            self._allowance_confirmed.add(token_id)
             return True
 
         except Exception as e:

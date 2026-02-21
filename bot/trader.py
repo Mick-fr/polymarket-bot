@@ -703,16 +703,16 @@ class Trader:
         cet ordre. Tenter un deuxième SELL sur le même token consommerait
         plus de shares que disponibles → erreur 400 "not enough balance".
 
+        Utilise db.has_live_sell() qui ne filtre PAS par âge (contrairement à
+        get_live_orders() qui expire les ordres > 60s). Un SELL de liquidation
+        peut rester dans le carnet plusieurs heures sans se filler.
+
         Exemple observé : Cavaliers (5 shares) SELL @ 0.56 préservé (cycle 1).
         Au cycle 3, la stratégie génère un nouveau SELL @ 0.56 → erreur 400 car
         le SELL du cycle 1 est encore ouvert et les 5 shares sont déjà engagées.
         """
         try:
-            live_sells = [
-                o for o in self.db.get_live_orders()
-                if o.get("side") == "sell" and o.get("token_id") == token_id
-            ]
-            return len(live_sells) > 0
+            return self.db.has_live_sell(token_id)
         except Exception:
             return False
 
