@@ -692,15 +692,41 @@ class Trader:
 
         for pos in candidates[:max_to_sell]:
             token_id = pos["token_id"]
-            qty_sell  = round(pos["qty"] * 0.20, 2)  # 20% de la position
-            if qty_sell < 1.0:
-                qty_sell = 1.0  # minimum 1 share
-            if qty_sell > pos["qty"]:
-                qty_sell = pos["qty"]
+
+            # FIXED: qty bornée par deux contraintes :
+            #   a) 20% de la position existante
+            #   b) max USDC = cash * 0.10 / mid (on ne liquide jamais plus que
+            #      10% du cash disponible en valeur, pour rester conservateur)
+            qty_20pct = round(pos["qty"] * 0.20, 2)
+            max_qty_by_cash = (balance * 0.10 / pos["mid"]) if pos["mid"] > 0 else qty_20pct
+            qty_sell = min(qty_20pct, max_qty_by_cash)
+            qty_sell = max(qty_sell, 1.0)   # minimum 1 share
+            qty_sell = min(qty_sell, pos["qty"])  # jamais plus que détenu
+            qty_sell = round(qty_sell, 2)
+
+            # FIXED: vérification allowance on-chain AVANT de poster le SELL market
+            # Un SELL market sans allowance → erreur 400, perte d'un cycle.
+            try:
+                allowance_ok = self._call_with_timeout(
+                    lambda tid=token_id: self.pm_client.ensure_conditional_allowance(tid),
+                    timeout=8.0,
+                    label=f"pre_sell_allowance_check({token_id[:16]})",
+                )
+            except Exception as allow_err:
+                logger.warning(
+                    "[Liquidation] Check allowance échoué pour %s: %s → SELL ignoré ce cycle.",
+                    token_id[:16], allow_err,
+                )
+                continue
+            if not allowance_ok:
+                logger.info(
+                    "[Liquidation] %s: allowance non confirmée → SELL différé "
+                    "(propagation en cours ou quarantine).",
+                    token_id[:16],
+                )
+                continue
 
             try:
-                # place_market_order attend un amount en USDC.
-                # Pour un SELL : qty_sell shares × mid ≈ montant USDC à céder.
                 usdc_amount = round(qty_sell * pos["mid"], 4)
                 resp = self._call_with_timeout(
                     lambda tid=token_id, amt=usdc_amount: self.pm_client.place_market_order(
@@ -711,10 +737,10 @@ class Trader:
                 )
                 order_id = resp.get("orderID") or resp.get("id") if isinstance(resp, dict) else None
                 logger.info(
-                    "[Liquidation] SELL market %s qty≈%.2f (%.2f USDC) → order_id=%s",
+                    "[Liquidation] SELL market %s qty=%.2f (%.4f USDC) → order_id=%s",
                     pos["question"], qty_sell, usdc_amount, order_id or "?",
                 )
-                # FIXED: record_order prend size/amount_usdc/order_id — pas quantity/clob_order_id
+
                 try:
                     self.db.record_order(
                         market_id=token_id,
@@ -729,25 +755,38 @@ class Trader:
                     )
                 except Exception as db_err:
                     logger.warning(
-                        "[Liquidation] SELL API OK mais DB record_order échoué pour %s: %s "
-                        "(order_id=%s — position DB non mise à jour ce cycle)",
+                        "[Liquidation] record_order échoué %s: %s (order_id=%s)",
                         token_id[:16], db_err, order_id,
                     )
 
-                # FIXED: poll balance-allowance 10s post-fill → update position DB
-                # Un ordre market FOK est exécuté quasi-instantanément côté Polymarket.
-                # On attend 10s pour que le fill soit enregistré côté CLOB, puis on
-                # récupère le nouveau solde balance-allowance pour mettre à jour la DB.
-                try:
-                    time.sleep(10)
-                    new_allowance_info = self._call_with_timeout(
-                        lambda tid=token_id: self.pm_client.get_conditional_allowance(tid),
-                        timeout=6.0,
-                        label=f"poll_allowance_post_sell({token_id[:16]})",
-                    )
-                    if new_allowance_info:
-                        # Mettre à jour la position DB : déduire les shares vendus
-                        # update_position avec qty_delta négatif (SELL)
+                # FIXED: poll 3×5s au lieu de sleep(10) fixe.
+                # Un FOK market se résout en < 2s sur Polymarket ; on poll
+                # get_conditional_allowance pour détecter que le fill a réduit
+                # le solde de shares (la balance-allowance inclut les shares restants).
+                fill_confirmed = False
+                for poll_attempt in range(1, 4):
+                    try:
+                        time.sleep(5)
+                        allowance_info = self._call_with_timeout(
+                            lambda tid=token_id: self.pm_client.get_conditional_allowance(tid),
+                            timeout=5.0,
+                            label=f"poll_post_sell_{poll_attempt}({token_id[:16]})",
+                        )
+                        if allowance_info is not None:
+                            fill_confirmed = True
+                            break
+                        logger.debug(
+                            "[Liquidation] Poll %d/3 pour %s: pas de réponse, retry...",
+                            poll_attempt, token_id[:16],
+                        )
+                    except Exception as poll_err:
+                        logger.debug(
+                            "[Liquidation] Poll %d/3 échoué %s: %s",
+                            poll_attempt, token_id[:16], poll_err,
+                        )
+
+                if fill_confirmed:
+                    try:
                         self.db.update_position(
                             token_id=token_id,
                             market_id=token_id,
@@ -757,15 +796,20 @@ class Trader:
                             fill_price=pos["mid"],
                         )
                         logger.info(
-                            "[Liquidation] Position DB mise à jour: %s qty −%.2f "
-                            "(fill confirmé post-poll 10s)",
+                            "[Liquidation] DB mise à jour: %s qty −%.2f (fill confirmé)",
                             token_id[:16], qty_sell,
                         )
-                except Exception as poll_err:
+                    except Exception as upd_err:
+                        logger.warning(
+                            "[Liquidation] update_position échoué %s: %s "
+                            "(réconciliation automatique au prochain cycle)",
+                            token_id[:16], upd_err,
+                        )
+                else:
                     logger.warning(
-                        "[Liquidation] Poll post-fill échoué pour %s: %s "
-                        "(position DB sera reconciliée au prochain cycle)",
-                        token_id[:16], poll_err,
+                        "[Liquidation] %s: poll 3×5s sans réponse — "
+                        "position DB non mise à jour ce cycle (réconciliation auto).",
+                        token_id[:16],
                     )
 
                 sold += 1
@@ -852,25 +896,36 @@ class Trader:
                 )
 
                 if mid is not None and 0.01 <= float(mid) <= 0.99:
-                    # ── Mid valide (via /midpoint ou bid+ask fallback) ─────────
+                    # ── Mid valide (via /midpoint, bid+ask, ou last-trade) ─────
                     mid_f = float(mid)
                     self.db.update_position_mid(token_id, mid_f)
                     self._mid_last_fetched[token_id] = now
                     self._mid_404_tokens.discard(token_id)
+                    # Token redevenu actif → retirer de la liste des tokens inactifs
+                    self.pm_client._inactive_tokens.discard(token_id)
                     refreshed[token_id] = mid_f
                     n_ok += 1
 
                 else:
-                    # Les deux mécanismes ont échoué (book vraiment vide).
+                    # Les 3 mécanismes ont échoué (book totalement vide, inactif).
                     # → TTL long, on conserve le current_mid DB stale comme fallback.
+                    # → Marquer comme inactif : strategy.py skipe l'OBI pour ce token.
                     # Ne PAS écraser current_mid en DB ici.
                     self._mid_last_fetched[token_id] = now
                     self._mid_404_tokens.add(token_id)
-                    logger.debug(
-                        "[MidRefresh] %s: /midpoint + bid/ask vides → TTL 5min, "
-                        "conservation mid DB stale.",
-                        token_id[:16],
-                    )
+                    was_active = token_id not in self.pm_client._inactive_tokens
+                    self.pm_client._inactive_tokens.add(token_id)
+                    if was_active:
+                        logger.info(
+                            "[MidRefresh] %s: tous mécanismes échoués (midpoint+bid/ask+last-trade) "
+                            "→ marqué inactif (OBI skip).",
+                            token_id[:16],
+                        )
+                    else:
+                        logger.debug(
+                            "[MidRefresh] %s: toujours inactif → TTL 5min.",
+                            token_id[:16],
+                        )
                     n_404 += 1
 
             except Exception as e:

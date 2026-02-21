@@ -25,12 +25,16 @@ logger = logging.getLogger("bot.polymarket")
 # Mapping lisible pour les côtés d'ordre
 SIDE_MAP = {"buy": BUY, "sell": SELL}
 
-# FIXED: Adresses on-chain Polygon pour vérification isApprovedForAll via web3.
-# CTF Exchange : contrat ERC-1155 qui tient les shares conditionnels.
-# NegRisk Exchange : contrat alternatif pour les marchés neg-risk groupés.
-# Source : https://docs.polymarket.com/#contracts
-_CTF_EXCHANGE_ADDRESS     = "0x6319fb691efe847d96b3f8b4b872d3a39b336309"
-_NEG_RISK_EXCHANGE_ADDRESS = "0x4e2b6ffbed6a0d4f3bd96ab98ff4b6b24dd1b4df"
+# FIXED: Adresses on-chain Polygon corrigées (source : Polymarket docs + etherscan).
+# CTF Exchange (opérateur pour les tokens conditionnels standard) :
+#   0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
+# NegRisk CTF Exchange (opérateur pour les tokens neg-risk groupés) :
+#   0xC5d563A36AE78145C45a50134d48A1215220f80a
+# L'appel ERC-1155 isApprovedForAll est :
+#   shares_contract.isApprovedForAll(owner_wallet, exchange_operator)
+# Le contrat ERC-1155 qui détient les shares est le CTF Exchange dans les deux cas.
+_CTF_EXCHANGE_ADDRESS      = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+_NEG_RISK_CTF_EXCHANGE     = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 _POLYGON_RPC               = "https://polygon-rpc.com"
 
 # ABI minimal ERC-1155 — uniquement isApprovedForAll (lecture seule, sans gas).
@@ -68,7 +72,13 @@ class PolymarketClient:
         # On ne re-tente pas indéfiniment : après _ALLOWANCE_MAX_RETRIES tentatives,
         # le token est mis en quarantaine → SELL bloqué comme s'il était neg-risk.
         self._allowance_retry_count: dict[str, int] = {}
-        self._ALLOWANCE_MAX_RETRIES = 2  # FIXED: réduit 3→2 (quarantine plus rapide)
+        self._ALLOWANCE_MAX_RETRIES = 2
+        # FIXED: si BYPASS_QUARANTINE=true dans l'env, la quarantine n'est jamais
+        # déclenchée — utile pour débloquer manuellement sans redémarrage.
+        import os as _os
+        self._bypass_quarantine: bool = _os.getenv("BYPASS_QUARANTINE", "").lower() == "true"
+        if self._bypass_quarantine:
+            logger.warning("[Allowance] BYPASS_QUARANTINE=true — quarantine désactivée.")
         # Tokens pour lesquels update_balance_allowance vient d'être envoyé.
         # La propagation blockchain est asynchrone (typiquement 5-30 secondes).
         # Pendant ce délai, tout SELL doit être différé (retour False) pour éviter
@@ -84,6 +94,12 @@ class PolymarketClient:
         # si polygon-rpc.com est lent.
         self._w3 = None
         self._ctf_contract = None
+        # Tokens où les 3 mécanismes de mid ont tous échoué (midpoint + bid/ask + last-trade).
+        # Ces tokens sont marqués comme "inactifs" : marché non tradé, book totalement vide,
+        # probablement en attente de résolution. Strategy.py skipe l'analyse OBI pour eux
+        # (évite 1 requête get_order_book inutile par cycle par token inactif).
+        # Reset à chaque redémarrage. Nettoyé si le token retrouve un mid valide.
+        self._inactive_tokens: set[str] = set()
 
     def _get_w3(self):
         """Retourne l'instance Web3 (lazy-init, singleton par session).
@@ -112,32 +128,43 @@ class PolymarketClient:
         return self._w3
 
     def _check_onchain_approval(self, owner_address: str, is_neg_risk: bool = False) -> Optional[bool]:
-        """Vérifie on-chain (Polygon) si le contrat Exchange a l'approbation ERC-1155.
+        """Vérifie on-chain (Polygon) si l'opérateur Exchange a l'approbation ERC-1155.
 
-        Appelle isApprovedForAll(owner, operator) sur le CTF Exchange ou le
-        NegRisk Exchange selon le type de token.
+        Logique ERC-1155 Polymarket :
+          - Le contrat qui détient les shares (account = CTF Exchange) est toujours
+            _CTF_EXCHANGE_ADDRESS (0x4D97...).
+          - L'opérateur autorisé à transférer varie selon le type de marché :
+            * Token standard   → opérateur = CTF Exchange     (0x4D97...)
+            * Token neg-risk   → opérateur = NegRisk Exchange (0xC5d5...)
+          - L'appel est : ctf_contract.isApprovedForAll(owner_wallet, operator)
 
-        Retourne True si approuvé, False si non approuvé, None si erreur/indisponible.
-        Cette méthode ne lève jamais d'exception — elle loggue et retourne None.
+        FIXED: la version précédente passait spender comme adresse du contrat
+        ET comme opérateur simultanément — ce n'est correct que pour les tokens
+        standard. Pour neg-risk, l'opérateur est _NEG_RISK_CTF_EXCHANGE.
+
+        Retourne True / False / None (None = web3 indisponible, pas de blocage).
         """
         w3 = self._get_w3()
         if w3 is None:
             return None
         try:
             from web3 import Web3
-            # FIXED: vérification isApprovedForAll on-chain (lecture seule, sans gas)
-            spender = _NEG_RISK_EXCHANGE_ADDRESS if is_neg_risk else _CTF_EXCHANGE_ADDRESS
+            # FIXED: opérateur correct selon le type de token
+            operator = _NEG_RISK_CTF_EXCHANGE if is_neg_risk else _CTF_EXCHANGE_ADDRESS
+            # Le contrat ERC-1155 (qui stocke les shares) est toujours CTF Exchange
             contract = w3.eth.contract(
                 address=Web3.to_checksum_address(_CTF_EXCHANGE_ADDRESS),
                 abi=_ERC1155_ABI_MINIMAL,
             )
             approved = contract.functions.isApprovedForAll(
                 Web3.to_checksum_address(owner_address),
-                Web3.to_checksum_address(spender),
+                Web3.to_checksum_address(operator),
             ).call()
-            logger.debug(
-                "[Allowance/web3] isApprovedForAll(%s, %s) = %s",
-                owner_address[:10], spender[:10], approved,
+            logger.info(
+                "[Allowance/web3] isApprovedForAll(owner=%s…, operator=%s…) = %s "
+                "(%s)",
+                owner_address[:8], operator[:8], approved,
+                "neg-risk" if is_neg_risk else "standard",
             )
             return bool(approved)
         except Exception as e:
@@ -508,38 +535,53 @@ class PolymarketClient:
             #     l'UI Polymarket peut avoir approuvé depuis le dernier retry.
             retry_count = self._allowance_retry_count.get(token_id, 0)
             if retry_count >= self._ALLOWANCE_MAX_RETRIES:
-                # FIXED: vérification on-chain avant quarantine définitive
-                owner = getattr(self._config, "funder_address", "") or ""
-                if owner:
+                # NEW: BYPASS_QUARANTINE=true → skip quarantine, laisser passer
+                if self._bypass_quarantine:
+                    logger.info(
+                        "[Allowance] Token %s: %d tentatives mais BYPASS_QUARANTINE=true "
+                        "→ quarantine ignorée, tentative SELL.",
+                        token_id[:16], retry_count,
+                    )
+                    # On ne reset pas retry_count ici pour continuer à logger
+                    # Passer directement au GET (étape 1 ci-dessous)
+
+                else:
+                    # FIXED: vérification on-chain avant quarantine définitive
+                    # Les adresses correctes sont désormais _CTF_EXCHANGE_ADDRESS et
+                    # _NEG_RISK_CTF_EXCHANGE (corrigées dans les constantes module).
+                    owner = getattr(self._config, "funder_address", "") or ""
                     is_neg = token_id in self._neg_risk_confirmed
-                    onchain = self._check_onchain_approval(owner, is_neg_risk=is_neg)
-                    if onchain is True:
-                        # L'UI a approuvé → reset quarantine + confirmer en cache
-                        logger.info(
-                            "[Allowance] Token %s: approuvé ON-CHAIN (isApprovedForAll=True) "
-                            "→ reset quarantine, SELL autorisé.",
-                            token_id[:16],
-                        )
-                        self._allowance_confirmed.add(token_id)
-                        self._allowance_retry_count.pop(token_id, None)
-                        self._allowance_pending_since.pop(token_id, None)
-                        return True
-                    elif onchain is False:
-                        logger.warning(
-                            "[Allowance] Token %s: QUARANTAINE (%d tentatives) + "
-                            "isApprovedForAll=False on-chain → SELL bloqué. "
-                            "Approuver via l'UI Polymarket (CTF Exchange: %s).",
-                            token_id[:16], retry_count, _CTF_EXCHANGE_ADDRESS[:10],
-                        )
-                        return False
-                    # onchain is None → web3 indisponible, fallback comportement classique
-                # Pas d'adresse owner ou web3 indisponible → quarantine classique
-                logger.warning(
-                    "[Allowance] Token %s: QUARANTAINE (%d tentatives sans succès, "
-                    "vérif on-chain indisponible) → SELL bloqué.",
-                    token_id[:16], retry_count,
-                )
-                return False
+                    operator_addr = _NEG_RISK_CTF_EXCHANGE if is_neg else _CTF_EXCHANGE_ADDRESS
+                    if owner:
+                        onchain = self._check_onchain_approval(owner, is_neg_risk=is_neg)
+                        if onchain is True:
+                            # Approuvé on-chain (ex: via UI Polymarket) → reset quarantine
+                            logger.info(
+                                "[Allowance] Token %s: ON-CHAIN confirmé (isApprovedForAll=True, "
+                                "operator=%s) → reset quarantine, SELL autorisé.",
+                                token_id[:16], operator_addr[:10],
+                            )
+                            self._allowance_confirmed.add(token_id)
+                            self._allowance_retry_count.pop(token_id, None)
+                            self._allowance_pending_since.pop(token_id, None)
+                            return True
+                        elif onchain is False:
+                            logger.warning(
+                                "[Allowance] Token %s: QUARANTAINE (%d tentatives) + "
+                                "isApprovedForAll=False on-chain → SELL bloqué. "
+                                "Approuver dans l'UI Polymarket pour l'opérateur: %s. "
+                                "Ou relancer avec BYPASS_QUARANTINE=true.",
+                                token_id[:16], retry_count, operator_addr,
+                            )
+                            return False
+                        # onchain is None → web3 indisponible, quarantine classique
+                    logger.warning(
+                        "[Allowance] Token %s: QUARANTAINE (%d tentatives, "
+                        "vérif on-chain indisponible) → SELL bloqué. "
+                        "Relancer avec BYPASS_QUARANTINE=true si UI approuvé.",
+                        token_id[:16], retry_count,
+                    )
+                    return False
 
             # 1. Vérifier l'allowance actuelle via GET
             info = self.get_conditional_allowance(token_id)

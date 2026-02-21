@@ -414,6 +414,18 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 logger.debug("[OBI] '%s' re-cotation trop rapide, skip.", market.question[:40])
                 continue
 
+            # ── Skip tokens inactifs (tous mécanismes mid ont échoué) ──────────
+            # Évite 1 req get_order_book inutile par cycle pour les marchés
+            # totalement sans liquidité (pas encore résolus, juste aucun trade).
+            # Marqué par _refresh_inventory_mids() si le token est en inventaire.
+            _inactive = getattr(self.client, "_inactive_tokens", set())
+            if market.yes_token_id in _inactive:
+                logger.debug(
+                    "[OBI] '%s' marqué inactif (mid indisponible) → skip OBI.",
+                    market.question[:40],
+                )
+                continue
+
             # ── Carnet d'ordres YES (avec timeout 12s pour éviter blocage TCP) ──
             try:
                 ob = self._get_order_book_timeout(market.yes_token_id, timeout=12.0)
