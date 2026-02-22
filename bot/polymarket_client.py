@@ -83,7 +83,12 @@ class PolymarketWSClient:
             on_error=self._on_error,
             on_close=self._on_close
         )
-        self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+        # 2026 WS REAL-TIME: Heartbeat toutes les 30s
+        self.thread = threading.Thread(
+            target=self.ws.run_forever,
+            kwargs={'ping_interval': 30, 'ping_timeout': 10},
+            daemon=True
+        )
         self.thread.start()
 
     def stop(self):
@@ -465,7 +470,7 @@ class PolymarketClient:
             return _cache_and_return(last)
 
         # ── Tentative 6 : fallback 0.50 + marque inactif 10 min ──────────────────────
-        logger.info("[MidRobust] %s LOW_LIQUIDITY — tous mécanismes échoués, marqué inactif 10min.", token_id[:16])
+        logger.debug("[MidRobust] %s LOW_LIQUIDITY — tous mécanismes échoués, marqué inactif 10min.", token_id[:16])
         self._inactive_tokens.add(token_id)
         return None  # caller conserve mid DB stale ou skip le marché
 

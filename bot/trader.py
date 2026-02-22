@@ -412,8 +412,8 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 TOP BOT UPGRADE BATCH — flush batch if >3 orders collected
-        if len(batch_orders) > 3 and not self.config.bot.paper_trading:
+        # 2026 BATCH — flush batch if >2 orders collected
+        if len(batch_orders) > 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
                     lambda: self.pm_client.place_orders_batch(batch_orders),

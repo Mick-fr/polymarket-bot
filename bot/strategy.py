@@ -176,18 +176,18 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                
-                if sum_ask < 0.97:  # HOTFIX 2026-02-22: seuil 3% (anti-spam)
+                # 2026 SPAM FIX (seuil 5%)
+                if sum_ask <= 0.95:
                     logger.warning(
-                        "[ARBITRAGE] Event %s : somme asks YES = %.3f < 0.97 ! "
+                        "[ARBITRAGE] Event %s : somme asks YES = %.3f <= 0.95 ! "
                         "Opportunite croisee (auto-trade dispo).",
                         eid, sum_ask
                     )
                     # # AUTO-TRADE (décommenté si taille < 2% portfolio) :
                     # if sum_ask < 0.95: self._execute_cross_arb(group, balance)
-                elif sum_bid > 1.03:
+                elif sum_bid >= 1.05:
                     logger.warning(
-                        "[ARBITRAGE] Event %s : somme bids YES = %.3f > 1.03 ! "
+                        "[ARBITRAGE] Event %s : somme bids YES = %.3f >= 1.05 ! "
                         "Opportunite croisee (auto-trade dispo).",
                         eid, sum_bid
                     )
@@ -553,9 +553,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self._volatility_ema[market.yes_token_id] = current_vol
             self._update_price_history(market.yes_token_id, mid)
 
-            # HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge, récupéré de l'instance (plus de _config.bot)
+            # HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge, récupéré de l'instance
             ai_prob = -1.0
             if self.ai_enabled:
+                self._ai_last_token = market.yes_token_id  # stocké pour le log
                 now_ts = time.time()
                 cached = self._ai_probs.get(market.yes_token_id)
                 if cached is None or (now_ts - cached[1]) > self.ai_cooldown_s:
@@ -565,8 +566,8 @@ class OBIMarketMakingStrategy(BaseStrategy):
                         if ai_val is not None:
                             self._ai_probs[market.yes_token_id] = (ai_val, now_ts)
                             ai_prob = ai_val
-                    except Exception:
-                        pass
+                    except Exception as e_ai:
+                        logger.debug("[AI EDGE] Erreur fetch API: %s", e_ai)
                 elif cached:
                     ai_prob = cached[0]
 
@@ -749,6 +750,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
         if ai_prob >= 0.0 and abs(ai_prob - mid) > self.ai_edge_threshold:
             directional_skew = (ai_prob - mid) * 4.0 * self.ai_weight
             ai_skew_ticks = round(directional_skew / TICK_SIZE)
+            # 2026 POLISH: Log clair AI_EDGE
+            logger.info("[AI EDGE] Token %s | AI=%.3f mid=%.3f skew=%+d ticks",
+                        self._ai_last_token[-16:] if hasattr(self, "_ai_last_token") else "???",
+                        ai_prob, mid, ai_skew_ticks)
 
         # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)
         # OBI negatif → bid monte, ask descend (opportunite BUY, protection SELL)
