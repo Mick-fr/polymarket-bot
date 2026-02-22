@@ -417,7 +417,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 BATCH — flush batch if >= 2 orders collected
+        # 2026 ULTIMATE
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
@@ -425,7 +425,7 @@ class Trader:
                     timeout=15.0,
                     label="place_orders_batch",
                 )
-                logger.info("[Batch] %d ordres envoyés en batch.", len(batch_orders))
+                logger.info("[BATCH] %d ordres envoyés", len(batch_orders))
             except Exception as be:
                 logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
 
@@ -1682,8 +1682,10 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
-                # 2026 FINAL TELEGRAM
-                send_alert(f"✅ ORDRE EXÉCUTÉ\nToken: {signal.token_id[:8]}...\nType: {signal.side.upper()}\nQuantité: {actual_size:.2f}\nPrix: {signal.price or 'market'}")
+                # 2026 ULTIMATE
+                if not getattr(self, "_first_fill_alerted", False):
+                    send_alert(f"✅ FILL {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]}")
+                    self._first_fill_alerted = True
                 
                 # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:

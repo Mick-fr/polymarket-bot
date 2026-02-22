@@ -99,6 +99,8 @@ class PolymarketWSClient:
     def _on_open(self, ws):
         msg = {"assets_ids": list(self.active_markets), "type": "market"}
         ws.send(json.dumps(msg))
+        # 2026 ULTIMATE
+        logger.info("[WS] Subscribed to %d markets", len(self.active_markets))
 
     def _on_message(self, ws, message):
         try:

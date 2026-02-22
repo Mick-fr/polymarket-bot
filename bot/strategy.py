@@ -176,13 +176,13 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                # 2026 FINAL ARB CLEAN
-                if sum_ask <= 0.90:
+                # 2026 ULTIMATE CLEAN
+                if sum_ask <= 0.88:
                     delta = 1.0 - sum_ask
-                    logger.warning("[ARB] Event %s → YES %+.1f%% (bids=%.3f / asks=%.3f)", eid, delta, sum_bid, sum_ask)
-                elif sum_bid >= 1.10:
+                    logger.warning("[ARB] %s ASK %+.1f%%", eid, delta * 100)
+                elif sum_bid >= 1.12:
                     delta = sum_bid - 1.0
-                    logger.warning("[ARB] Event %s → YES %+.1f%% (bids=%.3f / asks=%.3f)", eid, delta, sum_bid, sum_ask)
+                    logger.warning("[ARB] %s BID %+.1f%%", eid, delta * 100)
             except Exception:
                 pass
 
@@ -563,7 +563,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     ai_prob = cached[0]
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
-                # 2026 FINAL AI VISIBLE
+                # 2026 ULTIMATE
                 if ai_prob >= 0.0:
                     delta = ai_prob - mid
                     directional_skew = delta * 4.0 * self.ai_weight
