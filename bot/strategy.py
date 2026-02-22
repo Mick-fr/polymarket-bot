@@ -125,6 +125,8 @@ class MarketUniverse:
             return self._cache
 
         raw = self._fetch_gamma_markets()
+        self._detect_cross_arbitrage(raw)
+        
         eligible = []
         for m in raw:
             result = self._evaluate(m)
@@ -138,6 +140,40 @@ class MarketUniverse:
         self._cache = eligible
         self._cache_ts = now
         return eligible
+
+    def _detect_cross_arbitrage(self, markets: list[dict]):
+        """Detecte si la somme des prix YES sur une meme condition est < 1.0 (Arbitrage)."""
+        conditions = {}
+        for m in markets:
+            cid = m.get("conditionId")
+            if not cid:
+                continue
+            if cid not in conditions:
+                conditions[cid] = []
+            conditions[cid].append(m)
+        
+        for cid, group in conditions.items():
+            if len(group) < 2:
+                continue
+            try:
+                sum_ask = 0.0
+                tokens = []
+                for m in group:
+                    best_ask = float(m.get("bestAsk") or 1.0)
+                    sum_ask += best_ask
+                    clob_ids = json.loads(m.get("clobTokenIds", "[]")) if isinstance(m.get("clobTokenIds", "[]"), str) else (m.get("clobTokenIds") or [])
+                    if clob_ids:
+                        tokens.append((clob_ids[0], best_ask))
+                
+                # Seuil à 0.98 pour couvrir les frais de gaz / slippage potentiel
+                if 0 < sum_ask < 0.98:
+                    logger.warning(
+                        "[ARBITRAGE] Condition %s : somme asks YES = %.3f < 1.0 ! "
+                        "Opportunite croisee sur %d tokens: %s",
+                        cid, sum_ask, len(group), tokens
+                    )
+            except Exception:
+                pass
 
     def _fetch_gamma_markets(self, limit: int = 100) -> list[dict]:
         url = (
@@ -379,6 +415,9 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # {token_id: last_quote_timestamp}
         self._last_quote_ts: dict[str, float] = {}
         self._quote_cooldown: float = 16.0  # secondes entre deux cotations du meme token (2 cycles)
+        # EMA Volatility tracking
+        self._volatility_ema: dict[str, float] = {}
+        self._alpha_vol = 0.1
         # Tweak 1 : dernier mid par token pour cancel conditionnel
         # {token_id: last_quoted_mid}
         self._last_quoted_mid: dict[str, float] = {}
@@ -478,14 +517,23 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     pass
                 continue
 
-            self._update_price_history(market.yes_token_id, mid)
             self._last_quote_ts[market.yes_token_id] = time.time()
+
+            # Mise à jour de la volatilité temps réel
+            current_vol = self._volatility_ema.get(market.yes_token_id, 0.0)
+            if market.yes_token_id in self._price_history:
+                prev_price = self._price_history[market.yes_token_id][0]
+                ret = abs(mid - prev_price)
+                current_vol = current_vol * (1 - self._alpha_vol) + ret * self._alpha_vol
+            self._volatility_ema[market.yes_token_id] = current_vol
+            self._update_price_history(market.yes_token_id, mid)
 
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
                 mid=mid,
                 spread=market.spread,
                 obi=obi_result,
+                volatility=current_vol
             )
 
             # Verifications de base
@@ -637,37 +685,16 @@ class OBIMarketMakingStrategy(BaseStrategy):
         return signals
 
     def _compute_quotes(self, mid: float, spread: float,
-                        obi: OBIResult) -> tuple[float, float]:
+                        obi: OBIResult, volatility: float = 0.0) -> tuple[float, float]:
         """
         Calcule bid et ask avec skew ASYMETRIQUE base sur l'OBI.
-
-        Logique de market making correcte :
-          - OBI > 0 (pression acheteuse) → monter l'ASK (vendre plus cher aux acheteurs),
-            descendre le BID (eviter de surpayer) → l'ASK devient plus agressif.
-          - OBI < 0 (pression vendeuse) → monter le BID (acheter moins cher),
-            descendre l'ASK (eviter de bloquer nos ventes) → le BID devient plus attractif.
-          - OBI = 0 → symetrique : bid = mid - half, ask = mid + half.
-
-        Formule asymetrique :
-          ask_skew = +round(obi *  OBI_SKEW_FACTOR) ticks   # monte si OBI > 0
-          bid_skew = -round(obi *  OBI_SKEW_FACTOR) ticks   # descend si OBI > 0
-
-          bid = mid - half + bid_skew * TICK_SIZE
-          ask = mid + half + ask_skew * TICK_SIZE
-
-        Exemple OBI = +0.40 (pression acheteuse) :
-          skew_ticks = round(0.40 * 3) = 1
-          bid = mid - half - 1 tick  (on n'achete plus agressivement)
-          ask = mid + half + 1 tick  (on vend plus cher)
-          → spread total = spread + 2 ticks (protection contre execution adverse)
-
-        Exemple OBI = -0.40 (pression vendeuse) :
-          skew_ticks = round(0.40 * 3) = 1
-          bid = mid - half + 1 tick  (on acheite moins cher, market maker passif)
-          ask = mid + half - 1 tick  (on vend au mid, attire les vendeurs)
-          → on capte les vendeurs presses
+        Paramétrage dynamique du spread en fonction de la volatilité en temps réel (EMA).
         """
-        half = spread / 2.0
+        # Élargissement dynamique du spread si volatilité élevée
+        # multiplier = 1.0 (calme) à 2.0+ (très volatil, ex: 1 cent par cycle)
+        vol_multiplier = 1.0 + (volatility * 100)
+        dynamic_spread = spread * vol_multiplier
+        half = dynamic_spread / 2.0
 
         # Skew proportionnel asymetrique
         skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
