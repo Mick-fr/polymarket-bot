@@ -1424,7 +1424,13 @@ class Trader:
         # Ex: DB dit held=20 mais CLOB balance='120000' = 0.12 shares → 400 garanti.
         if signal.side == "sell" and not self.config.bot.paper_trading:
             try:
-                _pre = self.pm_client.get_conditional_allowance(signal.token_id)
+                _pre = self._call_with_timeout(
+                    lambda: self.pm_client.get_conditional_allowance(signal.token_id),
+                    timeout=10.0,
+                    label=f"pre-sell_allowance({signal.token_id[:16]})"
+                )
+                if not _pre:
+                    _pre = {}
                 clob_balance = float(_pre.get("balance", "0")) / 1e6  # FIXED: scaling 10^6
                 qty_locked = self.db.get_live_sell_qty(signal.token_id)
                 qty_available = max(0.0, clob_balance - qty_locked)
@@ -1471,7 +1477,11 @@ class Trader:
         # 400 et logguer clairement le problème.
         if signal.side == "sell" and not self.config.bot.paper_trading:
             try:
-                allowance_ok = self.pm_client.ensure_conditional_allowance(signal.token_id)
+                allowance_ok = self._call_with_timeout(
+                    lambda: self.pm_client.ensure_conditional_allowance(signal.token_id),
+                    timeout=12.0,
+                    label=f"ensure_allowance({signal.token_id[:16]})"
+                )
                 if not allowance_ok:
                     logger.warning(
                         "[Execute] SELL bloqué [%s]: allowance ERC-1155 non confirmée "
@@ -1513,17 +1523,25 @@ class Trader:
             if self.config.bot.paper_trading:
                 resp = self._simulate_order(signal)
             elif signal.order_type == "limit":
-                resp = self.pm_client.place_limit_order(
-                    token_id=signal.token_id,
-                    price=signal.price,
-                    size=signal.size,
-                    side=signal.side,
+                resp = self._call_with_timeout(
+                    lambda: self.pm_client.place_limit_order(
+                        token_id=signal.token_id,
+                        price=signal.price,
+                        size=signal.size,
+                        side=signal.side,
+                    ),
+                    timeout=15.0,
+                    label=f"place_limit({signal.token_id[:16]})"
                 )
             else:
-                resp = self.pm_client.place_market_order(
-                    token_id=signal.token_id,
-                    amount=signal.size,
-                    side=signal.side,
+                resp = self._call_with_timeout(
+                    lambda: self.pm_client.place_market_order(
+                        token_id=signal.token_id,
+                        amount=signal.size,
+                        side=signal.side,
+                    ),
+                    timeout=15.0,
+                    label=f"place_market({signal.token_id[:16]})"
                 )
 
             order_id = resp.get("orderID") or resp.get("id") or str(resp)

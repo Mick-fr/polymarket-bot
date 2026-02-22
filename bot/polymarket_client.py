@@ -452,7 +452,15 @@ class PolymarketClient:
                 token_id=token_id,
             )
             result = self.client.get_balance_allowance(params) or {}
-            logger.info("RAW balance-allowance %s: %s", token_id[:16], result)  # LOG ADDED
+            # LOG: avoid massive single-line logs in INFO (can be 60KB+)
+            logger.debug("RAW balance-allowance %s: %s", token_id[:16], result)
+            if result:
+                _sub = result.get("allowances") or result.get("Allowances") or {}
+                logger.info(
+                    "[Allowance] %s: %d keys in root, %d in sub-dict",
+                    token_id[:16], len(result),
+                    len(_sub) if isinstance(_sub, dict) else 0
+                )
             return result
         except Exception as e:
             logger.debug("get_conditional_allowance(%s): %s", token_id[:16], e)
@@ -630,19 +638,19 @@ class PolymarketClient:
             # Descendre dans le sous-dict "allowances" si présent
             _allowances_sub = info.get("allowances") or info.get("Allowances") or {}
             _search_in = {**info, **(_allowances_sub if isinstance(_allowances_sub, dict) else {})}
-            logger.info(  # LOG
-                "[Allowance] Token %s: keys=%s sub_keys=%s",
-                token_id[:16], list(info.keys()), list(_allowances_sub.keys()) if isinstance(_allowances_sub, dict) else [],
-            )
+            # logger.info(  # LOG
+            #     "[Allowance] Token %s: keys=%s sub_keys=%s",
+            #     token_id[:16], list(info.keys()), list(_allowances_sub.keys()) if isinstance(_allowances_sub, dict) else [],
+            # )
             # FIX: case-insensitive — normalise toutes les clés en lowercase
             _norm = {k.lower(): v for k, v in _search_in.items()}
-            logger.info("[Allowance] Token %s: normalized keys=%s", token_id[:16], list(_norm.keys()))  # LOG
+            # logger.info("[Allowance] Token %s: normalized keys=%s", token_id[:16], list(_norm.keys()))  # LOG
             _raw_v = (
                 _norm.get(spender.lower())
                 or _norm.get(_CTF_EXCHANGE_SPENDER.lower())
                 or _norm.get("allowance")
             )
-            logger.info("[Allowance] Token %s: raw for spender %s = %r", token_id[:16], spender, _raw_v)  # LOG
+            # logger.info("[Allowance] Token %s: raw for spender %s = %r", token_id[:16], spender, _raw_v)  # LOG
             try:
                 allowance = int(str(_raw_v).strip()) if _raw_v is not None else 0
             except (ValueError, TypeError):
