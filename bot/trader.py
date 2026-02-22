@@ -233,8 +233,8 @@ class Trader:
                     raw_balance = info.get("balance", "0") or "0"
                     clob_qty = float(raw_balance) / 1e6
 
-                    if clob_qty < db_qty * 0.5 or clob_qty > db_qty * 2.0:
-                        # Désync dans les deux sens : CLOB << DB ou CLOB >> DB
+                    if abs(clob_qty - db_qty) > 0.001:
+                        # Désync détecté entre CLOB et DB
                         logger.warning(
                             "[Sync] DÉSYNC token %s: DB=%.4f → CLOB=%.4f shares "
                             "(raw=%s). Correction DB.",
@@ -1059,7 +1059,11 @@ class Trader:
 
                 # ── Source du mid ──────────────────────────────────────────────
                 mid_valid = 0.01 <= mid <= 0.99
-                if mid_valid:
+                if token_id in self._mid_404_tokens:
+                    mid_src = "404→0"
+                    val_mid = 0.0
+                    n_mid_missing += 1
+                elif mid_valid:
                     last_t    = self._mid_last_fetched.get(token_id, 0.0)
                     age_min   = (now - last_t) / 60.0
                     # CHANGED: label "API" si fetché ce cycle (<2min), sinon "cache Xmin"
@@ -1148,6 +1152,10 @@ class Trader:
             for p in positions:
                 qty = float(p.get("quantity") or 0)
                 if qty <= 0:
+                    continue
+                token_id = p.get("token_id", "")
+                if token_id in self._mid_404_tokens:
+                    # Ignore 404 (resolved/empty) from portfolio HWM
                     continue
                 # ── 1. current_mid DB ──────────────────────────────────────────
                 stored_mid = float(p.get("current_mid") or 0)
