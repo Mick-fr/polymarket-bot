@@ -176,7 +176,7 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                # 2026 ULTIMATE CLEAN
+                # 2026 ULTIMATE FINAL
                 if sum_ask <= 0.88:
                     delta = 1.0 - sum_ask
                     logger.warning("[ARB] %s ASK %+.1f%%", eid, delta * 100)
@@ -563,13 +563,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     ai_prob = cached[0]
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
-                # 2026 ULTIMATE
+                # 2026 ULTIMATE FINAL
                 if ai_prob >= 0.0:
                     delta = ai_prob - mid
                     directional_skew = delta * 4.0 * self.ai_weight
-                    ai_skew_ticks = round(directional_skew / TICK_SIZE)
-                    logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+d",
-                                market.question[:40], ai_prob, mid, delta * 100, ai_skew_ticks)
+                    logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+.2f",
+                                market.question[:40], ai_prob, mid, delta * 100, directional_skew)
 
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(

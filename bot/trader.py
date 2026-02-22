@@ -306,6 +306,10 @@ class Trader:
         """Un cycle complet de la boucle de trading."""
         logger.info("[Cycle] ── Début du cycle ──────────────────────────────")
 
+        # 2026 ULTIMATE FINAL
+        if hasattr(self.pm_client, "ws_client") and hasattr(self.pm_client.ws_client, "log_status"):
+            self.pm_client.ws_client.log_status()
+
         # 1. Kill switch
         logger.debug("[Cycle] Étape 1: kill switch")
         if self.db.get_kill_switch():
@@ -417,7 +421,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 ULTIMATE
+        # 2026 ULTIMATE FINAL
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
@@ -1654,6 +1658,8 @@ class Trader:
                         "[Liquidation] SELL posé dans le carnet, sera préservé via DB: %s",
                         order_id[:16],
                     )
+                # 2026 ULTIMATE FINAL
+                send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | {order_id[:8]}")
                 return
 
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
@@ -1682,10 +1688,8 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
-                # 2026 ULTIMATE
-                if not getattr(self, "_first_fill_alerted", False):
-                    send_alert(f"✅ FILL {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]}")
-                    self._first_fill_alerted = True
+                # 2026 ULTIMATE FINAL
+                send_alert(f"✅ {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | {order_id[:8]}")
                 
                 # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:
