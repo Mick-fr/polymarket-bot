@@ -232,24 +232,25 @@ class Trader:
                     info = self.pm_client.get_conditional_allowance(token_id)
                     raw_balance = info.get("balance", "0") or "0"
                     clob_qty = float(raw_balance) / 1e6
+                    locked_qty = self.db.get_live_sell_qty(token_id)
+                    total_clob_qty = clob_qty + locked_qty
 
-                    if abs(clob_qty - db_qty) > 0.001:
+                    if abs(total_clob_qty - db_qty) > 0.001:
                         # Désync détecté entre CLOB et DB
                         logger.warning(
-                            "[Sync] DÉSYNC token %s: DB=%.4f → CLOB=%.4f shares "
-                            "(raw=%s). Correction DB.",
-                            token_id[:16], db_qty, clob_qty, raw_balance,
+                            "[Sync] DÉSYNC token %s: DB=%.4f → CLOB=%.4f (dispo=%.4f + bloqué=%.4f). Correction DB.",
+                            token_id[:16], db_qty, total_clob_qty, clob_qty, locked_qty
                         )
                         self.db.add_log(
                             "WARNING", "trader",
-                            f"Sync CLOB: token {token_id[:16]} DB={db_qty:.4f} → CLOB={clob_qty:.4f}",
+                            f"Sync CLOB: token {token_id[:16]} DB={db_qty:.4f} → CLOB={total_clob_qty:.4f}",
                         )
-                        self.db.set_position_quantity(token_id, clob_qty)
+                        self.db.set_position_quantity(token_id, total_clob_qty)
                         synced += 1
                     else:
                         logger.debug(
                             "[Sync] token %s OK: DB=%.4f CLOB=%.4f",
-                            token_id[:16], db_qty, clob_qty,
+                            token_id[:16], db_qty, total_clob_qty,
                         )
                 except Exception as exc:
                     logger.debug("[Sync] Erreur fetch CLOB pour %s: %s", token_id[:16], exc)
