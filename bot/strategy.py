@@ -56,6 +56,13 @@ ORDER_SIZE_PCT         =  0.03   # 3% du solde par ordre (ex: 0.02)
 MAX_NET_EXPOSURE_PCT   =  0.20   # 20% du solde = expo nette max par marche (défaut, surchargé via BOT_MAX_EXPOSURE_PCT)
 INVENTORY_SKEW_THRESHOLD = 0.60  # Ratio >= 60% → one-sided (ex: 0.70)
 
+# HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge params (module-level defaults)
+import os as _os
+AI_ENABLED          = _os.getenv("BOT_AI_ENABLED", "true").lower() == "true"
+AI_EDGE_THRESHOLD   = float(_os.getenv("BOT_AI_EDGE_THRESHOLD", "0.07"))
+AI_WEIGHT           = float(_os.getenv("BOT_AI_WEIGHT", "0.6"))
+AI_COOLDOWN_SECONDS = int(_os.getenv("BOT_AI_COOLDOWN_SECONDS", "300"))
+
 
 # ─── Dataclasses ─────────────────────────────────────────────────────────────
 
@@ -170,12 +177,14 @@ class MarketUniverse:
                 
                 if not has_valid: continue
                 
-                if sum_ask < 0.97:
+                if sum_ask < 0.97:  # HOTFIX 2026-02-22: seuil 3% (anti-spam)
                     logger.warning(
                         "[ARBITRAGE] Event %s : somme asks YES = %.3f < 0.97 ! "
                         "Opportunite croisee (auto-trade dispo).",
                         eid, sum_ask
                     )
+                    # # AUTO-TRADE (décommenté si taille < 2% portfolio) :
+                    # if sum_ask < 0.95: self._execute_cross_arb(group, balance)
                 elif sum_bid > 1.03:
                     logger.warning(
                         "[ARBITRAGE] Event %s : somme bids YES = %.3f > 1.03 ! "
@@ -417,6 +426,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # Stop-loss par position : si la perte latente >= seuil, SELL market forcé.
         # 0.0 = désactivé.
         self.stop_loss_pct = stop_loss_pct
+        # HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge params (stockrés dans l'instance, pas via client._config)
+        self.ai_enabled = AI_ENABLED
+        self.ai_edge_threshold = AI_EDGE_THRESHOLD
+        self.ai_weight = AI_WEIGHT
+        self.ai_cooldown_s = AI_COOLDOWN_SECONDS
+        self._ai_probs: dict[str, tuple[float, float]] = {}  # token_id → (prob, timestamp)
         self._universe = MarketUniverse()
         self._obi_calc = OBICalculator()
         # Suivi prix precedents pour news-breaker {token_id: (price, timestamp)}
@@ -538,13 +553,22 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self._volatility_ema[market.yes_token_id] = current_vol
             self._update_price_history(market.yes_token_id, mid)
 
-            # ── 2026 TOP BOT UPGRADE AI EDGE ──
-            if not hasattr(self, "_ai_probs"): self._ai_probs = {}
-            if market.yes_token_id not in self._ai_probs:
-                from bot.ai_edge import get_ai_fair_value
-                ai_val = get_ai_fair_value(market.question)
-                self._ai_probs[market.yes_token_id] = ai_val if ai_val is not None else -1.0
-            ai_prob = self._ai_probs[market.yes_token_id]
+            # HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge, récupéré de l'instance (plus de _config.bot)
+            ai_prob = -1.0
+            if self.ai_enabled:
+                now_ts = time.time()
+                cached = self._ai_probs.get(market.yes_token_id)
+                if cached is None or (now_ts - cached[1]) > self.ai_cooldown_s:
+                    try:
+                        from bot.ai_edge import get_ai_fair_value
+                        ai_val = get_ai_fair_value(market.question)
+                        if ai_val is not None:
+                            self._ai_probs[market.yes_token_id] = (ai_val, now_ts)
+                            ai_prob = ai_val
+                    except Exception:
+                        pass
+                elif cached:
+                    ai_prob = cached[0]
 
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
@@ -720,12 +744,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
         skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
         direction = 1 if obi.obi >= 0 else -1
 
-        # 2026 TOP BOT UPGRADE AI EDGE SKEW
-        config_ai_threshold = getattr(self.client._config.bot, "ai_edge_threshold", 0.07)
-        config_ai_weight = getattr(self.client._config.bot, "ai_weight", 0.6)
+        # HOTFIX 2026-02-22 + 2026 TOP BOT — AI EDGE SKEW (self.ai_edge_threshold, pas _config.bot)
         ai_skew_ticks = 0
-        if ai_prob >= 0.0 and abs(ai_prob - mid) > config_ai_threshold:
-            directional_skew = (ai_prob - mid) * 4.0 * config_ai_weight
+        if ai_prob >= 0.0 and abs(ai_prob - mid) > self.ai_edge_threshold:
+            directional_skew = (ai_prob - mid) * 4.0 * self.ai_weight
             ai_skew_ticks = round(directional_skew / TICK_SIZE)
 
         # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)

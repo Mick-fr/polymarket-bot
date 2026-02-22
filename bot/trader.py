@@ -375,8 +375,14 @@ class Trader:
 
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
+        # HOTFIX 2026-02-22 + 2026 TOP BOT — try/except pour sécurité cycle
         logger.info("[Cycle] Étape 6: analyse OBI → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
-        signals = self.strategy.analyze(balance=balance)
+        try:
+            signals = self.strategy.analyze(balance=balance)
+        except Exception as _e6:
+            logger.error("[Cycle] Erreur analyse OBI: %s — signals=[]. Cycle continue.", _e6)
+            self.db.add_log("ERROR", "trader", f"Erreur OBI analyze: {_e6}")
+            signals = []
         logger.info("[Cycle] Étape 6: %d signal(s) généré(s)", len(signals))
 
         # 7. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)

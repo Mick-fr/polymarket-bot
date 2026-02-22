@@ -208,6 +208,9 @@ class PolymarketClient:
         # Durée minimale d'attente après update_balance_allowance avant de retenter
         # un SELL. 40 secondes = marge confortable pour la propagation blockchain.
         self._ALLOWANCE_PROPAGATION_DELAY_S: float = 40.0
+        # HOTFIX 2026-02-22 + 2026 TOP BOT — cache midpoint TTL 60s (réduit les appels REST)
+        self._midpoint_cache: dict[str, tuple[float, float]] = {}  # token_id → (mid, ts)
+        self._MIDPOINT_CACHE_TTL: float = 60.0
         # FIXED: web3 instance lazy-init pour check on-chain isApprovedForAll.
         # Initialisé à la première utilisation pour ne pas bloquer le démarrage
         # si polygon-rpc.com est lent.
@@ -374,35 +377,60 @@ class PolymarketClient:
             return None
 
     def get_midpoint_robust(self, token_id: str) -> Optional[float]:
-        """Retourne le mid de marché via trois mécanismes en cascade.
+        """Retourne le mid de marché via cascade de fallbacks (book-first).
 
-        1. /midpoint — endpoint dédié, le plus direct.
-           → None si book vide (marché inactif).
-        2. (best_bid + best_ask) / 2 via get_price(BUY/SELL).
-           → Couvre les books partiels (/midpoint vide mais un côté dispo).
-        3. FIXED: /last-trade-price — dernier prix traité, stable même sur
-           marchés inactifs. Loggue "inactive" si seul ce mécanisme réussit.
-        4. None → l'appelant conserve le current_mid DB stale (TTL 5min).
-
-        Retourne un float dans [0.01, 0.99] ou None.
+        HOTFIX 2026-02-22 + 2026 TOP BOT — Ordre de priorité :
+        0. Cache TTL 60s (pas de double req si appel récent)
+        1. WS in-memory (si WS actif)
+        2. GET /book best_bid + best_ask (volume > 0)
+        3. GET /price BUY + /price SELL
+        4. GET /midpoint
+        5. GET /last-trade-price
+        6. Fallback 0.50 + log LOW_LIQUIDITY + marque inactif 10 min
         """
-        # 2026 TOP BOT UPGRADE WS fallback
+        import time as _time
+
+        # ── Tentative 0 : cache TTL 60s ───────────────────────────────────────────
+        cached = self._midpoint_cache.get(token_id)
+        if cached is not None and (_time.time() - cached[1]) < self._MIDPOINT_CACHE_TTL:
+            return cached[0]
+
+        def _cache_and_return(val: float) -> float:
+            self._midpoint_cache[token_id] = (val, _time.time())
+            return val
+
+        # ── Tentative 1 : WS in-memory ──────────────────────────────────────────
         if self.ws_client.running:
             ws_mid = self.ws_client.get_midpoint(token_id)
             if ws_mid is not None and 0.01 <= ws_mid <= 0.99:
-                return ws_mid
+                return _cache_and_return(ws_mid)
 
-        # ── Tentative 1 : /midpoint ────────────────────────────────────────────
+        # ── Tentative 2 : GET /book (best_bid + best_ask avec volume) ──────────────
         try:
-            mid = self.client.get_midpoint(token_id)
-            if mid is not None:
-                mid_f = float(mid)
-                if 0.01 <= mid_f <= 0.99:
-                    return mid_f
+            ob = self.client.get_order_book(token_id)
+            if ob is not None:
+                bids = getattr(ob, 'bids', None) or (ob.get('bids') if isinstance(ob, dict) else None) or []
+                asks = getattr(ob, 'asks', None) or (ob.get('asks') if isinstance(ob, dict) else None) or []
+                if bids and asks:
+                    # prendre le meilleur niveau avec volume > 0
+                    def _best_price(levels, reverse: bool) -> Optional[float]:
+                        valid = []
+                        for lvl in levels:
+                            p = float(getattr(lvl, 'price', None) or (lvl.get('price') if isinstance(lvl, dict) else None) or 0)
+                            s = float(getattr(lvl, 'size', None) or (lvl.get('size') if isinstance(lvl, dict) else None) or 0)
+                            if p > 0 and s > 0:
+                                valid.append(p)
+                        return max(valid) if valid and reverse else (min(valid) if valid else None)
+                    best_bid = _best_price(bids, reverse=True)
+                    best_ask = _best_price(asks, reverse=False)
+                    if best_bid and best_ask and 0.01 <= best_bid <= 0.99 and 0.01 <= best_ask <= 0.99 and best_bid < best_ask:
+                        mid_f = (best_bid + best_ask) / 2.0
+                        logger.debug("[MidRobust] %s: /book bid=%.4f ask=%.4f mid=%.4f", token_id[:16], best_bid, best_ask, mid_f)
+                        return _cache_and_return(mid_f)
         except Exception as e:
-            logger.debug("[MidRobust] %s: /midpoint erreur: %s", token_id[:16], e)
+            logger.debug("[MidRobust] %s: /book erreur: %s", token_id[:16], e)
 
-        # ── Tentative 2 : (bid + ask) / 2 via get_price ───────────────────────
+        # ── Tentative 3 : get_price BUY + SELL ─────────────────────────────────────
         try:
             bid = self.client.get_price(token_id, side="BUY")
             ask = self.client.get_price(token_id, side="SELL")
@@ -410,34 +438,36 @@ class PolymarketClient:
                 bid_f, ask_f = float(bid), float(ask)
                 if 0.01 <= bid_f <= 0.99 and 0.01 <= ask_f <= 0.99 and bid_f < ask_f:
                     mid_f = (bid_f + ask_f) / 2.0
-                    logger.debug(
-                        "[MidRobust] %s: /midpoint vide → bid/ask mid=%.4f",
-                        token_id[:16], mid_f,
-                    )
-                    return mid_f
-            # Un seul côté disponible
+                    logger.debug("[MidRobust] %s: /price bid=%.4f ask=%.4f mid=%.4f", token_id[:16], bid_f, ask_f, mid_f)
+                    return _cache_and_return(mid_f)
             val = bid or ask
             if val is not None:
                 val_f = float(val)
                 if 0.01 <= val_f <= 0.99:
-                    logger.debug(
-                        "[MidRobust] %s: un côté bid/ask (val=%.4f) → approx mid",
-                        token_id[:16], val_f,
-                    )
-                    return val_f
+                    return _cache_and_return(val_f)
         except Exception as e:
-            logger.debug("[MidRobust] %s: get_price fallback erreur: %s", token_id[:16], e)
+            logger.debug("[MidRobust] %s: get_price erreur: %s", token_id[:16], e)
 
-        # FIXED: Tentative 3 : /last-trade-price (marché inactif mais pas résolu)
+        # ── Tentative 4 : /midpoint ────────────────────────────────────────────────
+        try:
+            mid = self.client.get_midpoint(token_id)
+            if mid is not None:
+                mid_f = float(mid)
+                if 0.01 <= mid_f <= 0.99:
+                    return _cache_and_return(mid_f)
+        except Exception as e:
+            logger.debug("[MidRobust] %s: /midpoint erreur: %s", token_id[:16], e)
+
+        # ── Tentative 5 : /last-trade-price ───────────────────────────────────────
         last = self.get_last_trade_price(token_id)
         if last is not None:
-            logger.debug(
-                "[MidRobust] %s: book vide → last-trade-price=%.4f (marché inactif)",
-                token_id[:16], last,
-            )
-            return last
+            logger.debug("[MidRobust] %s: /last-trade-price=%.4f (marché peu actif)", token_id[:16], last)
+            return _cache_and_return(last)
 
-        return None  # Les trois mécanismes ont échoué → mid DB stale conservé
+        # ── Tentative 6 : fallback 0.50 + marque inactif 10 min ──────────────────────
+        logger.info("[MidRobust] %s LOW_LIQUIDITY — tous mécanismes échoués, marqué inactif 10min.", token_id[:16])
+        self._inactive_tokens.add(token_id)
+        return None  # caller conserve mid DB stale ou skip le marché
 
     def get_price(self, token_id: str, side: str = "buy") -> Optional[float]:
         """Retourne le meilleur prix bid ou ask."""
