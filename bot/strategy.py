@@ -178,9 +178,9 @@ class MarketUniverse:
                 if not has_valid: continue
                 # 2026 FINAL POLISH (seuil 8% anti-spam)
                 if sum_ask <= 0.92:
-                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%) asks=%.3f", eid, sum_ask)
+                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%%) asks=%.3f", eid, sum_ask)
                 elif sum_bid >= 1.08:
-                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%) bids=%.3f", eid, sum_bid)
+                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%%) bids=%.3f", eid, sum_bid)
             except Exception:
                 pass
 
