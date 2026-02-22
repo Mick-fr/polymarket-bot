@@ -141,36 +141,46 @@ class MarketUniverse:
         self._cache_ts = now
         return eligible
 
+    # 2026 TOP BOT UPGRADE CROSS-ARB
     def _detect_cross_arbitrage(self, markets: list[dict]):
-        """Detecte si la somme des prix YES sur une meme condition est < 1.0 (Arbitrage)."""
-        conditions = {}
+        """Detecte les opportunites d arbitrage logique inter-marches sur un meme event."""
+        events = {}
         for m in markets:
-            cid = m.get("conditionId")
-            if not cid:
+            # Group by event_id instead of conditionId
+            eid = m.get("events", [{}])[0].get("id") if m.get("events") else m.get("question")
+            if not eid:
                 continue
-            if cid not in conditions:
-                conditions[cid] = []
-            conditions[cid].append(m)
+            if eid not in events:
+                events[eid] = []
+            events[eid].append(m)
         
-        for cid, group in conditions.items():
+        for eid, group in events.items():
             if len(group) < 2:
                 continue
             try:
                 sum_ask = 0.0
-                tokens = []
+                sum_bid = 0.0
+                has_valid = True
                 for m in group:
-                    best_ask = float(m.get("bestAsk") or 1.0)
-                    sum_ask += best_ask
-                    clob_ids = json.loads(m.get("clobTokenIds", "[]")) if isinstance(m.get("clobTokenIds", "[]"), str) else (m.get("clobTokenIds") or [])
-                    if clob_ids:
-                        tokens.append((clob_ids[0], best_ask))
+                    b_ask = float(m.get("bestAsk") or 1.0)
+                    b_bid = float(m.get("bestBid") or 0.0)
+                    if b_ask <= 0 or b_ask >= 1.0: has_valid = False
+                    sum_ask += b_ask
+                    sum_bid += b_bid
                 
-                # Seuil à 0.98 pour couvrir les frais de gaz / slippage potentiel
-                if 0 < sum_ask < 0.98:
+                if not has_valid: continue
+                
+                if sum_ask < 0.97:
                     logger.warning(
-                        "[ARBITRAGE] Condition %s : somme asks YES = %.3f < 1.0 ! "
-                        "Opportunite croisee sur %d tokens: %s",
-                        cid, sum_ask, len(group), tokens
+                        "[ARBITRAGE] Event %s : somme asks YES = %.3f < 0.97 ! "
+                        "Opportunite croisee (auto-trade dispo).",
+                        eid, sum_ask
+                    )
+                elif sum_bid > 1.03:
+                    logger.warning(
+                        "[ARBITRAGE] Event %s : somme bids YES = %.3f > 1.03 ! "
+                        "Opportunite croisee (auto-trade dispo).",
+                        eid, sum_bid
                     )
             except Exception:
                 pass
@@ -528,12 +538,21 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self._volatility_ema[market.yes_token_id] = current_vol
             self._update_price_history(market.yes_token_id, mid)
 
+            # ── 2026 TOP BOT UPGRADE AI EDGE ──
+            if not hasattr(self, "_ai_probs"): self._ai_probs = {}
+            if market.yes_token_id not in self._ai_probs:
+                from bot.ai_edge import get_ai_fair_value
+                ai_val = get_ai_fair_value(market.question)
+                self._ai_probs[market.yes_token_id] = ai_val if ai_val is not None else -1.0
+            ai_prob = self._ai_probs[market.yes_token_id]
+
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
                 mid=mid,
                 spread=market.spread,
                 obi=obi_result,
-                volatility=current_vol
+                volatility=current_vol,
+                ai_prob=ai_prob
             )
 
             # Verifications de base
@@ -685,7 +704,8 @@ class OBIMarketMakingStrategy(BaseStrategy):
         return signals
 
     def _compute_quotes(self, mid: float, spread: float,
-                        obi: OBIResult, volatility: float = 0.0) -> tuple[float, float]:
+                        obi: OBIResult, volatility: float = 0.0,
+                        ai_prob: float = -1.0) -> tuple[float, float]:
         """
         Calcule bid et ask avec skew ASYMETRIQUE base sur l'OBI.
         Paramétrage dynamique du spread en fonction de la volatilité en temps réel (EMA).
@@ -700,10 +720,18 @@ class OBIMarketMakingStrategy(BaseStrategy):
         skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
         direction = 1 if obi.obi >= 0 else -1
 
+        # 2026 TOP BOT UPGRADE AI EDGE SKEW
+        config_ai_threshold = getattr(self.client._config.bot, "ai_edge_threshold", 0.07)
+        config_ai_weight = getattr(self.client._config.bot, "ai_weight", 0.6)
+        ai_skew_ticks = 0
+        if ai_prob >= 0.0 and abs(ai_prob - mid) > config_ai_threshold:
+            directional_skew = (ai_prob - mid) * 4.0 * config_ai_weight
+            ai_skew_ticks = round(directional_skew / TICK_SIZE)
+
         # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)
         # OBI negatif → bid monte, ask descend (opportunite BUY, protection SELL)
-        bid = mid - half - direction * skew_ticks * TICK_SIZE
-        ask = mid + half + direction * skew_ticks * TICK_SIZE
+        bid = mid - half - direction * skew_ticks * TICK_SIZE + ai_skew_ticks * TICK_SIZE
+        ask = mid + half + direction * skew_ticks * TICK_SIZE + ai_skew_ticks * TICK_SIZE
 
         # Arrondi au tick
         bid = round(round(bid / TICK_SIZE) * TICK_SIZE, 4)

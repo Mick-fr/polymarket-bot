@@ -14,3 +14,7 @@ python-dotenv==1.1.*
 
 # Serveur WSGI de production
 gunicorn==23.*
+
+# 2026 TOP BOT UPGRADE
+websocket-client>=1.6.0
+requests>=2.31.0

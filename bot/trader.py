@@ -128,6 +128,20 @@ class Trader:
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
+        # 2026 TOP BOT UPGRADE WS — start WebSocket for real-time order books
+        if not self.config.bot.paper_trading:
+            try:
+                eligible = self.strategy.get_eligible_markets()
+                ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
+                if ws_tokens:
+                    self.pm_client.ws_client.start(
+                        ws_tokens,
+                        on_update_callback=self._on_ws_book_update
+                    )
+                    logger.info("[WS] WebSocket démarré pour %d token(s).", len(ws_tokens))
+            except Exception as e:
+                logger.warning("[WS] Impossible de démarrer le WebSocket: %s", e)
+
         self._running = True
         while self._running:
             try:
@@ -378,8 +392,10 @@ class Trader:
         cycle_executed = 0
         cycle_rejected = 0
         residual_balance = balance
+        # 2026 TOP BOT UPGRADE BATCH — regroup limit orders for batching
+        batch_orders = []
         for sig in signals:
-            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value)
+            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=batch_orders)
             if approved:
                 cycle_executed += 1
                 # Déduire le coût estimé pour les BUY (SELL ne consomme pas de cash)
@@ -389,6 +405,18 @@ class Trader:
                     residual_balance = max(0.0, residual_balance - sig.size)
             else:
                 cycle_rejected += 1
+
+        # 2026 TOP BOT UPGRADE BATCH — flush batch if >3 orders collected
+        if len(batch_orders) > 3 and not self.config.bot.paper_trading:
+            try:
+                resps = self._call_with_timeout(
+                    lambda: self.pm_client.place_orders_batch(batch_orders),
+                    timeout=15.0,
+                    label="place_orders_batch",
+                )
+                logger.info("[Batch] %d ordres envoyés en batch.", len(batch_orders))
+            except Exception as be:
+                logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
 
         # 9. Snapshot de stratégie pour analytics
         logger.info("[Cycle] Étape 9: snapshot analytics")
@@ -1402,8 +1430,14 @@ class Trader:
         except Exception:
             return False
 
+    # 2026 TOP BOT UPGRADE WS
+    def _on_ws_book_update(self, token_id: str):
+        """Callback déclenché par le WebSocket à chaque mise à jour de carnet."""
+        logger.debug("[WS] Book update reçu pour %s", token_id[:16])
+
     def _execute_signal(self, signal: Signal, current_balance: float,
-                        portfolio_value: float = 0.0) -> bool:
+                        portfolio_value: float = 0.0,
+                        collect_batch: list = None) -> bool:
         """Vérifie le risque, exécute, met à jour l'inventaire.
         Retourne True si le signal a été approuvé par le RiskManager, False sinon."""
 
@@ -1723,6 +1757,12 @@ class Trader:
         """Annule tous les ordres ouverts et ferme proprement."""
         logger.info("Arrêt du bot...")
         self.db.add_log("INFO", "trader", "Arrêt du bot")
+        # 2026 TOP BOT UPGRADE WS — stop WebSocket
+        try:
+            self.pm_client.ws_client.stop()
+            logger.info("[WS] WebSocket arrêté.")
+        except Exception:
+            pass
         try:
             self.pm_client.cancel_all_orders()
             logger.info("Tous les ordres ouverts annulés.")

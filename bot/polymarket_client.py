@@ -52,12 +52,131 @@ _ERC1155_ABI_MINIMAL = [
 ]
 
 
+import json
+import threading
+import websocket
+
+# 2026 TOP BOT UPGRADE WS
+class PolymarketWSClient:
+    def __init__(self, endpoint="wss://ws-subscriptions-clob.polymarket.com/ws/market"):
+        self.endpoint = endpoint
+        self.active_markets = set()
+        self.orderbooks = {}
+        self.ws = None
+        self.thread = None
+        self.on_book_update = None
+        self.running = False
+        self._lock = threading.Lock()
+
+    def start(self, token_ids: list, on_update_callback=None):
+        if self.running: return
+        self.active_markets = set(token_ids)
+        self.on_book_update = on_update_callback
+        for t in self.active_markets:
+            self.orderbooks[t] = {"bids": {}, "asks": {}, "mid": 0.0}
+        
+        self.running = True
+        self.ws = websocket.WebSocketApp(
+            self.endpoint,
+            on_message=self._on_message,
+            on_open=self._on_open,
+            on_error=self._on_error,
+            on_close=self._on_close
+        )
+        self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.ws:
+            self.ws.close()
+
+    def _on_open(self, ws):
+        msg = {"assets_ids": list(self.active_markets), "type": "market"}
+        ws.send(json.dumps(msg))
+
+    def _on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            if isinstance(data, list):
+                for item in data:
+                    self._update_book(item)
+            else:
+                self._update_book(data)
+        except Exception as e:
+            logger.debug(f"[WS] Erreur parsing message: {e}")
+
+    def _update_book(self, item):
+        asset_id = item.get("asset_id")
+        if not asset_id or asset_id not in self.orderbooks:
+            return
+        
+        with self._lock:
+            book = self.orderbooks[asset_id]
+            updated = False
+            
+            if "bids" in item:
+                for b in item["bids"]:
+                    price, size = float(b["price"]), float(b["size"])
+                    if size == 0:
+                        book["bids"].pop(price, None)
+                    else:
+                        book["bids"][price] = size
+                updated = True
+            
+            if "asks" in item:
+                for a in item["asks"]:
+                    price, size = float(a["price"]), float(a["size"])
+                    if size == 0:
+                        book["asks"].pop(price, None)
+                    else:
+                        book["asks"][price] = size
+                updated = True
+                
+            if updated:
+                bids = book["bids"].keys() 
+                asks = book["asks"].keys()
+                if bids and asks:
+                    best_bid = max(bids)
+                    best_ask = min(asks)
+                    book["mid"] = (best_bid + best_ask) / 2.0
+                
+        if updated and self.on_book_update:
+            self.on_book_update(asset_id)
+
+    def get_order_book(self, asset_id: str):
+        with self._lock:
+            book = self.orderbooks.get(asset_id)
+            if book and (book["bids"] or book["asks"]):
+                return {
+                    "bids": [{"price": str(p), "size": str(s)} for p, s in sorted(book["bids"].items(), reverse=True)],
+                    "asks": [{"price": str(p), "size": str(s)} for p, s in sorted(book["asks"].items())]
+                }
+        return None
+
+    def get_midpoint(self, asset_id: str):
+        with self._lock:
+            book = self.orderbooks.get(asset_id)
+            if book and book.get("mid", 0.0) > 0:
+                return book["mid"]
+        return None
+        
+    def _on_error(self, ws, error):
+        logger.debug(f"[WS] Error: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        logger.debug("[WS] Connection closed")
+        self.running = False
+
+
 class PolymarketClient:
     """Client authentifié pour le CLOB Polymarket."""
 
     def __init__(self, config: PolymarketConfig):
         self._config = config
         self._client: Optional[ClobClient] = None
+        # 2026 TOP BOT UPGRADE WS
+        self.ws_client = PolymarketWSClient()
         # Cache des allowances ERC-1155 déjà confirmées dans cette session.
         # Évite de re-vérifier + re-approuver à chaque SELL (10 req/cycle inutiles).
         # Invalider en cas de redémarrage (recréation de l'objet = set vide).
@@ -206,6 +325,11 @@ class PolymarketClient:
 
     def get_order_book(self, token_id: str) -> dict:
         """Récupère le carnet d'ordres pour un token."""
+        # 2026 TOP BOT UPGRADE WS fallback
+        if self.ws_client.running:
+            ws_book = self.ws_client.get_order_book(token_id)
+            if ws_book: return ws_book
+            
         return self.client.get_order_book(token_id)
 
     def get_order_books(self, token_ids: list[str]) -> list[dict]:
@@ -262,6 +386,12 @@ class PolymarketClient:
 
         Retourne un float dans [0.01, 0.99] ou None.
         """
+        # 2026 TOP BOT UPGRADE WS fallback
+        if self.ws_client.running:
+            ws_mid = self.ws_client.get_midpoint(token_id)
+            if ws_mid is not None and 0.01 <= ws_mid <= 0.99:
+                return ws_mid
+
         # ── Tentative 1 : /midpoint ────────────────────────────────────────────
         try:
             mid = self.client.get_midpoint(token_id)
@@ -365,6 +495,37 @@ class PolymarketClient:
             side.upper(), size, price, token_id[:16], resp,
         )
         return resp
+
+    # 2026 TOP BOT UPGRADE BATCH
+    def place_orders_batch(self, orders_list: list) -> list:
+        """
+        orders_list est une liste de dict : {"token_id": str, "price": float, "size": float, "side": str}
+        """
+        if not orders_list:
+            return []
+            
+        signed_orders = []
+        for o in orders_list:
+            order_args = OrderArgs(
+                token_id=o["token_id"],
+                price=o["price"],
+                size=o["size"],
+                side=SIDE_MAP[o["side"].lower()],
+            )
+            signed_orders.append(self.client.create_order(order_args))
+        
+        try:
+            # Requires py-clob-client >= v2 for batching orders natively
+            resps = self.client.post_orders(signed_orders)
+            logger.info("[Batch] post_orders exécuté pour %d ordres.", len(signed_orders))
+            return resps if isinstance(resps, list) else [resps]
+        except AttributeError:
+            logger.debug("[Batch] py-clob-client ne supporte pas post_orders, fallback itératif.")
+            resps = []
+            for so in signed_orders:
+                resps.append(self.client.post_order(so, OrderType.GTC))
+            return resps
+
 
     def place_market_order(
         self,

@@ -64,6 +64,10 @@ class BotConfig:
     # 0.0 = désactivé.
     position_stop_loss_pct: float = 0.25
 
+    # 2026 TOP BOT UPGRADE
+    rebates_eligible: bool = True
+    ai_edge_threshold: float = 0.07
+    ai_weight: float = 0.6
 
 @dataclass(frozen=True)
 class DashboardConfig:
@@ -127,6 +131,9 @@ def load_config() -> AppConfig:
             paper_balance=float(os.getenv("BOT_PAPER_BALANCE", "1000.0")),
             max_exposure_pct=float(os.getenv("BOT_MAX_EXPOSURE_PCT", "0.20")),
             position_stop_loss_pct=float(os.getenv("BOT_STOP_LOSS_PCT", "0.25")),
+            rebates_eligible=os.getenv("BOT_REBATES_ELIGIBLE", "true").lower() == "true",
+            ai_edge_threshold=float(os.getenv("BOT_AI_EDGE_THRESHOLD", "0.07")),
+            ai_weight=float(os.getenv("BOT_AI_WEIGHT", "0.6")),
         ),
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),
