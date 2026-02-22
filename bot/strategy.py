@@ -176,21 +176,11 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                # 2026 SPAM FIX (seuil 5%)
-                if sum_ask <= 0.95:
-                    logger.warning(
-                        "[ARBITRAGE] Event %s : somme asks YES = %.3f <= 0.95 ! "
-                        "Opportunite croisee (auto-trade dispo).",
-                        eid, sum_ask
-                    )
-                    # # AUTO-TRADE (décommenté si taille < 2% portfolio) :
-                    # if sum_ask < 0.95: self._execute_cross_arb(group, balance)
-                elif sum_bid >= 1.05:
-                    logger.warning(
-                        "[ARBITRAGE] Event %s : somme bids YES = %.3f >= 1.05 ! "
-                        "Opportunite croisee (auto-trade dispo).",
-                        eid, sum_bid
-                    )
+                # 2026 FINAL POLISH (seuil 8% anti-spam)
+                if sum_ask <= 0.92:
+                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%) asks=%.3f", eid, sum_ask)
+                elif sum_bid >= 1.08:
+                    logger.warning("[ARBITRAGE] Event %s : OPPORTUNITÉ ARB SIGNIFICATIVE (8%) bids=%.3f", eid, sum_bid)
             except Exception:
                 pass
 
@@ -553,10 +543,9 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self._volatility_ema[market.yes_token_id] = current_vol
             self._update_price_history(market.yes_token_id, mid)
 
-            # HOTFIX 2026-02-22 + 2026 TOP BOT — AI Edge, récupéré de l'instance
+            # 2026 FINAL POLISH — AI Edge, force l'appel et log clair
             ai_prob = -1.0
             if self.ai_enabled:
-                self._ai_last_token = market.yes_token_id  # stocké pour le log
                 now_ts = time.time()
                 cached = self._ai_probs.get(market.yes_token_id)
                 if cached is None or (now_ts - cached[1]) > self.ai_cooldown_s:
@@ -570,6 +559,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                         logger.debug("[AI EDGE] Erreur fetch API: %s", e_ai)
                 elif cached:
                     ai_prob = cached[0]
+                self._ai_last_market_title = market.question  # stocké pour le log
 
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
@@ -745,15 +735,15 @@ class OBIMarketMakingStrategy(BaseStrategy):
         skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
         direction = 1 if obi.obi >= 0 else -1
 
-        # HOTFIX 2026-02-22 + 2026 TOP BOT — AI EDGE SKEW (self.ai_edge_threshold, pas _config.bot)
+        # 2026 FINAL POLISH — AI EDGE SKEW (log clair avec delta)
         ai_skew_ticks = 0
         if ai_prob >= 0.0 and abs(ai_prob - mid) > self.ai_edge_threshold:
-            directional_skew = (ai_prob - mid) * 4.0 * self.ai_weight
+            delta = ai_prob - mid
+            directional_skew = delta * 4.0 * self.ai_weight
             ai_skew_ticks = round(directional_skew / TICK_SIZE)
-            # 2026 POLISH: Log clair AI_EDGE
-            logger.info("[AI EDGE] Token %s | AI=%.3f mid=%.3f skew=%+d ticks",
-                        self._ai_last_token[-16:] if hasattr(self, "_ai_last_token") else "???",
-                        ai_prob, mid, ai_skew_ticks)
+            logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+d",
+                        self._ai_last_market_title[:40] if hasattr(self, "_ai_last_market_title") else "???",
+                        ai_prob, mid, delta * 100, ai_skew_ticks)
 
         # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)
         # OBI negatif → bid monte, ask descend (opportunite BUY, protection SELL)
