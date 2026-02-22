@@ -68,6 +68,10 @@ class BotConfig:
     rebates_eligible: bool = True
     ai_edge_threshold: float = 0.07
     ai_weight: float = 0.6
+    
+    # 2026 FINAL TELEGRAM
+    telegram_token: str = ""
+    telegram_chat_id: str = ""
 
 @dataclass(frozen=True)
 class DashboardConfig:
@@ -134,6 +138,8 @@ def load_config() -> AppConfig:
             rebates_eligible=os.getenv("BOT_REBATES_ELIGIBLE", "true").lower() == "true",
             ai_edge_threshold=float(os.getenv("BOT_AI_EDGE_THRESHOLD", "0.07")),
             ai_weight=float(os.getenv("BOT_AI_WEIGHT", "0.6")),
+            telegram_token=os.getenv("TELEGRAM_TOKEN", ""),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         ),
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),

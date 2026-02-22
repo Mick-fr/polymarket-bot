@@ -20,6 +20,7 @@ from bot.polymarket_client import PolymarketClient
 from bot.risk import RiskManager
 from bot.strategy import BaseStrategy, OBIMarketMakingStrategy, Signal
 from db.database import Database
+from bot.telegram import send_alert  # 2026 FINAL TELEGRAM
 
 logger = logging.getLogger("bot.trader")
 
@@ -138,7 +139,8 @@ class Trader:
                         ws_tokens,
                         on_update_callback=self._on_ws_book_update
                     )
-                    logger.info("[WS] WebSocket démarré pour %d token(s).", len(ws_tokens))
+                    # 2026 FINAL
+                    logger.info("[WS] Connected + subscribed to %d markets", len(ws_tokens))
             except Exception as e:
                 logger.warning("[WS] Impossible de démarrer le WebSocket: %s", e)
 
@@ -308,6 +310,9 @@ class Trader:
         logger.debug("[Cycle] Étape 1: kill switch")
         if self.db.get_kill_switch():
             logger.debug("Kill switch activé – bot en pause.")
+            if not getattr(self, "_kill_switch_alerted", False):
+                send_alert("⚠️ KILL SWITCH ACTIVÉ — Le bot est en pause.")
+                self._kill_switch_alerted = True
             return
 
         # 2. Connectivité API — is_alive() avec timeout implicite de la lib
@@ -412,8 +417,8 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 BATCH — flush batch if >1 orders collected
-        if len(batch_orders) > 1 and not self.config.bot.paper_trading:
+        # 2026 BATCH — flush batch if >= 2 orders collected
+        if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
                     lambda: self.pm_client.place_orders_batch(batch_orders),
@@ -1162,6 +1167,23 @@ class Trader:
                     inv_mid_total / usdc_balance if usdc_balance > 0 else 0,
                 )
 
+            # 2026 FINAL TELEGRAM ALERT: Daily PnL ou Drawdown
+            hwm = self.db.get_high_water_mark()
+            start_balance = self.db.get_latest_balance() or self.config.bot.paper_balance
+            daily_pnl = portfolio_value - start_balance
+            
+            # Drawdown logic :
+            drawdown = (hwm - portfolio_value) / hwm if hwm > 0 else 0
+            
+            if daily_pnl > 5.0 and not getattr(self, "_pnl_alerted", False):
+                from bot.telegram import send_alert
+                send_alert(f"💰 PROFIT PnL JOUR: +${daily_pnl:.2f}\nPortfolio: ${portfolio_value:.2f}")
+                self._pnl_alerted = True
+            elif drawdown > 0.10 and not getattr(self, "_dd_alerted", False):
+                from bot.telegram import send_alert
+                send_alert(f"🚨 DRAWDOWN ALERTE: -{drawdown*100:.1f}%\nPortfolio: ${portfolio_value:.2f} (HWM: ${hwm:.2f})")
+                self._dd_alerted = True
+
         except Exception as e:
             logger.debug("[Portfolio] Erreur breakdown: %s", e)
 
@@ -1660,6 +1682,9 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
+                # 2026 FINAL TELEGRAM
+                send_alert(f"✅ ORDRE EXÉCUTÉ\nToken: {signal.token_id[:8]}...\nType: {signal.side.upper()}\nQuantité: {actual_size:.2f}\nPrix: {signal.price or 'market'}")
+                
                 # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:
                     cost = actual_size * (signal.price or 0.5)
