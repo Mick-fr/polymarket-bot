@@ -206,7 +206,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         ks = db.get_kill_switch()
         active = db.get_config("bot_active", "true") != "false"
         reason = db.get_config("kill_switch_reason", "") or None
-        strategy_mode = db.get_config("strategy_mode", "MM Balanced")
+        strategy_mode = db.get_config_str("strategy_mode", "MM Balanced")
         hwm = db.get_high_water_mark() if hasattr(db, 'get_high_water_mark') else 0.0
         portfolio = float(db.get_config("last_portfolio_value", 0) or 0)
         return jsonify({

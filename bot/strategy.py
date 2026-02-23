@@ -455,7 +455,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
         if not self.db:
             return
             
-        strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+        strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
         preset = self.AGGRESSIVITY_PRESETS.get(strategy_mode)
         
         # Par défaut, on désactive info_edge_only car il a pu être forcé manuellement (fallback)
@@ -499,7 +499,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
         # V8.2 GARDE-FOU: si mode Info Edge Only, OBI ne génère AUCUN signal
         if self.db:
-            strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+            strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
             if strategy_mode == "Info Edge Only":
                 logger.info("[OBI] BLOQUÉ — mode Info Edge Only actif, aucun signal OBI")
                 return []

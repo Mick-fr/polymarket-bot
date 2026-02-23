@@ -82,7 +82,7 @@ class RiskManager:
     def reload_aggressivity(self):
         """Relit strategy_mode depuis la DB et met à jour _max_exposure_pct."""
         try:
-            level = self.db.get_config("strategy_mode", "MM Balanced")
+            level = self.db.get_config_str("strategy_mode", "MM Balanced")
             params = self.AGGRESSIVITY_MAP.get(level)
             if params:
                 self._max_exposure_pct = params["max_exposure_pct"]

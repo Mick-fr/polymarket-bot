@@ -382,7 +382,7 @@ class Trader:
         logger.info("[Cycle] Étape 2: API OK")
 
         # V8.2 ENFORCEMENT: relire strategy_mode AU DÉBUT de chaque cycle
-        strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+        strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
         if strategy_mode == "Info Edge Only":
             logger.info("[ENFORCED] Info Edge Only actif — universe limité BTC/ETH 5-60min")
             self.db.set_config("info_edge_only", "true")

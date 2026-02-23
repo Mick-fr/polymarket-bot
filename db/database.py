@@ -202,7 +202,7 @@ class Database:
 
     # 2026 V7.3.8 OVERRIDE CONSTANTES DB — config générique via bot_state
     def get_config(self, key: str, default: float | None = None) -> float | None:
-        """Lit une valeur de config depuis bot_state, retourne default si absente."""
+        """Lit une valeur de config NUMÉRIQUE depuis bot_state, retourne default si absente."""
         with self._cursor() as cur:
             cur.execute("SELECT value FROM bot_state WHERE key = ?", (key,))
             row = cur.fetchone()
@@ -211,6 +211,17 @@ class Database:
                     return float(row["value"])
                 except (ValueError, TypeError):
                     return default
+            return default
+
+    # V8.3 FIX: get_config retourne float, ce qui casse les valeurs string
+    # comme "Info Edge Only". Cette méthode retourne la valeur brute (str).
+    def get_config_str(self, key: str, default: str = "") -> str:
+        """Lit une valeur de config STRING depuis bot_state, retourne default si absente."""
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = ?", (key,))
+            row = cur.fetchone()
+            if row and row["value"] is not None:
+                return str(row["value"])
             return default
 
     def set_config(self, key: str, value):
