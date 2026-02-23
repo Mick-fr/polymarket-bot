@@ -143,19 +143,17 @@ class Trader:
             
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
+        # 2026 V6.5 ULTRA-CHIRURGICAL
+        self.positions = self.db.get_all_positions() if self.db else []
+        self.cash = balance
+        eligible = self.strategy.get_eligible_markets() if self.strategy else []
+        from bot.telegram import send_alert
+        if self.config.bot.telegram_enabled:
+            send_alert(f"🚀 Bot V6.5 ULTRA démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés")
+
         # 2026 TOP BOT UPGRADE WS — start WebSocket for real-time order books
         if not self.config.bot.paper_trading:
             try:
-                eligible = self.strategy.get_eligible_markets()
-                
-                # 2026 V6.5 ULTRA-CHIRURGICAL
-                self.positions = self.db.get_all_positions() if self.db else []
-                self.cash = balance
-                eligible = self.strategy.get_eligible_markets() if self.strategy else []
-                from bot.telegram import send_alert
-                if self.config.bot.telegram_enabled:
-                    send_alert(f"🚀 Bot V6.5 ULTRA démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés")
-                
                 ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
                 if ws_tokens:
                     self.pm_client.ws_client.start(
