@@ -575,6 +575,10 @@
                 if (typeof updateSafeModeUI === 'function') {
                     updateSafeModeUI(d.safe_mode);
                 }
+                // V7.9 Info Edge
+                if (typeof updateInfoEdgeUI === 'function') {
+                    updateInfoEdgeUI(d.info_edge_only);
+                }
             }).catch(function () { });
         }
         function resetKillSwitch() {

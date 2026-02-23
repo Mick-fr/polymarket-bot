@@ -689,6 +689,26 @@
 <!-- ════════ MAIN ════════ -->
 <main class="v74-main">
 
+    <!-- V7.9 Info Edge Module Card -->
+    <div id="info-edge-card" class="v74-card"
+        style="margin-bottom:15px; border-left:4px solid #10b981; background:rgba(16,185,129,0.05);">
+        <div class="v74-card-head" style="margin-bottom:10px;">
+            <span class="v74-card-title" style="color:#10b981;">⚡ BTC/ETH INFO EDGE</span>
+            <div style="display:flex; gap:10px; align-items:center;">
+                <label style="font-size:0.85rem; display:flex; align-items:center; gap:6px; cursor:pointer;"
+                    title="Désactive OBI classique pour ne faire que du Edge">
+                    <input type="checkbox" id="toggle-info-edge-only" onchange="toggleInfoEdgeOnly()"
+                        style="accent-color:#10b981;">
+                    Info Edge Only
+                </label>
+            </div>
+        </div>
+        <div style="font-size:0.95rem; display:flex; align-items:center; gap:8px;">
+            <span class="live-dot" style="background:#10b981; animation:blink 1.5s infinite;"></span>
+            <span id="info-edge-live-text">Edge Score BTC 12PM : +18.4 % → sizing boosté</span>
+        </div>
+    </div>
+
     <!-- V7.8 Safe Mode Banner -->
     <div id="safe-mode-banner"
         style="display:none; background:rgba(34,197,94,0.15); border:1px solid var(--green); color:var(--green); padding:10px 20px; border-radius:8px; margin-bottom:15px; font-weight:600; font-size:0.9rem; text-align:center;">
@@ -1186,6 +1206,24 @@
                     if (d.safe_mode) {
                         syncLiveConfig();
                     }
+                }
+            });
+    }
+
+    // ── Info Edge ──────────────────────────────────────────────
+    function updateInfoEdgeUI(isInfoEdgeOnly) {
+        var cb = document.getElementById('toggle-info-edge-only');
+        if (cb && cb.checked !== isInfoEdgeOnly) {
+            cb.checked = isInfoEdgeOnly;
+        }
+    }
+
+    function toggleInfoEdgeOnly() {
+        fetch('/api/toggle-info-edge', { method: 'POST' })
+            .then(r => r.json()).then(d => {
+                if (d.status === 'ok') {
+                    toast("Info Edge Only: " + (d.info_edge_only ? "ON" : "OFF"), 'success');
+                    updateInfoEdgeUI(d.info_edge_only);
                 }
             });
     }

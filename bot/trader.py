@@ -143,6 +143,15 @@ class Trader:
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
+        # V7.9 INFO EDGE STRATEGY
+        from bot.strategy import InfoEdgeStrategy
+        self.info_edge_strategy = InfoEdgeStrategy(
+            client=self.pm_client,
+            db=self.db,
+            max_markets=20,
+            max_order_size_usdc=self.config.bot.max_order_size
+        )
+
         # 2026 V7.0 SCALING
         self.positions = self.db.get_all_positions() if self.db else []
         self.cash = balance
@@ -443,12 +452,19 @@ class Trader:
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb
         # HOTFIX 2026-02-22 + 2026 TOP BOT — try/except pour sécurité cycle
-        logger.info("[Cycle] Étape 6: analyse OBI → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
+        logger.info("[Cycle] Étape 6: analyse OBI / InfoEdge → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
         try:
-            signals = self.strategy.analyze(balance=balance)
+            signals = []
+            info_edge_only = self.db.get_config("info_edge_only", "false") == "true"
+            if info_edge_only:
+                signals = self.info_edge_strategy.analyze(balance=balance)
+            else:
+                signals = self.strategy.analyze(balance=balance)
+                if hasattr(self, "info_edge_strategy"):
+                    signals.extend(self.info_edge_strategy.analyze(balance=balance))
         except Exception as _e6:
-            logger.error("[Cycle] Erreur analyse OBI: %s — signals=[]. Cycle continue.", _e6)
-            self.db.add_log("ERROR", "trader", f"Erreur OBI analyze: {_e6}")
+            logger.error("[Cycle] Erreur analyse OBI/InfoEdge: %s — signals=[]. Cycle continue.", _e6)
+            self.db.add_log("ERROR", "trader", f"Erreur OBI/InfoEdge analyze: {_e6}")
             signals = []
         logger.info("[Cycle] Étape 6: %d signal(s) généré(s)", len(signals))
 

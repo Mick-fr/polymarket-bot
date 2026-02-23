@@ -194,6 +194,22 @@ class RiskManager:
         if inv is not None:
             return inv
 
+        # ── 10. V7.9 Info Edge BTC/ETH Max Exposure (12%) ─────────────────────
+        q_lo = signal.market_question.lower()
+        if "btc" in q_lo or "bitcoin" in q_lo or "eth" in q_lo or "ethereum" in q_lo:
+            positions = self.db.get_all_positions()
+            btc_eth_expo = 0.0
+            for p in positions:
+                pq_lo = p.get("question", "").lower()
+                if "btc" in pq_lo or "bitcoin" in pq_lo or "eth" in pq_lo or "ethereum" in pq_lo:
+                    qty = p.get("quantity", 0.0)
+                    mid = p.get("current_mid", p.get("avg_price", 0.0))
+                    btc_eth_expo += qty * mid
+            
+            new_expo = btc_eth_expo + order_cost
+            if cb_value > 0 and (new_expo / cb_value) > 0.12:
+                 return RiskVerdict(False, f"BTC/ETH Limit reached: {new_expo:.2f} USDC > 12%", "cancel_bids")
+
         logger.debug(
             "Risque OK: %s %s @ %s – coût %.2f USDC, perte jour %.2f",
             signal.side.upper(), signal.token_id[:16],
@@ -415,3 +431,25 @@ class RiskManager:
                         self.db.add_log("WARNING", "risk", f"[SAFE MODE] Auto-close copie {token_id[:10]} à {pnl_pct * 100:.1f}%")
                     except Exception as e:
                         logger.error("Erreur auto-close safe_mode %s: %s", token_id[:16], e)
+
+    def check_auto_close_btc_eth(self, client, positions: list[dict]):
+        """V7.9 INFO EDGE: Auto-close à -25% sur marchés BTC/ETH."""
+        for p in positions:
+            qty = p.get("quantity", 0.0)
+            if qty <= 0:
+                continue
+                
+            question = p.get("question", "").lower()
+            token_id = p.get("token_id", "")
+            if "btc" in question or "bitcoin" in question or "eth" in question or "ethereum" in question:
+                avg_price = p.get("avg_price", 0.0)
+                mid_price = p.get("current_mid", 0.0)
+                if avg_price > 0 and mid_price > 0:
+                    pnl_pct = (mid_price - avg_price) / avg_price
+                    if pnl_pct <= -0.25:
+                        logger.warning("[INFO EDGE] Auto-close position BTC/ETH '%s' (PnL %.1f%% <= -25%%)", token_id[:20], pnl_pct * 100)
+                        try:
+                            client.create_order(token_id=token_id, side="sell", order_type="market", size=qty)
+                            self.db.add_log("WARNING", "risk", f"[INFO EDGE] Auto-close {token_id[:10]} à {pnl_pct * 100:.1f}%")
+                        except Exception as e:
+                            logger.error("Erreur auto-close BTC/ETH %s: %s", token_id[:16], e)
