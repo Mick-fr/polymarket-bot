@@ -70,31 +70,30 @@ class RiskManager:
         self._max_exposure_pct: float = getattr(config, "max_exposure_pct", 0.20)
         self._last_agg_level: str = ""
 
-    # 2026 V7.3.9 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
+    # 2026 V8.0 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
     AGGRESSIVITY_MAP = {
-        "Safe":             {"max_exposure_pct": 0.22},
-        "Conservative":     {"max_exposure_pct": 0.18},
-        "Balanced":         {"max_exposure_pct": 0.25},
-        "Aggressive":       {"max_exposure_pct": 0.35},
-        "Very Aggressive":  {"max_exposure_pct": 0.45},
+        "Info Edge Only":   {"max_exposure_pct": 0.12},
+        "MM Conservateur":  {"max_exposure_pct": 0.12},
+        "MM Balanced":      {"max_exposure_pct": 0.22},
+        "MM Aggressif":     {"max_exposure_pct": 0.35},
+        "MM Très Agressif": {"max_exposure_pct": 0.50},
     }
 
     def reload_aggressivity(self):
-        """Relit aggressivity_level depuis la DB et met à jour _max_exposure_pct.
-        Utilise un attribut mutable car BotConfig est frozen."""
+        """Relit strategy_mode depuis la DB et met à jour _max_exposure_pct."""
         try:
-            level = self.db.get_aggressivity_level()
+            level = self.db.get_config("strategy_mode", "MM Balanced")
             params = self.AGGRESSIVITY_MAP.get(level)
             if params:
                 self._max_exposure_pct = params["max_exposure_pct"]
             else:
-                # Custom / AI-applied: read from DB
+                # Custom / fallback
                 db_expo = self.db.get_config("max_net_exposure_pct")
                 if db_expo is not None:
-                    self._max_exposure_pct = db_expo
+                    self._max_exposure_pct = float(db_expo)
             # Log only on change
             if level != self._last_agg_level:
-                logger.info("[LIVE CONFIG] RiskManager: level=%s | max_expo=%.0f%%",
+                logger.info("[LIVE CONFIG] RiskManager: strategy_mode=%s | max_expo=%.0f%%",
                             level, self._max_exposure_pct * 100)
                 self._last_agg_level = level
         except Exception as e:

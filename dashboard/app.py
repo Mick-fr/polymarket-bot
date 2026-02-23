@@ -206,8 +206,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         ks = db.get_kill_switch()
         active = db.get_config("bot_active", "true") != "false"
         reason = db.get_config("kill_switch_reason", "") or None
-        safe_mode = db.get_config("safe_mode", "true") == "true"
-        info_edge_only = db.get_config("info_edge_only", "false") == "true"
+        strategy_mode = db.get_config("strategy_mode", "MM Balanced")
         hwm = db.get_high_water_mark() if hasattr(db, 'get_high_water_mark') else 0.0
         portfolio = float(db.get_config("last_portfolio_value", 0) or 0)
         return jsonify({
@@ -215,35 +214,29 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             "kill_switch": ks,
             "bot_active": active,
             "reason": reason,
-            "safe_mode": safe_mode,
-            "info_edge_only": info_edge_only,
+            "strategy_mode": strategy_mode,
             "hwm": hwm,
             "portfolio": portfolio
         })
 
-    # 2026 V7.9 INFO EDGE ONLY Toggle
-    @app.route("/api/toggle-info-edge", methods=["POST"])
+    # 2026 V8.0 STRATEGY SELECTOR
+    @app.route("/api/set-strategy", methods=["POST"])
     @login_required
-    def api_toggle_info_edge():
-        current = db.get_config("info_edge_only", "false") == "true"
-        new_state = not current
-        db.set_config("info_edge_only", "true" if new_state else "false")
-        logger.info("[DASHBOARD] Info Edge Only toggled to %s", new_state)
-        return jsonify({"status": "ok", "info_edge_only": new_state})
-
-    # 2026 V7.8 SAFE MODE Toggle
-    @app.route("/api/toggle-safe-mode", methods=["POST"])
-    @login_required
-    def api_toggle_safe_mode():
-        current = db.get_config("safe_mode", "true") == "true"
-        new_state = not current
-        db.set_config("safe_mode", "true" if new_state else "false")
-        if new_state:
-            db.set_config("aggressivity_level", "Safe")
-        logger.info("[DASHBOARD] Safe Mode toggled to %s", new_state)
+    def api_set_strategy():
+        data = request.json or {}
+        mode = data.get("mode")
+        valid_modes = ["Info Edge Only", "MM Conservateur", "MM Balanced", "MM Aggressif", "MM Très Agressif"]
+        if mode not in valid_modes:
+            return jsonify({"status": "error", "message": "Mode invalide"}), 400
+            
+        db.set_config("strategy_mode", mode)
+        logger.info("[DASHBOARD] Stratégie changée en : %s", mode)
+        
+        # Reload configs
         import os
         os.system("touch /tmp/reload_aggressivity.flag")
-        return jsonify({"status": "ok", "safe_mode": new_state})
+        
+        return jsonify({"status": "ok", "mode": mode})
 
     # 2026 V7.6 — Force reset kill switch (circuit breaker or manual)
     @app.route("/api/reset-kill-switch", methods=["POST"])

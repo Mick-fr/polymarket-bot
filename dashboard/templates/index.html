@@ -658,18 +658,21 @@
         <div class="live-badge" id="bot-status-badge">
             <span class="live-dot"></span> Bot actif · 8s
         </div>
-        <!-- Aggressivity -->
+        <!-- V8.0 STRATEGY SELECTOR -->
         <div class="agg-select-wrap">
-            <span class="agg-badge">LIVE</span>
-            <select id="agg-select" onchange="setAggressivity(this.value)">
-                <option value="Safe">🛡️ Safe</option>
-                <option value="Conservative">🛡️ Conservative</option>
-                <option value="Balanced" selected>⚖️ Balanced</option>
-                <option value="Aggressive">⚡ Aggressive</option>
-                <option value="Very Aggressive">🔥 Very Aggressive</option>
+            <span class="agg-badge" style="background:var(--accent);color:black;">MODE</span>
+            <select id="strategy-select" onchange="setStrategy(this.value)"
+                style="font-weight:bold; color:var(--accent);">
+                <option value="Info Edge Only">⚡ Info Edge Only</option>
+                <option value="MM Conservateur">🛡️ MM Conservateur</option>
+                <option value="MM Balanced" selected>⚖️ MM Balanced</option>
+                <option value="MM Aggressif">🔥 MM Aggressif</option>
+                <option value="MM Très Agressif">🚀 MM Très Aressif</option>
             </select>
         </div>
-        <span id="agg-indicator" class="tag tag-blue">Balanced</span>
+        <div id="strategy-display" class="tag tag-blue"
+            style="font-size: 0.9rem; padding: 6px 12px; border-radius: 6px;">Stratégie : MM Balanced ✅</div>
+
         <!-- Kill Switch -->
         <button class="hbtn hbtn-danger" id="btn-kill" onclick="toggleBot('kill')">⏹ Kill</button>
         <button class="hbtn hbtn-success" id="btn-resume" onclick="toggleBot('resume')" style="display:none">▶
@@ -678,10 +681,6 @@
         <button class="hbtn hbtn-danger" onclick="factoryReset()"
             style="margin-left:8px; border-color:var(--red); color:var(--red); background:rgba(239,68,68,0.1);">🔄
             Factory Reset</button>
-        <!-- V7.8 SAFE MODE -->
-        <button id="btn-safe-mode" class="hbtn" onclick="toggleSafeMode()"
-            style="margin-left:8px; border-color:var(--green); color:var(--green); background:rgba(34,197,94,0.1);">🛡️
-            SAFE MODE</button>
         <a href="{{ url_for('logout') }}" class="hbtn" style="margin-left:8px;">Logout</a>
     </div>
 </header>
@@ -691,28 +690,15 @@
 
     <!-- V7.9 Info Edge Module Card -->
     <div id="info-edge-card" class="v74-card"
-        style="margin-bottom:15px; border-left:4px solid #10b981; background:rgba(16,185,129,0.05);">
+        style="margin-bottom:15px; border-left:4px solid #10b981; background:rgba(16,185,129,0.05); display:none;">
         <div class="v74-card-head" style="margin-bottom:10px;">
             <span class="v74-card-title" style="color:#10b981;">⚡ BTC/ETH INFO EDGE</span>
-            <div style="display:flex; gap:10px; align-items:center;">
-                <label style="font-size:0.85rem; display:flex; align-items:center; gap:6px; cursor:pointer;"
-                    title="Désactive OBI classique pour ne faire que du Edge">
-                    <input type="checkbox" id="toggle-info-edge-only" onchange="toggleInfoEdgeOnly()"
-                        style="accent-color:#10b981;">
-                    Info Edge Only
-                </label>
-            </div>
+            <span class="tag tag-green">Seul mode actif</span>
         </div>
         <div style="font-size:0.95rem; display:flex; align-items:center; gap:8px;">
             <span class="live-dot" style="background:#10b981; animation:blink 1.5s infinite;"></span>
             <span id="info-edge-live-text">Edge Score BTC 12PM : +18.4 % → sizing boosté</span>
         </div>
-    </div>
-
-    <!-- V7.8 Safe Mode Banner -->
-    <div id="safe-mode-banner"
-        style="display:none; background:rgba(34,197,94,0.15); border:1px solid var(--green); color:var(--green); padding:10px 20px; border-radius:8px; margin-bottom:15px; font-weight:600; font-size:0.9rem; text-align:center;">
-        🛡️ Mode SAFE activé — Max 8 trades, Filtre BTC (/2), Maturité > 3j, Spread < 4%, OBI> 0.18
     </div>
 
     <!-- ── METRIC CARDS ─────────────────────────────────────── -->
@@ -1074,19 +1060,18 @@
             .then(() => { setTimeout(loadPortfolio, 500); toast(action === 'kill' ? '⏹ Bot arrêté' : '▶ Bot redémarré', action === 'kill' ? 'error' : 'success'); });
     }
 
-    // ── Aggressivity ───────────────────────────────────────────
-    function setAggressivity(level) {
-        const ind = document.getElementById('agg-indicator');
+    // ── V8.0 Strategy Selector ─────────────────────────────────
+    function setStrategy(mode) {
+        const ind = document.getElementById('strategy-display');
         ind.textContent = '⏳ ...';
-        fetch('/api/aggressivity', {
+        fetch('/api/set-strategy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level })
+            body: JSON.stringify({ mode })
         }).then(r => r.json()).then(d => {
             if (d.status === 'ok') {
-                toast(`🎯 Agressivité → <strong>${d.level}</strong> — params sauvegardés en DB`, 'info');
+                toast(`🎯 Stratégie → <strong>${d.mode}</strong> activée`, 'info');
                 setTimeout(syncLiveConfig, 400);
-                setTimeout(loadPortfolio, 700);
             } else {
                 toast('❌ ' + (d.error || 'Erreur'), 'error');
                 syncLiveConfig();
@@ -1155,22 +1140,34 @@
 
     // ── Sync Live Config ───────────────────────────────────────
     function syncLiveConfig() {
-        fetch('/api/current-config').then(r => r.json()).then(cfg => {
-            const level = cfg.aggressivity_level || 'Balanced';
-            // Update dropdown
-            const sel = document.getElementById('agg-select');
-            if (sel) {
-                if (level === 'Custom' && !sel.querySelector('option[value="Custom"]')) {
-                    const opt = document.createElement('option'); opt.value = 'Custom'; opt.text = '⚙️ Custom (AI)'; sel.appendChild(opt);
-                }
-                sel.value = level;
+        fetch('/api/bot-status').then(r => r.json()).then(d => {
+            const mode = d.strategy_mode || 'MM Balanced';
+
+            // Update Select
+            const sel = document.getElementById('strategy-select');
+            if (sel) { sel.value = mode; }
+
+            // Update display banner
+            const ind = document.getElementById('strategy-display');
+            if (ind) {
+                ind.textContent = `Stratégie : ${mode} ✅`;
+                if (mode === 'Info Edge Only') ind.className = 'tag tag-green';
+                else if (mode === 'MM Très Agressif') ind.className = 'tag tag-red';
+                else if (mode === 'MM Aggressif') ind.className = 'tag tag-orange';
+                else ind.className = 'tag tag-blue';
             }
-            // Update badge
-            const ind = document.getElementById('agg-indicator');
-            const colors = { 'Very Aggressive': 'tag-red', 'Aggressive': 'tag-orange', 'Balanced': 'tag-blue', 'Conservative': 'tag-green', 'Custom': 'tag-blue' };
-            if (ind) { ind.textContent = level; ind.className = 'tag ' + (colors[level] || 'tag-gray'); }
-            document.getElementById('cfg-level').textContent = level;
-            // Update config panel
+
+            // Show/Hide Info Edge Card
+            const ieCard = document.getElementById('info-edge-card');
+            if (ieCard) {
+                ieCard.style.display = (mode === 'Info Edge Only') ? 'block' : 'none';
+            }
+
+        }).catch(() => { });
+
+        // Update stats panel values by fetching /api/current-config
+        fetch('/api/current-config').then(r => r.json()).then(cfg => {
+            document.getElementById('cfg-level').textContent = cfg.strategy_mode || 'MM Balanced';
             document.getElementById('cfg-order-size').textContent = ((cfg.order_size_pct || 0) * 100).toFixed(1) + '%';
             document.getElementById('cfg-max-expo').textContent = ((cfg.max_net_exposure_pct || 0) * 100).toFixed(0) + '%';
             document.getElementById('cfg-skew').textContent = (cfg.inventory_skew_threshold || 0).toFixed(2);
@@ -1179,54 +1176,7 @@
         }).catch(() => { });
     }
 
-    // ── Safe Mode ──────────────────────────────────────────────
-    function updateSafeModeUI(isSafe) {
-        var btn = document.getElementById('btn-safe-mode');
-        var banner = document.getElementById('safe-mode-banner');
-        if (btn) {
-            if (isSafe) {
-                btn.style.background = 'var(--green)';
-                btn.style.color = '#fff';
-            } else {
-                btn.style.background = 'rgba(34,197,94,0.1)';
-                btn.style.color = 'var(--green)';
-            }
-        }
-        if (banner) {
-            banner.style.display = isSafe ? 'block' : 'none';
-        }
-    }
 
-    function toggleSafeMode() {
-        fetch('/api/toggle-safe-mode', { method: 'POST' })
-            .then(r => r.json()).then(d => {
-                if (d.status === 'ok') {
-                    toast("Safe Mode: " + (d.safe_mode ? "ON" : "OFF"), 'success');
-                    updateSafeModeUI(d.safe_mode);
-                    if (d.safe_mode) {
-                        syncLiveConfig();
-                    }
-                }
-            });
-    }
-
-    // ── Info Edge ──────────────────────────────────────────────
-    function updateInfoEdgeUI(isInfoEdgeOnly) {
-        var cb = document.getElementById('toggle-info-edge-only');
-        if (cb && cb.checked !== isInfoEdgeOnly) {
-            cb.checked = isInfoEdgeOnly;
-        }
-    }
-
-    function toggleInfoEdgeOnly() {
-        fetch('/api/toggle-info-edge', { method: 'POST' })
-            .then(r => r.json()).then(d => {
-                if (d.status === 'ok') {
-                    toast("Info Edge Only: " + (d.info_edge_only ? "ON" : "OFF"), 'success');
-                    updateInfoEdgeUI(d.info_edge_only);
-                }
-            });
-    }
 
     // ── Performance Chart ──────────────────────────────────────
     function loadPerfChart() {

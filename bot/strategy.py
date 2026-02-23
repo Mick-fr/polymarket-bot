@@ -442,48 +442,52 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
         self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
 
-    # 2026 V7.3.8 OVERRIDE CONSTANTES DB — full preset mapping
+    # 2026 V8.0 OVERRIDE CONSTANTES DB — full preset mapping
     AGGRESSIVITY_PRESETS = {
-        "Safe":            {"order_size_pct": 0.018, "max_net_exposure_pct": 0.22, "inventory_skew_threshold": 0.35, "sizing_mult": 0.50, "max_order_usd": 10},
-        "Conservative":    {"order_size_pct": 0.025, "max_net_exposure_pct": 0.18, "inventory_skew_threshold": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
-        "Balanced":        {"order_size_pct": 0.03,  "max_net_exposure_pct": 0.25, "inventory_skew_threshold": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
-        "Aggressive":      {"order_size_pct": 0.035, "max_net_exposure_pct": 0.35, "inventory_skew_threshold": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
-        "Very Aggressive": {"order_size_pct": 0.045, "max_net_exposure_pct": 0.45, "inventory_skew_threshold": 0.38, "sizing_mult": 1.90, "max_order_usd": 30},
+        "MM Conservateur": {"order_size_pct": 0.008, "max_net_exposure_pct": 0.12, "inventory_skew_threshold": 0.25, "sizing_mult": 0.40, "max_order_usd": 6},
+        "MM Balanced":     {"order_size_pct": 0.018, "max_net_exposure_pct": 0.22, "inventory_skew_threshold": 0.35, "sizing_mult": 0.50, "max_order_usd": 10},
+        "MM Aggressif":    {"order_size_pct": 0.035, "max_net_exposure_pct": 0.35, "inventory_skew_threshold": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
+        "MM Très Agressif":{"order_size_pct": 0.050, "max_net_exposure_pct": 0.50, "inventory_skew_threshold": 0.60, "sizing_mult": 2.00, "max_order_usd": 30},
     }
 
     def _apply_live_aggressivity(self):
         """Lit le niveau d'agressivité depuis la DB et applique TOUS les params correspondants."""
         if not self.db:
             return
-        level = self.db.get_aggressivity_level()
-        preset = self.AGGRESSIVITY_PRESETS.get(level)
-        if preset:
-            self.order_size_pct = preset["order_size_pct"]
-            self.max_exposure_pct = preset["max_net_exposure_pct"]
-            self.inv_skew_threshold = preset["inventory_skew_threshold"]
-            self.sizing_mult = preset["sizing_mult"]
-            self.max_order_size_usdc = preset["max_order_usd"]
-            # Persist to DB so risk.py and trader.py can read the same values
-            self.db.set_config_dict(preset)
-        elif level == "Custom":
-            # Custom = AI-applied values, read directly from DB
-            self.order_size_pct = self.db.get_config("order_size_pct", ORDER_SIZE_PCT)
-            self.max_exposure_pct = self.db.get_config("max_net_exposure_pct", 0.20)
-            self.inv_skew_threshold = self.db.get_config("inventory_skew_threshold", INVENTORY_SKEW_THRESHOLD)
-            self.sizing_mult = self.db.get_config("sizing_mult", 1.0)
-            self.max_order_size_usdc = self.db.get_config("max_order_usd", 15.0)
+            
+        strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+        preset = self.AGGRESSIVITY_PRESETS.get(strategy_mode)
+        
+        # Par défaut, on désactive info_edge_only car il a pu être forcé manuellement (fallback)
+        if strategy_mode == "Info Edge Only":
+            self.db.set_config("info_edge_only", "true")
         else:
-            # Fallback to module constants
-            self.order_size_pct = ORDER_SIZE_PCT
-            self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
-            self.sizing_mult = 1.0
+            self.db.set_config("info_edge_only", "false")
+            if preset:
+                self.order_size_pct = preset["order_size_pct"]
+                self.max_exposure_pct = preset["max_net_exposure_pct"]
+                self.inv_skew_threshold = preset["inventory_skew_threshold"]
+                self.sizing_mult = preset["sizing_mult"]
+                self.max_order_size_usdc = preset["max_order_usd"]
+                self.db.set_config_dict(preset)
+            elif strategy_mode == "Custom":
+                self.order_size_pct = self.db.get_config("order_size_pct", ORDER_SIZE_PCT)
+                self.max_exposure_pct = self.db.get_config("max_net_exposure_pct", 0.20)
+                self.inv_skew_threshold = self.db.get_config("inventory_skew_threshold", INVENTORY_SKEW_THRESHOLD)
+                self.sizing_mult = self.db.get_config("sizing_mult", 1.0)
+                self.max_order_size_usdc = self.db.get_config("max_order_usd", 15.0)
+            else:
+                # Fallback to module constants
+                self.order_size_pct = ORDER_SIZE_PCT
+                self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
+                self.sizing_mult = 1.0
         # 2026 V7.3.4/V7.3.8 — log on change
         if not hasattr(self, '_last_agg_level'):
             self._last_agg_level = ""
-        if level != self._last_agg_level:
+        if strategy_mode != self._last_agg_level:
             logger.info("[LIVE CONFIG] level=%s | order_size_pct=%.3f | max_expo=%.2f | skew=%.2f | sizing=%.2f | max_order=%.0f",
-                        level, self.order_size_pct, self.max_exposure_pct, self.inv_skew_threshold, self.sizing_mult, self.max_order_size_usdc)
-            self._last_agg_level = level
+                        strategy_mode, self.order_size_pct, self.max_exposure_pct, self.inv_skew_threshold, self.sizing_mult, self.max_order_size_usdc)
+            self._last_agg_level = strategy_mode
 
     # 2026 V7.3.4 — alias public pour trader.py
     def reload_sizing(self):
