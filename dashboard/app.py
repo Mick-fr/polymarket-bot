@@ -733,10 +733,26 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             analytics = TradeAnalytics(db)
             recommender = ParameterRecommender(db, analytics)
             recs = recommender.generate_recommendations()
-            return jsonify({"recommendations": recs})
+            stats = analytics.get_summary_stats()
+            return jsonify({"recommendations": recs, "stats": stats})
         except Exception as e:
             logger.error(f"Erreur V7.3 AI review: {e}")
-            return jsonify({"recommendations": []})
+            return jsonify({"recommendations": [], "stats": {}})
+
+    # 2026 V7.4 — Performance chart data
+    @app.route("/api/v73/cumulative-pnl")
+    @login_required
+    def api_v73_cumulative_pnl():
+        try:
+            from bot.analytics import TradeAnalytics as _TA
+            analytics = _TA(db)
+            curve = analytics.cumulative_pnl_curve()
+            return jsonify(curve or [])
+        except Exception as e:
+            logger.error(f"Erreur cumulative-pnl: {e}")
+            return jsonify([])
+
+
 
     @app.route("/api/v73/rebalance/<token_id>", methods=["POST"])
     @login_required

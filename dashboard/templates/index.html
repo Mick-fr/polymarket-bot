@@ -1,88 +1,277 @@
 {% extends "base.html" %}
-{% block title %}V7.3 ULTIMATE – Polymarket Bot{% endblock %}
+
+{% block title %}Polymarket Bot V7.4{% endblock %}
 
 {% block body %}
-<!-- 2026 V7.3 DASHBOARD ULTIME - Ultimate Professional Interface -->
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
+    /* ── V7.4 Dashboard Overrides ─────────────────────────────── */
     :root {
-        --bg-color: #0d0d0d;
-        --card-bg: #1c1c1e;
-        --accent: #bb86fc;
-        --accent-glow: rgba(187, 134, 252, 0.4);
-        --text-color: #e0e0e0;
-        --green: #03dac6;
-        --red: #cf6679;
-        --border: #333;
+        --bg: #0a0a0a;
+        --surface: #111114;
+        --surface-2: #18181c;
+        --border: #222228;
+        --text: #f0f0f5;
+        --text-dim: #888897;
+        --accent: #a855f7;
+        --accent-dim: rgba(168, 85, 247, 0.12);
+        --green: #22c55e;
+        --red: #ef4444;
+        --orange: #f59e0b;
+        --radius: 14px;
+        --radius-sm: 8px;
     }
 
     body {
-        background-color: var(--bg-color);
-        color: var(--text-color);
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        margin: 0;
-        padding: 0;
+        background: var(--bg);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
-    .container {
-        max-width: 1400px;
-        padding: 20px;
-        margin: auto;
-    }
-
-    .card {
-        background: var(--card-bg);
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-        margin-bottom: 25px;
-        border: 1px solid var(--border);
-    }
-
-    .card-title {
-        margin-top: 0;
-        color: var(--text-color);
-        border-bottom: 2px solid var(--border);
-        padding-bottom: 10px;
-        margin-bottom: 20px;
+    /* ── Header ─────────────────────────────────────────────── */
+    .v74-header {
+        position: sticky;
+        top: 0;
+        z-index: 100;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        font-size: 1.25rem;
+        padding: 14px 28px;
+        background: rgba(10, 10, 10, 0.92);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
     }
 
-    .grid-4 {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 20px;
-        margin-bottom: 25px;
+    .v74-logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
     }
 
-    .grid-2 {
-        display: grid;
-        grid-template-columns: 2fr 1fr;
-        gap: 20px;
-    }
-
-    .stat-box {
-        background: rgba(255, 255, 255, 0.03);
-        padding: 15px;
+    .v74-logo-mark {
+        width: 32px;
+        height: 32px;
+        background: var(--accent-dim);
+        border: 1px solid rgba(168, 85, 247, 0.3);
         border-radius: 8px;
-        border: 1px solid #333;
-        text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
     }
 
-    .stat-label {
-        font-size: 0.85rem;
-        color: #888;
+    .v74-logo-text {
+        font-weight: 700;
+        font-size: 1rem;
+        letter-spacing: -0.01em;
+    }
+
+    .v74-logo-ver {
+        font-size: 0.7rem;
+        color: var(--accent);
+        background: var(--accent-dim);
+        padding: 2px 7px;
+        border-radius: 20px;
+        font-weight: 600;
+        margin-left: 6px;
+    }
+
+    .v74-header-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    /* ── Live badge ─────────────────────────────────────────── */
+    .live-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 20px;
+        background: rgba(34, 197, 94, 0.08);
+        border: 1px solid rgba(34, 197, 94, 0.2);
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: var(--green);
+    }
+
+    .live-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        animation: pulse 1.8s infinite;
+    }
+
+    /* ── Agressivity select ─────────────────────────────────── */
+    .agg-select-wrap {
+        position: relative;
+    }
+
+    .agg-badge {
+        position: absolute;
+        top: -5px;
+        right: -5px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 0.55rem;
+        font-weight: 700;
+        padding: 1px 5px;
+        border-radius: 6px;
+        letter-spacing: 0.05em;
+    }
+
+    #agg-select {
+        appearance: none;
+        cursor: pointer;
+        padding: 7px 28px 7px 12px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: var(--radius-sm);
+        font-size: 0.82rem;
+        font-weight: 500;
+        transition: border-color 0.2s;
+    }
+
+    #agg-select:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    #agg-indicator {
+        font-size: 0.75rem;
+        padding: 5px 10px;
+        border-radius: 6px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        font-weight: 600;
+    }
+
+    /* ── Buttons ────────────────────────────────────────────── */
+    .hbtn {
+        padding: 7px 14px;
+        border-radius: var(--radius-sm);
+        font-size: 0.82rem;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text);
+        transition: all 0.15s;
+    }
+
+    .hbtn:hover {
+        background: var(--surface);
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .hbtn-danger {
+        background: rgba(239, 68, 68, 0.1);
+        border-color: rgba(239, 68, 68, 0.3);
+        color: var(--red);
+    }
+
+    .hbtn-danger:hover {
+        background: rgba(239, 68, 68, 0.2);
+    }
+
+    .hbtn-success {
+        background: rgba(34, 197, 94, 0.1);
+        border-color: rgba(34, 197, 94, 0.3);
+        color: var(--green);
+    }
+
+    .hbtn-success:hover {
+        background: rgba(34, 197, 94, 0.2);
+    }
+
+    .hbtn-accent {
+        background: var(--accent-dim);
+        border-color: rgba(168, 85, 247, 0.35);
+        color: var(--accent);
+    }
+
+    .hbtn-accent:hover {
+        background: rgba(168, 85, 247, 0.2);
+    }
+
+    /* ── Main Container ─────────────────────────────────────── */
+    .v74-main {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 28px 24px;
+    }
+
+    /* ── Metric Cards ───────────────────────────────────────── */
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin-bottom: 20px;
+    }
+
+    @media (max-width: 900px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    @media (max-width: 520px) {
+        .metric-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .metric-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 22px 20px;
+        position: relative;
+        overflow: hidden;
+        transition: border-color 0.2s;
+    }
+
+    .metric-card:hover {
+        border-color: rgba(168, 85, 247, 0.3);
+    }
+
+    .metric-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        opacity: 0.3;
+    }
+
+    .metric-label {
+        font-size: 0.72rem;
+        font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        letter-spacing: 0.08em;
+        color: var(--text-dim);
+        margin-bottom: 10px;
     }
 
-    .stat-value {
-        font-size: 1.8rem;
-        font-weight: bold;
-        margin: 10px 0;
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1;
+        margin-bottom: 8px;
+    }
+
+    .metric-sub {
+        font-size: 0.78rem;
+        color: var(--text-dim);
+    }
+
+    .metric-sub strong {
+        color: var(--text);
     }
 
     .text-green {
@@ -97,600 +286,875 @@
         color: var(--accent);
     }
 
-    .btn {
-        padding: 8px 16px;
-        border: none;
-        border-radius: 6px;
-        font-weight: bold;
-        cursor: pointer;
-        transition: all 0.2s ease;
+    .text-dim {
+        color: var(--text-dim);
     }
 
-    .btn:hover {
-        opacity: 0.8;
-        transform: translateY(-1px);
+    /* ── Cards ──────────────────────────────────────────────── */
+    .v74-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 14px;
+        overflow: hidden;
     }
 
-    .btn-accent {
-        background: var(--accent);
-        color: #000;
-    }
-
-    .btn-red {
-        background: var(--red);
-        color: #fff;
-    }
-
-    .btn-green {
-        background: var(--green);
-        color: #000;
-    }
-
-    .btn-outline {
-        background: transparent;
-        border: 1px solid var(--accent);
-        color: var(--accent);
-    }
-
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 10px;
-        font-size: 0.9rem;
-    }
-
-    th,
-    td {
-        padding: 12px;
-        text-align: left;
-        border-bottom: 1px solid #333;
-    }
-
-    th {
-        color: #888;
-        font-weight: normal;
-        text-transform: uppercase;
-        font-size: 0.8rem;
-    }
-
-    tr:hover {
-        background: rgba(255, 255, 255, 0.02);
-    }
-
-    /* Navbar */
-    .navbar {
+    .v74-card-head {
+        padding: 16px 20px;
         display: flex;
         justify-content: space-between;
-        padding: 15px 30px;
-        background: var(--card-bg);
         align-items: center;
         border-bottom: 1px solid var(--border);
     }
 
-    .navbar-brand {
-        font-size: 1.5rem;
-        font-weight: bold;
-        background: linear-gradient(90deg, var(--accent), var(--green));
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+    .v74-card-title {
+        font-size: 0.82rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
     }
 
-    .badge {
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: bold;
+    .v74-card-body {
+        padding: 20px;
     }
 
-    .badge-gray {
-        background: #333;
-        color: #ccc;
+    /* ── Tables ─────────────────────────────────────────────── */
+    .v74-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.83rem;
     }
 
-    .loading {
-        opacity: 0.5;
-        pointer-events: none;
+    .v74-table th {
+        text-align: left;
+        padding: 8px 12px;
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .v74-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        vertical-align: middle;
+    }
+
+    .v74-table tr:hover td {
+        background: rgba(255, 255, 255, 0.02);
+    }
+
+    .v74-table tr:last-child td {
+        border-bottom: none;
+    }
+
+    /* ── Badges ─────────────────────────────────────────────── */
+    .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 600;
+    }
+
+    .tag-green {
+        background: rgba(34, 197, 94, 0.12);
+        color: var(--green);
+    }
+
+    .tag-red {
+        background: rgba(239, 68, 68, 0.12);
+        color: var(--red);
+    }
+
+    .tag-orange {
+        background: rgba(245, 158, 11, 0.12);
+        color: var(--orange);
+    }
+
+    .tag-blue {
+        background: rgba(99, 102, 241, 0.12);
+        color: #818cf8;
+    }
+
+    .tag-gray {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text-dim);
+    }
+
+    /* ── Accordion ──────────────────────────────────────────── */
+    .accordion-trigger {
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .accordion-trigger .chevron {
+        transition: transform 0.2s;
+        display: inline-block;
+    }
+
+    .accordion-trigger.open .chevron {
+        transform: rotate(180deg);
+    }
+
+    .accordion-body {
+        display: none;
+    }
+
+    .accordion-body.open {
+        display: block;
+    }
+
+    /* ── AI Reco Cards ──────────────────────────────────────── */
+    .reco-card {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 14px 16px;
+        margin-bottom: 10px;
+        border-left: 3px solid var(--border);
+    }
+
+    .reco-card.up {
+        border-left-color: var(--green);
+    }
+
+    .reco-card.down {
+        border-left-color: var(--red);
+    }
+
+    .reco-card.hold {
+        border-left-color: var(--text-dim);
+    }
+
+    .reco-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .reco-param {
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+
+    .reco-values {
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+    }
+
+    .reco-reasoning {
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        line-height: 1.5;
+    }
+
+    /* ── Apply All button ───────────────────────────────────── */
+    .btn-apply-all {
+        width: 100%;
+        padding: 12px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 600;
+        border: 1px solid rgba(168, 85, 247, 0.4);
+        background: rgba(168, 85, 247, 0.12);
+        color: var(--accent);
+        transition: all 0.2s;
+        margin-top: 8px;
+    }
+
+    .btn-apply-all:hover {
+        background: rgba(168, 85, 247, 0.22);
+        box-shadow: 0 0 20px rgba(168, 85, 247, 0.15);
+    }
+
+    /* ── Live Config Panel ──────────────────────────────────── */
+    .config-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+    }
+
+    @media (max-width: 600px) {
+        .config-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    .config-item {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 10px 12px;
+    }
+
+    .config-key {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--text-dim);
+        margin-bottom: 4px;
+    }
+
+    .config-val {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--accent);
+    }
+
+    /* ── Filters ────────────────────────────────────────────── */
+    .filter-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .filter-btn {
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 0.78rem;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-dim);
+        transition: all 0.15s;
+    }
+
+    .filter-btn.active,
+    .filter-btn:hover {
+        background: var(--accent-dim);
+        border-color: rgba(168, 85, 247, 0.4);
+        color: var(--accent);
+    }
+
+    /* ── Footer ─────────────────────────────────────────────── */
+    .v74-footer {
+        border-top: 1px solid var(--border);
+        padding: 18px 28px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 28px;
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .v74-footer a {
+        color: var(--text-dim);
+        text-decoration: none;
+    }
+
+    .v74-footer a:hover {
+        color: var(--text);
+    }
+
+    /* ── Toast ──────────────────────────────────────────────── */
+    #toast-container {
+        position: fixed;
+        top: 20px;
+        right: 24px;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .toast {
+        padding: 12px 18px;
+        border-radius: var(--radius-sm);
+        font-size: 0.84rem;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(10px);
+        animation: slideIn 0.25s ease;
+        max-width: 320px;
+    }
+
+    .toast-success {
+        background: rgba(34, 197, 94, 0.12);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        color: var(--green);
+    }
+
+    .toast-error {
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        color: var(--red);
+    }
+
+    .toast-info {
+        background: rgba(168, 85, 247, 0.12);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        color: var(--accent);
+    }
+
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateX(20px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+
+    @keyframes pulse {
+
+        0%,
+        100% {
+            opacity: 1
+        }
+
+        50% {
+            opacity: .35
+        }
+    }
+
+    .two-col {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 14px;
+    }
+
+    @media (max-width: 800px) {
+        .two-col {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    select option {
+        background: #18181c;
     }
 </style>
 
-<nav class="navbar">
-    <div style="display:flex; align-items:center; gap:20px;">
-        <span class="navbar-brand">Polymarket Bot V7.3</span>
-        <div id="agg-indicator" class="badge badge-gray">Loading...</div>
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<!-- ════════ HEADER ════════ -->
+<header class="v74-header">
+    <div class="v74-logo">
+        <div class="v74-logo-mark">🤖</div>
+        <span class="v74-logo-text">Polymarket Bot</span>
+        <span class="v74-logo-ver">V7.4</span>
     </div>
-    <div style="display:flex; align-items:center; gap:12px;">
-        <button class="btn btn-red" id="btn-kill" style="display:none;" onclick="toggleBot('kill')">⏹️ Kill
-            Switch</button>
-        <button class="btn btn-green" id="btn-resume" style="display:none;" onclick="toggleBot('resume')">▶️
+    <div class="v74-header-right">
+        <div class="live-badge" id="bot-status-badge">
+            <span class="live-dot"></span> Bot actif · 8s
+        </div>
+        <!-- Aggressivity -->
+        <div class="agg-select-wrap">
+            <span class="agg-badge">LIVE</span>
+            <select id="agg-select" onchange="setAggressivity(this.value)">
+                <option value="Conservative">🛡️ Conservative</option>
+                <option value="Balanced" selected>⚖️ Balanced</option>
+                <option value="Aggressive">⚡ Aggressive</option>
+                <option value="Very Aggressive">🔥 Very Aggressive</option>
+            </select>
+        </div>
+        <span id="agg-indicator" class="tag tag-blue">Balanced</span>
+        <!-- Kill Switch -->
+        <button class="hbtn hbtn-danger" id="btn-kill" onclick="toggleBot('kill')">⏹ Kill</button>
+        <button class="hbtn hbtn-success" id="btn-resume" onclick="toggleBot('resume')" style="display:none">▶
             Resume</button>
-        <!-- Agressivity Control -->
-        <select id="agg-select" class="btn btn-outline" onchange="setAggressivity(this.value)">
-            <option value="Conservative">Conservative</option>
-            <option value="Balanced">Balanced</option>
-            <option value="Aggressive">Aggressive</option>
-            <option value="Very Aggressive">Very Aggressive</option>
-        </select>
-        <a href="{{ url_for('logout') }}"
-            style="color:var(--accent); text-decoration:none; font-weight:bold; margin-left:15px;">Logout</a>
+        <a href="{{ url_for('logout') }}" class="hbtn">Logout</a>
     </div>
-</nav>
+</header>
 
-<div class="container">
-    <!-- 1. ETAT DU PORTEFEUILLE -->
-    <div class="grid-4" id="portfolio-panel">
-        <div class="stat-box">
-            <div class="stat-label">Total Portfolio</div>
-            <div class="stat-value" id="val-total">${{ "%.2f"|format(portfolio_val) if portfolio_val != None else "0.00"
-                }}</div>
-            <div style="font-size:0.85rem; color:#888;">Cash: <span id="val-cash" style="color:#fff;">${{
-                    "%.2f"|format(cash) if cash != None else "0.00" }}</span></div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">High Water Mark (HWM)</div>
-            <div class="stat-value" id="val-hwm">${{ "%.2f"|format(hwm) if hwm != None else "0.00" }}</div>
-            <div style="font-size:0.85rem;" id="val-hwm-pct">Depuis HWM:
-                <span class="{{ 'text-red' if hwm_pct < 0 else 'text-green' }}">{{ "+" if hwm_pct > 0 else "" }}{{
-                    "%.2f"|format(hwm_pct) if hwm_pct != None else "0.00" }}%</span>
-            </div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">PnL du Jour</div>
-            <div class="stat-value" id="val-pnl-today">
-                <span class="{{ 'text-red' if pnl_today < 0 else 'text-green' }}">{{ "+" if pnl_today > 0 else "" }}${{
-                    "%.2f"|format(pnl_today|abs) if pnl_today != None else "0.00" }}</span>
-            </div>
-            <div style="font-size:0.85rem;" id="val-pnl-week">
-                <span class="{{ 'text-red' if pnl_week < 0 else 'text-green' }}">{{ "+" if pnl_week > 0 else "" }}${{
-                    "%.2f"|format(pnl_week|abs) if pnl_week != None else "0.00" }}</span> sur 7j
-            </div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Total PnL</div>
-            <div class="stat-value" id="val-pnl-total">
-                <span class="{{ 'text-red' if total_pnl < 0 else 'text-green' }}">{{ "+" if total_pnl > 0 else "" }}${{
-                    "%.2f"|format(total_pnl|abs) if total_pnl != None else "0.00" }}</span>
-            </div>
-            <div style="font-size:0.85rem; color:#888;">Win Rate: <span id="val-winrate" class="text-accent">--</span>
-            </div>
-        </div>
-    </div>
+<!-- ════════ MAIN ════════ -->
+<main class="v74-main">
 
-    <!-- MAIN CHART -->
-    <div class="card">
-        <h3 class="card-title">Performance Cumulée</h3>
-        <div id="pnl-chart" style="height: 350px;"></div>
-    </div>
-
-    <!-- 2. POSITIONS EN COURS -->
-    <div class="card">
-        <h3 class="card-title">Positions en cours <span class="badge badge-gray" id="pos-count">{{ positions|length
-                }}</span></h3>
-        <div style="overflow-x: auto;">
-            <table id="positions-table">
-                <thead>
-                    <tr>
-                        <th>Marché</th>
-                        <th>Token</th>
-                        <th>Qty</th>
-                        <th>Avg Price</th>
-                        <th>Current Mid</th>
-                        <th>Valeur</th>
-                        <th>P&L</th>
-                        <th>Skew</th>
-                        <th>Âge (J)</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% if positions %}
-                    {% for p in positions %}
-                    <tr>
-                        <td title="{{ p.market }}">{{ p.market }}</td>
-                        <td><span class="badge badge-gray">{{ p.token_id }}</span></td>
-                        <td>{{ "%.2f"|format(p.qty) }}</td>
-                        <td>${{ "%.3f"|format(p.avg_price) }}</td>
-                        <td>${{ "%.3f"|format(p.current_mid) }}</td>
-                        <td>${{ "%.2f"|format(p.value) }}</td>
-                        <td>
-                            <span class="{{ 'text-red' if p.pnl_usd < 0 else 'text-green' }}">
-                                {{ "+" if p.pnl_usd > 0 else "" }}${{ "%.2f"|format(p.pnl_usd|abs) }}
-                            </span>
-                            (
-                            <span class="{{ 'text-red' if p.pnl_pct < 0 else 'text-green' }}">
-                                {{ "+" if p.pnl_pct > 0 else "" }}{{ "%.2f"|format(p.pnl_pct|abs) }}%
-                            </span>
-                            )
-                        </td>
-                        <td>{{ "%.1f"|format(p.skew) }}%</td>
-                        <td>{{ p.age_days }} j</td>
-                        <td><button class="btn btn-outline" style="padding: 4px 8px; font-size:0.75rem;"
-                                onclick="rebalanceToken('{{ p.raw_token_id }}')">Rebalance</button></td>
-                    </tr>
-                    {% endfor %}
-                    {% else %}
-                    <tr>
-                        <td colspan="10" style="text-align:center;">Inventaire vide</td>
-                    </tr>
-                    {% endif %}
-                </tbody>
-            </table>
+    <!-- ── METRIC CARDS ─────────────────────────────────────── -->
+    <div class="metric-grid" id="portfolio-panel">
+        <div class="metric-card">
+            <div class="metric-label">Total Portfolio</div>
+            <div class="metric-value" id="val-total">
+                ${{ "%.2f"|format(portfolio_val) if portfolio_val is not none else "0.00" }}
+            </div>
+            <div class="metric-sub">Cash: <strong id="val-cash">${{ "%.2f"|format(cash) if cash is not none else "0.00"
+                    }}</strong></div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">High Water Mark</div>
+            <div class="metric-value" id="val-hwm">
+                ${{ "%.2f"|format(hwm) if hwm is not none else "0.00" }}
+            </div>
+            <div class="metric-sub" id="val-hwm-pct">
+                <span class="{{ 'text-green' if hwm_pct >= 0 else 'text-red' }}">
+                    {{ "+" if hwm_pct > 0 else "" }}{{ "%.2f"|format(hwm_pct) if hwm_pct is not none else "0.00" }}% vs
+                    HWM
+                </span>
+            </div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">PnL du Jour</div>
+            <div class="metric-value {{ 'text-green' if pnl_today >= 0 else 'text-red' }}" id="val-pnl-today">
+                {{ "+" if pnl_today > 0 else "" }}${{ "%.2f"|format(pnl_today|abs) if pnl_today is not none else "0.00"
+                }}
+            </div>
+            <div class="metric-sub" id="val-pnl-week">
+                <span class="{{ 'text-green' if pnl_week >= 0 else 'text-red' }}">
+                    {{ "+" if pnl_week > 0 else "" }}${{ "%.2f"|format(pnl_week|abs) if pnl_week is not none else "0.00"
+                    }}
+                </span> sur 7j
+            </div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total PnL</div>
+            <div class="metric-value {{ 'text-green' if total_pnl >= 0 else 'text-red' }}" id="val-pnl-total">
+                {{ "+" if total_pnl > 0 else "" }}${{ "%.2f"|format(total_pnl|abs) if total_pnl is not none else "0.00"
+                }}
+            </div>
+            <div class="metric-sub">Win Rate: <strong class="text-accent" id="val-winrate">--</strong></div>
         </div>
     </div>
 
-    <div class="grid-2">
-        <!-- 3. HISTORIQUE DES TRADES -->
-        <div class="card">
-            <h3 class="card-title">
-                Historique des Trades
-                <select id="trade-filter" class="btn btn-outline" onchange="loadTrades(this.value)"
-                    style="padding: 4px 8px; font-size: 0.8rem;">
-                    <option value="50">50 derniers</option>
-                    <option value="150">150 derniers</option>
-                    <option value="500">500 derniers</option>
-                </select>
-            </h3>
-            <div style="max-height: 400px; overflow-y: auto;">
-                <table id="trades-table">
-                    <thead>
-                        <tr>
-                            <th>Date</th>
-                            <th>Marché</th>
-                            <th>Side</th>
-                            <th>Qty</th>
-                            <th>Prix Open</th>
-                            <th>Prix Close</th>
-                            <th>P&L</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+    <div class="two-col">
+        <!-- LEFT COLUMN -->
+        <div>
+
+            <!-- ── POSITIONS ───────────────────────────────────── -->
+            <div class="v74-card">
+                <div class="v74-card-head">
+                    <span class="v74-card-title">📊 Positions en cours</span>
+                    <button class="hbtn" onclick="loadPositions()">⟳ Refresh</button>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table class="v74-table">
+                        <thead>
+                            <tr>
+                                <th>Marché</th>
+                                <th>Qty</th>
+                                <th>Avg</th>
+                                <th>Mid</th>
+                                <th>Valeur</th>
+                                <th>PnL</th>
+                                <th>Expo</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-tbody">
+                            <tr>
+                                <td colspan="8" style="text-align:center;color:var(--text-dim);padding:24px">
+                                    Chargement...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
+
+            <!-- ── TRADE HISTORY ─────────────────────────────── -->
+            <div class="v74-card">
+                <div class="v74-card-head">
+                    <span class="v74-card-title">💹 Historique des trades</span>
+                    <div class="filter-row">
+                        <button class="filter-btn active" onclick="loadTrades(50, this)">50</button>
+                        <button class="filter-btn" onclick="loadTrades(200, this)">200</button>
+                        <button class="filter-btn" onclick="loadTrades(500, this)">500</button>
+                    </div>
+                </div>
+                <div style="overflow-x:auto; max-height:320px; overflow-y:auto;">
+                    <table class="v74-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Marché</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Ouv.</th>
+                                <th>Clôt.</th>
+                                <th>PnL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-tbody">
+                            <tr>
+                                <td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">
+                                    Chargement...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ── PERFORMANCE CHART ─────────────────────────── -->
+            <div class="v74-card">
+                <div class="v74-card-head">
+                    <span class="v74-card-title">📈 Performance Cumulée (USDC)</span>
+                    <span class="tag tag-gray" id="perf-period">7 derniers jours</span>
+                </div>
+                <div class="v74-card-body" style="padding:12px 16px;">
+                    <div id="perf-chart" style="height:240px;"></div>
+                </div>
+            </div>
+
         </div>
 
-        <!-- 4. ANALYSE AUTO-CRITIQUE STRATÉGIE -->
-        <div class="card">
-            <h3 class="card-title">AI Strategy Review</h3>
-            <div id="ai-stats"
-                style="margin-bottom: 15px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; font-size: 0.9rem;">
-                <!-- Stats injectées ici -->
+        <!-- RIGHT COLUMN -->
+        <div>
+
+            <!-- ── LIVE CONFIG ─────────────────────────────────── -->
+            <div class="v74-card">
+                <div class="v74-card-head">
+                    <span class="v74-card-title">⚡ Config Live Bot</span>
+                    <span class="tag tag-blue" id="cfg-level">Balanced</span>
+                </div>
+                <div class="v74-card-body">
+                    <div class="config-grid" id="live-config-panel">
+                        <div class="config-item">
+                            <div class="config-key">order_size_pct</div>
+                            <div class="config-val" id="cfg-order-size">--</div>
+                        </div>
+                        <div class="config-item">
+                            <div class="config-key">max_expo</div>
+                            <div class="config-val" id="cfg-max-expo">--</div>
+                        </div>
+                        <div class="config-item">
+                            <div class="config-key">skew_thresh</div>
+                            <div class="config-val" id="cfg-skew">--</div>
+                        </div>
+                        <div class="config-item">
+                            <div class="config-key">sizing_mult</div>
+                            <div class="config-val" id="cfg-sizing">--</div>
+                        </div>
+                        <div class="config-item">
+                            <div class="config-key">max_order $</div>
+                            <div class="config-val" id="cfg-max-order">--</div>
+                        </div>
+                        <div class="config-item">
+                            <div class="config-key">status</div>
+                            <div class="config-val" style="font-size:0.8rem;color:var(--green)">● live</div>
+                        </div>
+                    </div>
+                    <p style="font-size:0.7rem;color:var(--text-dim);margin-top:10px;text-align:right">Rafraîchi toutes
+                        les 10s</p>
+                </div>
             </div>
 
-            <div id="ai-recs">
-                <div style="text-align:center; padding: 20px; color:#888;">Analyse en cours...</div>
+            <!-- ── AI STRATEGY REVIEW ──────────────────────────── -->
+            <div class="v74-card">
+                <div class="v74-card-head accordion-trigger" id="ai-accordion-trigger" onclick="toggleAccordion()">
+                    <span class="v74-card-title">🤖 AI Strategy Review</span>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span class="tag tag-gray" id="ai-last-run" style="font-size:0.68rem">--</span>
+                        <span class="chevron" style="color:var(--text-dim);font-size:1rem;">▾</span>
+                    </div>
+                </div>
+                <div class="accordion-body open" id="ai-accordion-body">
+                    <div class="v74-card-body" style="padding-bottom:8px;">
+                        <div id="ai-stats"
+                            style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.8rem;margin-bottom:12px;">
+                        </div>
+                        <div id="ai-recs-container">
+                            <p style="color:var(--text-dim);text-align:center;padding:20px 0;font-size:0.85rem;">Analyse
+                                en cours...</p>
+                        </div>
+                        <button class="btn-apply-all" onclick="applyAllAiRecs()">🚀 Appliquer TOUTES les recommandations
+                            AI</button>
+                        <button class="hbtn" style="width:100%;justify-content:center;margin-top:8px;"
+                            onclick="loadAIReview()">🔄 Relancer l'Analyse</button>
+                    </div>
+                </div>
             </div>
 
-            <button class="btn"
-                style="width: 100%; margin-top: 15px; margin-bottom: 10px; background: linear-gradient(90deg, #d53369 0%, #daae51 100%); color: #fff; font-size: 1.1rem; box-shadow: 0 4px 15px rgba(213, 51, 105, 0.4);"
-                onclick="applyAllAiRecs()">🚀 Appliquer TOUTES les recommandations AI en 1 clic</button>
-
-            <button class="btn btn-outline" style="width: 100%; margin-top: 5px;" onclick="loadAIReview()">🔄 Relancer
-                l'Analyse</button>
-
-            <!-- 2026 V7.3.10 Live Config Panel -->
-            <div id="live-config-panel"
-                style="margin-top: 15px; background: rgba(255,255,255,0.04); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
-                <div style="font-size: 0.78rem; color: #888; margin-bottom: 6px;">⚡ Config Appliquée Live (rafraîchi
-                    toutes les 10s)</div>
-                <div style="color:#aaa; font-size:0.8rem;">Chargement...</div>
-            </div>
         </div>
     </div>
-</div>
+
+</main>
+
+<!-- ════════ FOOTER ════════ -->
+<footer class="v74-footer">
+    <div>Polymarket Bot V7.4 — {{ "Simulation" if False else "Live" }} Mode</div>
+    <div style="display:flex;gap:16px;">
+        <a href="/logs" target="_blank">📋 Logs</a>
+        <a href="https://github.com/Mick-fr/polymarket-bot" target="_blank">🐙 GitHub</a>
+        <a href="/health">💚 Health</a>
+    </div>
+</footer>
 
 <script>
-    const layoutConfig = {
-        paper_bgcolor: 'transparent',
-        plot_bgcolor: 'transparent',
-        font: { color: '#e0e0e0', family: "'Segoe UI', sans-serif" },
-        margin: { t: 10, r: 10, l: 40, b: 30 },
-        height: 350
-    };
-
-    function formatUsd(val) {
-        if (val === undefined || val === null) return "--";
-        const v = parseFloat(val);
-        const prefix = v < 0 ? "-" : (v > 0 ? "+" : "");
-        return `<span class="${v < 0 ? 'text-red' : (v > 0 ? 'text-green' : '')}">${prefix}$${Math.abs(v).toFixed(2)}</span>`;
-    }
-    function formatPct(val) {
-        if (val === undefined || val === null) return "--";
-        const v = parseFloat(val);
-        const prefix = v < 0 ? "" : "+";
-        return `<span class="${v < 0 ? 'text-red' : (v > 0 ? 'text-green' : '')}">${prefix}${v.toFixed(2)}%</span>`;
+    // ── Utils ──────────────────────────────────────────────────
+    function toast(msg, type = 'success') {
+        const d = document.createElement('div');
+        d.className = `toast toast-${type}`;
+        d.innerHTML = msg;
+        document.getElementById('toast-container').appendChild(d);
+        setTimeout(() => d.remove(), 3500);
     }
 
-    // 1. Portfolio & Kill Switch Fetching
+    function fmtUsd(v) {
+        if (v == null) return '--';
+        const n = parseFloat(v);
+        const sign = n < 0 ? '-' : n > 0 ? '+' : '';
+        const cls = n < 0 ? 'text-red' : n > 0 ? 'text-green' : '';
+        return `<span class="${cls}">${sign}$${Math.abs(n).toFixed(2)}</span>`;
+    }
+    function fmtPct(v) {
+        if (v == null) return '--';
+        const n = parseFloat(v);
+        const cls = n < 0 ? 'text-red' : 'text-green';
+        return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(2)}%</span>`;
+    }
+
+    // ── Portfolio ──────────────────────────────────────────────
     function loadPortfolio() {
         fetch('/api/v73/portfolio').then(r => r.json()).then(d => {
-            document.getElementById('val-total').innerHTML = `$${d.total_value.toFixed(2)}`;
-            document.getElementById('val-cash').innerHTML = `$${d.cash.toFixed(2)}`;
-            document.getElementById('val-hwm').innerHTML = `$${d.hwm.toFixed(2)}`;
-            document.getElementById('val-hwm-pct').innerHTML = `Depuis HWM: ${formatPct(d.hwm_pct)}`;
-            document.getElementById('val-pnl-today').innerHTML = formatUsd(d.pnl_today);
-            document.getElementById('val-pnl-week').innerHTML = `${formatUsd(d.pnl_week)} sur 7j`;
-            document.getElementById('val-pnl-total').innerHTML = formatUsd(d.pnl_total);
-        });
-
-        // Kill Switch Status (re-used from old logic)
-        fetch('/health').then(r => r.json()).then(d => {
-            if (d.kill_switch) {
-                document.getElementById('btn-kill').style.display = 'none';
-                document.getElementById('btn-resume').style.display = 'inline-block';
-            } else {
-                document.getElementById('btn-kill').style.display = 'inline-block';
-                document.getElementById('btn-resume').style.display = 'none';
+            if (!d) return;
+            document.getElementById('val-total').textContent = '$' + (d.portfolio_val || 0).toFixed(2);
+            document.getElementById('val-cash').textContent = '$' + (d.cash || 0).toFixed(2);
+            document.getElementById('val-hwm').textContent = '$' + (d.hwm || 0).toFixed(2);
+            if (d.hwm_pct != null) {
+                const p = d.hwm_pct; const cls = p >= 0 ? 'text-green' : 'text-red';
+                document.getElementById('val-hwm-pct').innerHTML = `<span class="${cls}">${p >= 0 ? '+' : ''}${p.toFixed(2)}% vs HWM</span>`;
             }
-        });
-
-        // Aggressivity DB status
-        fetch('/api/aggressivity').then(r => r.json()).then(d => {
-            document.getElementById('agg-indicator').innerText = `Level: ${d.level}`;
-            document.getElementById('agg-select').value = d.level;
-        });
+            document.getElementById('val-pnl-today').innerHTML = fmtUsd(d.pnl_today);
+            document.getElementById('val-pnl-week').innerHTML = fmtUsd(d.pnl_week) + ' sur 7j';
+            document.getElementById('val-pnl-total').innerHTML = fmtUsd(d.total_pnl);
+            if (d.win_rate != null) document.getElementById('val-winrate').textContent = d.win_rate.toFixed(0) + '%';
+            // Kill switch state
+            const ks = d.kill_switch;
+            document.getElementById('btn-kill').style.display = ks ? 'none' : 'inline-flex';
+            document.getElementById('btn-resume').style.display = ks ? 'inline-flex' : 'none';
+            const badge = document.getElementById('bot-status-badge');
+            if (ks) { badge.style.borderColor = 'rgba(239,68,68,0.3)'; badge.style.background = 'rgba(239,68,68,0.08)'; badge.style.color = 'var(--red)'; badge.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block"></span> Bot arrêté'; }
+            else { badge.style.borderColor = 'rgba(34,197,94,0.2)'; badge.style.background = 'rgba(34,197,94,0.08)'; badge.style.color = 'var(--green)'; badge.innerHTML = '<span class="live-dot"></span> Bot actif · 8s'; }
+        }).catch(() => { });
     }
 
-    // 2. Positions Table
+    // ── Positions ──────────────────────────────────────────────
     function loadPositions() {
-        fetch('/api/v73/positions').then(r => r.json()).then(data => {
-            document.getElementById('pos-count').innerText = data.length;
-            const tbody = document.querySelector('#positions-table tbody');
-            tbody.innerHTML = '';
-            if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:#888;">Inventaire vide</td></tr>';
+        fetch('/api/v73/positions').then(r => r.json()).then(list => {
+            const tbody = document.getElementById('positions-tbody');
+            if (!list || list.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:24px">Inventaire vide</td></tr>';
                 return;
             }
-            // Sort by PnL desc
-            data.sort((a, b) => b.pnl_usd - a.pnl_usd);
-            data.forEach(p => {
-                tbody.innerHTML += `
-                    <tr>
-                        <td title="${p.market}">${p.market}</td>
-                        <td><span class="badge badge-gray">${p.token_id}</span></td>
-                        <td>${p.qty.toFixed(2)}</td>
-                        <td>$${p.avg_price.toFixed(3)}</td>
-                        <td>$${p.current_mid.toFixed(3)}</td>
-                        <td>$${p.value.toFixed(2)}</td>
-                        <td>${formatUsd(p.pnl_usd)} (${formatPct(p.pnl_pct)})</td>
-                        <td>${p.skew.toFixed(1)}%</td>
-                        <td>${p.age_days} j</td>
-                        <td><button class="btn btn-outline" style="padding: 4px 8px; font-size:0.75rem;" onclick="rebalanceToken('${p.raw_token_id}')">Rebalance</button></td>
-                    </tr>
-                `;
-            });
-        });
+            tbody.innerHTML = list.map(p => `
+        <tr>
+          <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.question}">${(p.question || '').slice(0, 40)}</td>
+          <td>${parseFloat(p.quantity || 0).toFixed(2)}</td>
+          <td>$${parseFloat(p.avg_price || 0).toFixed(3)}</td>
+          <td>$${parseFloat(p.mid || 0).toFixed(3)}</td>
+          <td><strong>$${parseFloat(p.value || 0).toFixed(2)}</strong></td>
+          <td>${fmtUsd(p.pnl_usd)}</td>
+          <td>${fmtPct(p.skew_pct)}</td>
+          <td><button class="hbtn hbtn-danger" style="font-size:0.72rem;padding:3px 8px" onclick="rebalanceToken('${p.token_id}')">Sell 50%</button></td>
+        </tr>`).join('');
+        }).catch(() => { });
     }
 
-    // 3. Trades History & Chart
-    function loadTrades(limit = 50) {
+    // ── Trades ─────────────────────────────────────────────────
+    function loadTrades(limit, btn) {
+        if (btn) { document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); }
         fetch(`/api/v73/trades?limit=${limit}`).then(r => r.json()).then(data => {
-            if (data.stats && data.stats.win_rate) {
-                document.getElementById('val-winrate').innerText = `${data.stats.win_rate.toFixed(1)}%`;
+            const tbody = document.getElementById('trades-tbody');
+            const list = data.trades || data;
+            if (!list || list.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun trade</td></tr>'; return;
             }
-
-            const tbody = document.querySelector('#trades-table tbody');
-            tbody.innerHTML = '';
-            data.trades.forEach(t => {
-                const date = new Date(t.close_timestamp || t.open_timestamp).toLocaleString('fr-FR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-                tbody.innerHTML += `
-                    <tr>
-                        <td style="color:#888; font-size:0.8rem;">${date}</td>
-                        <td title="${t.question}">${(t.question || "").substring(0, 30)}...</td>
-                        <td><span class="${t.open_size > 0 ? 'text-accent' : ''}">BUY</span> &rarr; SELL</td>
-                        <td>${t.open_size.toFixed(1)}</td>
-                        <td>$${t.open_price.toFixed(3)}</td>
-                        <td>$${(t.close_price || 0).toFixed(3)}</td>
-                        <td>${formatUsd(t.pnl_usdc)}</td>
-                    </tr>
-                `;
-            });
-        });
-
-        // Cumul PNL Chart (using existing endpoint)
-        fetch('/api/analytics/cumulative-pnl').then(r => r.json()).then(data => {
-            const traces = [{
-                x: data.map(d => d.timestamp),
-                y: data.map(d => d.pnl),
-                type: 'scatter',
-                mode: 'lines',
-                line: { color: '#bb86fc', width: 3 },
-                fill: 'tozeroy',
-                fillcolor: 'rgba(187,134,252,0.1)'
-            }];
-            Plotly.newPlot('pnl-chart', traces, layoutConfig);
-        });
+            tbody.innerHTML = list.map(t => {
+                const pnl = t.pnl_usdc; const cls = pnl > 0 ? 'text-green' : pnl < 0 ? 'text-red' : '';
+                const ts = (t.close_timestamp || t.timestamp || '').slice(0, 16).replace('T', ' ');
+                return `<tr>
+          <td style="font-size:0.75rem;color:var(--text-dim)">${ts}</td>
+          <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.question || ''}">${(t.question || t.token_id || '').slice(0, 28)}</td>
+          <td><span class="tag ${t.side === 'buy' ? 'tag-green' : 'tag-red'}">${(t.side || '').toUpperCase()}</span></td>
+          <td>${parseFloat(t.quantity || 0).toFixed(2)}</td>
+          <td>$${parseFloat(t.open_price || t.avg_price || 0).toFixed(3)}</td>
+          <td>${t.close_price != null ? '$' + parseFloat(t.close_price).toFixed(3) : '--'}</td>
+          <td><span class="${cls}">${pnl != null ? (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) : '--'}</span></td>
+        </tr>`;
+            }).join('');
+        }).catch(() => { });
     }
 
-    // 4. AI Strategy Review
+    // ── AI Review ──────────────────────────────────────────────
     function loadAIReview() {
-        document.getElementById('ai-recs').innerHTML = '<div style="text-align:center; padding: 20px; color:#888;">Analyse AI en cours...</div>';
-        fetch('/api/v73/trades?limit=1').then(r => r.json()).then(td => {
-            const s = td.stats || {};
-            let pfHtml = `<div class="grid-2" style="gap:10px;">`;
-            pfHtml += `<div><strong>Sharpe Ratio:</strong> ${s.sharpe_ratio !== undefined ? s.sharpe_ratio.toFixed(2) : '--'}</div>`;
-            pfHtml += `<div><strong>Max DD:</strong> ${s.max_drawdown_pct !== undefined ? s.max_drawdown_pct.toFixed(2) : '--'}%</div>`;
-            pfHtml += `<div><strong>Win Rate:</strong> ${s.win_rate !== undefined ? s.win_rate.toFixed(1) : '--'}%</div>`;
-            pfHtml += `<div><strong>Expectancy:</strong> $${s.expectancy !== undefined ? s.expectancy.toFixed(3) : '--'}</div>`;
-            pfHtml += `</div>`;
-            document.getElementById('ai-stats').innerHTML = pfHtml;
-        });
-
+        document.getElementById('ai-recs-container').innerHTML = '<p style="color:var(--text-dim);text-align:center;padding:20px 0;font-size:0.85rem;">Analyse en cours...</p>';
         fetch('/api/v73/ai-review').then(r => r.json()).then(data => {
-            const recCont = document.getElementById('ai-recs');
-            recCont.innerHTML = '';
-            if (!data.recommendations || data.recommendations.length === 0) {
-                recCont.innerHTML = '<div style="color:#888;">Aucune recommandation disponible. Laissez le bot accumuler des trades.</div>';
+            const ts = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+            document.getElementById('ai-last-run').textContent = 'à ' + ts;
+            if (data.stats) {
+                const s = data.stats;
+                document.getElementById('ai-stats').innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:0.78rem;text-align:center;">
+            <div><div style="color:var(--text-dim);margin-bottom:2px">Trades</div><strong>${s.total_trades || 0}</strong></div>
+            <div><div style="color:var(--text-dim);margin-bottom:2px">Win Rate</div><strong class="${(s.win_rate || 0) >= 50 ? 'text-green' : 'text-red'}">${(s.win_rate || 0).toFixed(0)}%</strong></div>
+            <div><div style="color:var(--text-dim);margin-bottom:2px">Avg PnL</div><strong>${fmtUsd(s.avg_pnl)}</strong></div>
+            <div><div style="color:var(--text-dim);margin-bottom:2px">Sharpe</div><strong class="text-accent">${(s.sharpe || 0).toFixed(2)}</strong></div>
+          </div>`;
+            }
+            const recs = data.recommendations || [];
+            if (!recs.length) {
+                document.getElementById('ai-recs-container').innerHTML = '<p style="color:var(--text-dim);text-align:center;padding:16px 0;font-size:0.85rem;">✅ Stratégie optimale — aucune recommandation</p>';
                 return;
             }
-
-            data.recommendations.forEach(r => {
-                let color = "#888";
-                if (r.direction === "augmenter") color = "var(--green)";
-                if (r.direction === "reduire") color = "var(--red)";
-
-                recCont.innerHTML += `
-                    <div style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid ${color};">
-                        <div style="display:flex; justify-content:space-between; margin-bottom: 5px;">
-                            <strong style="color:var(--text-color);">${r.parameter}</strong>
-                            <span class="badge badge-gray">${r.direction.toUpperCase()}</span>
-                        </div>
-                        <div style="font-size: 0.85rem; color:#aaa; margin-bottom: 10px;">
-                            Actuel: ${r.current_value} &rarr; Recommandé: <strong style="color:${color}">${r.recommended_value}</strong>
-                        </div>
-                        <div style="font-size: 0.85rem; margin-bottom: 10px;">${r.reasoning}</div>
-                        ${r.direction !== 'maintenir' && r.current_value !== r.recommended_value && r.recommended_value !== null ?
-                        `<button class="btn btn-outline" style="font-size: 0.75rem; padding: 4px 8px;" onclick="applyAiRec('${r.parameter}', ${r.recommended_value})">Appliquer & Restart Bot (Live)</button>`
-                        : ''}
-                    </div>
-                `;
-            });
+            document.getElementById('ai-recs-container').innerHTML = recs.map(r => {
+                const cls = r.direction === 'augmenter' ? 'up' : r.direction === 'reduire' ? 'down' : 'hold';
+                const tag = r.direction === 'augmenter' ? 'tag-green' : r.direction === 'reduire' ? 'tag-red' : 'tag-gray';
+                const applyBtn = r.direction !== 'maintenir' && r.recommended_value != null
+                    ? `<button class="hbtn" style="font-size:0.72rem;padding:4px 10px;margin-top:6px" onclick="applyAiRec('${r.parameter}',${r.recommended_value})">Appliquer ce paramètre</button>`
+                    : '';
+                return `<div class="reco-card ${cls}">
+          <div class="reco-header">
+            <span class="reco-param">${r.parameter}</span>
+            <span class="tag ${tag}">${(r.direction || '').toUpperCase()}</span>
+          </div>
+          <div class="reco-values">Actuel : <strong style="color:var(--text)">${r.current_value}</strong> → Recommandé : <strong style="color:var(--accent)">${r.recommended_value ?? '--'}</strong></div>
+          <div class="reco-reasoning">${r.reasoning || ''}</div>
+          ${applyBtn}
+        </div>`;
+            }).join('');
+        }).catch(() => {
+            document.getElementById('ai-recs-container').innerHTML = '<p style="color:var(--red);text-align:center;padding:16px">Erreur lors de l\'analyse</p>';
         });
     }
 
-    // Actions
+    // ── Accordion ──────────────────────────────────────────────
+    function toggleAccordion() {
+        const trigger = document.getElementById('ai-accordion-trigger');
+        const body = document.getElementById('ai-accordion-body');
+        trigger.classList.toggle('open');
+        body.classList.toggle('open');
+    }
+
+    // ── Kill Switch ────────────────────────────────────────────
     function toggleBot(action) {
-        fetch('/' + action, { method: 'POST' }).then(() => {
-            setTimeout(loadPortfolio, 500);
-        });
+        fetch('/' + action, { method: 'POST' })
+            .then(() => { setTimeout(loadPortfolio, 500); toast(action === 'kill' ? '⏹ Bot arrêté' : '▶ Bot redémarré', action === 'kill' ? 'error' : 'success'); });
     }
 
+    // ── Aggressivity ───────────────────────────────────────────
     function setAggressivity(level) {
-        const indicator = document.getElementById('agg-indicator');
-        indicator.innerText = "⏳ Applying...";
-        indicator.style.background = "#555";
+        const ind = document.getElementById('agg-indicator');
+        ind.textContent = '⏳ ...';
         fetch('/api/aggressivity', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level: level })
-        }).then(r => r.json()).then(data => {
-            if (data.status === "ok") {
-                indicator.innerText = "✅ " + data.level;
-                indicator.style.background = "#1b5e20";
-                // Show toast
-                const toast = document.createElement('div');
-                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:linear-gradient(135deg,#1b5e20,#2e7d32);color:#fff;padding:14px 24px;border-radius:10px;z-index:9999;font-weight:bold;box-shadow:0 4px 20px rgba(0,0,0,0.4);animation:fadeIn 0.3s;';
-                toast.innerHTML = `🎯 Agressivité → <strong>${data.level}</strong><br><small>Paramètres sauvegardés en DB — actifs au prochain cycle</small>`;
-                document.body.appendChild(toast);
-                setTimeout(() => toast.remove(), 3000);
-                setTimeout(loadPortfolio, 500);
-                syncLiveConfig();
+            body: JSON.stringify({ level })
+        }).then(r => r.json()).then(d => {
+            if (d.status === 'ok') {
+                toast(`🎯 Agressivité → <strong>${d.level}</strong> — params sauvegardés en DB`, 'info');
+                setTimeout(syncLiveConfig, 400);
+                setTimeout(loadPortfolio, 700);
             } else {
-                indicator.innerText = "❌ Erreur";
-                indicator.style.background = "#b71c1c";
+                toast('❌ ' + (d.error || 'Erreur'), 'error');
+                syncLiveConfig();
             }
-            // Reset badge color after 3s
-            setTimeout(() => { indicator.style.background = "#333"; }, 3000);
-        }).catch(() => {
-            indicator.innerText = "❌ Erreur réseau";
-            indicator.style.background = "#b71c1c";
-            setTimeout(() => { indicator.style.background = "#333"; }, 3000);
-        });
+        }).catch(() => toast('❌ Erreur réseau', 'error'));
     }
 
-    function rebalanceToken(token) {
-        if (confirm("Forcer le bot à exécuter un market SELL de 50% sur ce token au prochain cycle ?")) {
-            fetch('/api/v73/rebalance/' + token, { method: 'POST' }).then(r => r.json()).then(d => {
-                alert("Ordre de rebalance envoyé. Surveillez les logs.");
-            });
-        }
-    }
-
+    // ── Apply AI Rec ───────────────────────────────────────────
     function applyAiRec(param, val) {
-        if (confirm(`Appliquer la recommandation AI pour ${param} = ${val} et redémarrer le bot ?`)) {
-            fetch('/api/v73/apply-rec', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ parameter: param, value: val })
-            }).then(() => {
-                alert("Paramètre sauvegardé dans config.yaml. Le bot est en cours de redémarrage et le mode Agressivité est passé en Custom.");
-                setTimeout(loadPortfolio, 1000);
-            });
-        }
+        if (!confirm(`Appliquer ${param} = ${val} et redémarrer le bot ?`)) return;
+        fetch('/api/v73/apply-rec', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parameter: param, value: val })
+        }).then(() => { toast(`✅ ${param} = ${val} appliqué — bot redémarre`, 'success'); setTimeout(syncLiveConfig, 500); });
     }
 
+    // ── Apply ALL Recs ─────────────────────────────────────────
     function applyAllAiRecs() {
-        if (confirm("🚀 Êtes-vous sûr de vouloir appliquer TOUTES les recommandations AI recommandées (sauf celles à maintenir) et redémarrer le bot ?")) {
-            fetch('/api/v73/apply-all-recs', {
-                method: 'POST'
-            }).then(r => r.json()).then(data => {
-                if (data.status === "ok") {
-                    alert(`✅ ${data.applied_count} recommandations appliquées avec succès. Paramètres sauvegardés en DB — actifs au prochain cycle bot.`);
-                    setTimeout(loadPortfolio, 1000);
-                    syncLiveConfig();
-                } else {
-                    alert("Erreur lors de l'application des recommandations: " + data.error);
-                }
-            }).catch(e => {
-                alert("Erreur réseau ou d'exécution.");
-            });
-        }
-    }
-
-    function exportCSV() {
-        alert("Using external CSV exporter from previous dashboard iteration logic (mock).");
-    }
-
-    // 2026 V7.3.10 — Live config sync from DB
-    function syncLiveConfig() {
-        fetch('/api/current-config')
+        if (!confirm('🚀 Appliquer TOUTES les recommandations AI et redémarrer le bot ?')) return;
+        fetch('/api/v73/apply-all-recs', { method: 'POST' })
             .then(r => r.json())
-            .then(cfg => {
-                // 1. Sync dropdown selector
-                const sel = document.getElementById('agg-select');
-                if (sel) {
-                    const level = cfg.aggressivity_level || 'Balanced';
-                    // Add Custom option if needed
-                    if (level === 'Custom' && !sel.querySelector('option[value="Custom"]')) {
-                        const opt = document.createElement('option');
-                        opt.value = 'Custom'; opt.text = '⚙️ Custom (AI)';
-                        sel.appendChild(opt);
-                    }
-                    sel.value = level;
-                    // Update badge
-                    const badge = document.getElementById('agg-indicator');
-                    if (badge) {
-                        badge.innerText = level;
-                        badge.style.background = level === 'Very Aggressive' ? '#b71c1c'
-                            : level === 'Aggressive' ? '#e65100'
-                                : level === 'Balanced' ? '#1565c0'
-                                    : level === 'Custom' ? '#6a1b9a'
-                                        : '#2e7d32';
-                    }
-                }
-                // 2. Update the live config panel
-                const panel = document.getElementById('live-config-panel');
-                if (panel) {
-                    panel.innerHTML = `
-                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; font-size:0.82rem;">
-                            <div><span style="color:#aaa;">order_size_pct</span><br><strong style="color:#64b5f6;">${(cfg.order_size_pct * 100).toFixed(1)}%</strong></div>
-                            <div><span style="color:#aaa;">max_expo</span><br><strong style="color:#64b5f6;">${(cfg.max_net_exposure_pct * 100).toFixed(0)}%</strong></div>
-                            <div><span style="color:#aaa;">skew_thresh</span><br><strong style="color:#64b5f6;">${cfg.inventory_skew_threshold}</strong></div>
-                            <div><span style="color:#aaa;">sizing_mult</span><br><strong style="color:#64b5f6;">${cfg.sizing_mult}×</strong></div>
-                            <div><span style="color:#aaa;">max_order_usd</span><br><strong style="color:#64b5f6;">$${cfg.max_order_usd}</strong></div>
-                            <div><span style="color:#aaa;">niveau</span><br><strong style="color:#ffd54f;">${cfg.aggressivity_level}</strong></div>
-                        </div>`;
-                }
-            })
-            .catch(() => { }); // Silent failure
+            .then(d => {
+                if (d.status === 'ok') {
+                    toast(`✅ ${d.applied_count} recommandations appliquées — bot redémarre`, 'success');
+                    setTimeout(syncLiveConfig, 600);
+                    setTimeout(loadPortfolio, 800);
+                } else toast('❌ ' + (d.error || 'Erreur'), 'error');
+            }).catch(() => toast('❌ Erreur réseau', 'error'));
     }
 
-    // Init All
-    function initDashboard() {
+    // ── Rebalance ──────────────────────────────────────────────
+    function rebalanceToken(tokenId) {
+        if (!confirm('Forcer un SELL 50% sur ce token au prochain cycle ?')) return;
+        fetch('/api/v73/rebalance/' + tokenId, { method: 'POST' })
+            .then(() => toast('⚖️ Ordre rebalance envoyé', 'info'));
+    }
+
+    // ── Sync Live Config ───────────────────────────────────────
+    function syncLiveConfig() {
+        fetch('/api/current-config').then(r => r.json()).then(cfg => {
+            const level = cfg.aggressivity_level || 'Balanced';
+            // Update dropdown
+            const sel = document.getElementById('agg-select');
+            if (sel) {
+                if (level === 'Custom' && !sel.querySelector('option[value="Custom"]')) {
+                    const opt = document.createElement('option'); opt.value = 'Custom'; opt.text = '⚙️ Custom (AI)'; sel.appendChild(opt);
+                }
+                sel.value = level;
+            }
+            // Update badge
+            const ind = document.getElementById('agg-indicator');
+            const colors = { 'Very Aggressive': 'tag-red', 'Aggressive': 'tag-orange', 'Balanced': 'tag-blue', 'Conservative': 'tag-green', 'Custom': 'tag-blue' };
+            if (ind) { ind.textContent = level; ind.className = 'tag ' + (colors[level] || 'tag-gray'); }
+            document.getElementById('cfg-level').textContent = level;
+            // Update config panel
+            document.getElementById('cfg-order-size').textContent = ((cfg.order_size_pct || 0) * 100).toFixed(1) + '%';
+            document.getElementById('cfg-max-expo').textContent = ((cfg.max_net_exposure_pct || 0) * 100).toFixed(0) + '%';
+            document.getElementById('cfg-skew').textContent = (cfg.inventory_skew_threshold || 0).toFixed(2);
+            document.getElementById('cfg-sizing').textContent = (cfg.sizing_mult || 1).toFixed(2) + '×';
+            document.getElementById('cfg-max-order').textContent = '$' + (cfg.max_order_usd || 15).toFixed(0);
+        }).catch(() => { });
+    }
+
+    // ── Performance Chart ──────────────────────────────────────
+    function loadPerfChart() {
+        fetch('/api/v73/cumulative-pnl').then(r => r.json()).then(data => {
+            if (!data || !data.length) return;
+            const labels = data.map(d => d.date || d.timestamp || '');
+            const vals = data.map(d => d.cumulative_pnl || d.pnl || 0);
+            const last = vals[vals.length - 1] || 0;
+            const color = last >= 0 ? '#22c55e' : '#ef4444';
+            const ctx = document.getElementById('perf-chart');
+            if (!ctx) return;
+            if (window.perfChart) window.perfChart.destroy();
+            window.perfChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'PnL Cumulé (USDC)', data: vals, borderColor: color, borderWidth: 2, fill: true, backgroundColor: color.replace(')', ',0.07)').replace('rgb', 'rgba'), tension: 0.35, pointRadius: 0 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => '$' + c.parsed.y.toFixed(2) } } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255,255,255,0.03)' }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 7 } },
+                        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', font: { size: 10 }, callback: v => '$' + v.toFixed(0) } }
+                    }
+                }
+            });
+        }).catch(() => { });
+    }
+
+    // ── Init ───────────────────────────────────────────────────
+    window.addEventListener('DOMContentLoaded', () => {
         loadPortfolio();
         loadPositions();
         loadTrades(50);
         loadAIReview();
         syncLiveConfig();
-    }
+        // Load Chart.js dynamically then draw perf chart
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+        s.onload = loadPerfChart;
+        document.head.appendChild(s);
+    });
 
-    initDashboard();
-
-    // Live update every 15 seconds
-    setInterval(() => {
-        loadPortfolio();
-        loadPositions();
-    }, 15000);
-
-    // Live config sync every 10 seconds
+    // Auto-refresh
+    setInterval(loadPortfolio, 15000);
+    setInterval(loadPositions, 20000);
     setInterval(syncLiveConfig, 10000);
 </script>
 {% endblock %}
