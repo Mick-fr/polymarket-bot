@@ -178,16 +178,13 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
+                # 2026 V6 SPAM FIX
                 if sum_ask <= 0.88:
                     delta = 1.0 - sum_ask
-                    logger.warning("[ARB] %s ASK %+.1f%%", eid, delta * 100)
-                    from bot.telegram import send_alert
-                    send_alert(f"🚨 ARBITRAGE ALERTE (>12%): {eid} ASK +{delta*100:.1f}%")
+                    logger.warning("[ARB] %s ASK %.1f%%", eid, delta * 100)
                 elif sum_bid >= 1.12:
                     delta = sum_bid - 1.0
-                    logger.warning("[ARB] %s BID %+.1f%%", eid, delta * 100)
-                    from bot.telegram import send_alert
-                    send_alert(f"🚨 ARBITRAGE ALERTE (>12%): {eid} BID +{delta*100:.1f}%")
+                    logger.warning("[ARB] %s BID %.1f%%", eid, delta * 100)
             except Exception:
                 pass
 
@@ -596,7 +593,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     ai_prob = cached[0]
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
-                # 2026 ULTIMATE FINAL
+                # 2026 V6
                 if ai_prob >= 0.0:
                     delta = ai_prob - mid
                     directional_skew = delta * 4.0 * self.ai_weight
@@ -800,15 +797,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
         else:
             skew_final = obi_skew
 
-        # 2026 ULTIMATE FINAL
+        # 2026 V6
         ai_skew_ticks = 0
         if ai_prob >= 0.0 and abs(ai_prob - mid) > self.ai_edge_threshold:
             delta = ai_prob - mid
             directional_skew = delta * 4.0 * self.ai_weight
             ai_skew_ticks = round(directional_skew / TICK_SIZE)
-            logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+.2f",
-                        self._ai_last_market_title[:40] if hasattr(self, "_ai_last_market_title") else "???",
-                        ai_prob, mid, delta * 100, directional_skew)
                         
         # 2026 V6 SCALING : Copy Trading
         copy_skew_ticks = 0

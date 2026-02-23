@@ -421,7 +421,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 ULTIMATE FINAL
+        # 2026 V6
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
@@ -429,7 +429,7 @@ class Trader:
                     timeout=15.0,
                     label="place_orders_batch",
                 )
-                logger.info("[BATCH] %d ordres envoyés", len(batch_orders))
+                logger.info("[BATCH] %d ordres envoyés en 1 call", len(batch_orders))
             except Exception as be:
                 logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
 
@@ -1668,9 +1668,9 @@ class Trader:
                         "[Liquidation] SELL posé dans le carnet, sera préservé via DB: %s",
                         order_id[:16],
                     )
-                # 2026 V6 SCALING
+                # 2026 V6
                 from bot.telegram import send_alert
-                send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]} | PnL est. N/A")
+                send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | {order_id[:8]} | PnL est. N/A")
                 return
 
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
@@ -1710,9 +1710,9 @@ class Trader:
                     except Exception:
                         pass
                 
-                # 2026 V6 SCALING
+                # 2026 V6
                 from bot.telegram import send_alert
-                send_alert(f"✅ {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]} | PnL est. {pnl_str}")
+                send_alert(f"✅ {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | {order_id[:8]} | PnL est. {pnl_str}")
                 
                 # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:
