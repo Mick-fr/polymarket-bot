@@ -1856,14 +1856,41 @@ class Trader:
         logger.info("Bot arrêté proprement.")
         logger.info("=" * 60)
 
-    # 2026 V7.0 SCALING: Auto-rebalance
+    # 2026 V7.0 SCALING: Auto-rebalance + 2026 V7.3 DASHBOARD ULTIME
     def _check_auto_rebalance(self, portfolio_value: float):
         """
-        Vérifie toutes les 4h l'inventaire. 
-        Si un token > 80% du portfolio (skew > 0.8), on SELL vers target 50% (0.5).
+        Vérifie toutes les 4h l'inventaire pour l'auto-rebalance.
+        Vérifie à chaque cycle les demandes manuelles du Dashboard (V7.3).
         """
         import time
         now = time.time()
+        
+        # 2026 V7.3 DASHBOARD ULTIME: Check manual rebalance requests from UI
+        positions = self.db.get_all_positions() if self.db else []
+        if self.db:
+            with self.db._cursor() as cur:
+                cur.execute("SELECT key FROM bot_state WHERE key LIKE 'force_rebalance_%' AND value = 'true'")
+                rows = cur.fetchall()
+                for r in rows:
+                    key = r["key"]
+                    token_id = key.replace("force_rebalance_", "")
+                    
+                    for p in positions:
+                        if p["token_id"] == token_id:
+                            qty = float(p.get("quantity", 0))
+                            if qty > 0.05:
+                                sell_qty = round(qty * 0.5, 2)  # Sell half on manual rebalance
+                                logger.info(f"[REBALANCE MANUAL] Dashboard trigger executé pour {token_id[:16]} ({sell_qty} shares)")
+                                self.db.add_log("INFO", "trader", f"Rebalance partiel manuel sur {token_id[:16]}")
+                                if not self.config.bot.paper_trading:
+                                    try:
+                                        self.pm_client.place_market_order(token_id, sell_qty, side="sell")
+                                    except Exception as e:
+                                        logger.error(f"[REBALANCE MANUAL] Erreur: {e}")
+                    
+                    # Consume the request intent
+                    cur.execute("UPDATE bot_state SET value = 'false' WHERE key = ?", (key,))
+
         if not hasattr(self, "_last_rebalance_ts"):
             self._last_rebalance_ts = now
             return  # Première fois, on initialise juste le chronomètre

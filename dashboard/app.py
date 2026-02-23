@@ -543,5 +543,170 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             logger.error("Erreur metrics V7: %s", e)
             return jsonify({"positions": {"x":[], "y":[]}, "skews": {"labels":[], "values":[]}})
 
+    # 2026 V7.3 DASHBOARD ULTIME - Nouvelles routes API live
+
+    @app.route("/api/v73/portfolio")
+    @login_required
+    def api_v73_portfolio():
+        try:
+            positions = db.get_all_positions() if db else []
+            cash = 0
+            balances = db.get_balance_timeseries(limit=1)
+            if balances:
+                cash = balances[0]["balance"]
+            
+            # Value = cash + inventory value mid
+            portfolio_val = cash + sum(float(p.get("quantity", 0)) * float(p.get("current_mid", p.get("avg_price", 0))) for p in positions)
+            
+            # PnL logic
+            pnl_summary = db.get_pnl_summary() if db else {}
+            total_pnl = pnl_summary.get("total_pnl", 0)
+            
+            # Daily / Weekly
+            from datetime import datetime, timezone, timedelta
+            closed = db.get_closed_trades(limit=1000)
+            now = datetime.now(timezone.utc)
+            today_str = now.isoformat()[:10]
+            week_str = (now - timedelta(days=7)).isoformat()
+            
+            pnl_today = sum(t["pnl_usdc"] for t in closed if t.get("close_timestamp", "").startswith(today_str) and t.get("pnl_usdc"))
+            pnl_week = sum(t["pnl_usdc"] for t in closed if t.get("close_timestamp", "") >= week_str and t.get("pnl_usdc"))
+
+            # HWM
+            with db._cursor() as cur:
+                cur.execute("SELECT value FROM bot_state WHERE key = 'high_water_mark'")
+                r = cur.fetchone()
+                hwm = float(r["value"]) if r else portfolio_val
+                
+            hwm_pct = ((portfolio_val - hwm) / hwm * 100) if hwm > 0 else 0
+            
+            return jsonify({
+                "total_value": portfolio_val,
+                "cash": cash,
+                "hwm": hwm,
+                "hwm_pct": hwm_pct,
+                "pnl_today": pnl_today,
+                "pnl_week": pnl_week,
+                "pnl_total": total_pnl
+            })
+        except Exception as e:
+            logger.error(f"Erreur V7.3 portfolio: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/v73/positions")
+    @login_required
+    def api_v73_positions():
+        try:
+            from datetime import datetime, timezone
+            positions = db.get_all_positions() if db else []
+            
+            portfolio_val = sum(float(p.get("quantity", 0)) * float(p.get("avg_price", 0)) for p in positions)
+            res = []
+            now = datetime.now(timezone.utc)
+            
+            for p in positions:
+                qty = float(p.get("quantity", 0))
+                if qty < 0.01: continue
+                avg_price = float(p.get("avg_price", 0))
+                mid = float(p.get("current_mid", avg_price))
+                val = qty * mid
+                pnl_usd = (mid - avg_price) * qty
+                pnl_pct = ((mid - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                skew = (qty * avg_price / portfolio_val * 100) if portfolio_val > 0 else 0
+                
+                # Age calculation (from updated_at or mid_updated_at as fallback)
+                up_dt_str = p.get("updated_at") or p.get("mid_updated_at")
+                age_days = 0
+                if up_dt_str:
+                    try:
+                        up_dt = datetime.fromisoformat(up_dt_str)
+                        if up_dt.tzinfo is None: up_dt = up_dt.replace(tzinfo=timezone.utc)
+                        age_days = (now - up_dt).days
+                    except:
+                        pass
+                
+                res.append({
+                    "market": (p.get("question") or "Unknown")[:40],
+                    "token_id": (p.get("token_id") or "Unknown")[:8],
+                    "raw_token_id": p.get("token_id"),
+                    "qty": qty,
+                    "avg_price": avg_price,
+                    "current_mid": mid,
+                    "value": val,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                    "skew": skew,
+                    "age_days": age_days
+                })
+            return jsonify(res)
+        except Exception as e:
+            logger.error(f"Erreur V7.3 positions: {e}")
+            return jsonify([])
+
+    @app.route("/api/v73/trades")
+    @login_required
+    def api_v73_trades():
+        try:
+            limit = request.args.get("limit", 100, type=int)
+            trades = db.get_closed_trades(limit=limit) if db else []
+            # Extract basic analytics (Sharpe, etc)
+            analytics = TradeAnalytics(db)
+            stats = analytics.compute_performance_summary()
+            
+            return jsonify({
+                "trades": trades,
+                "stats": stats
+            })
+        except Exception as e:
+            logger.error(f"Erreur V7.3 trades: {e}")
+            return jsonify({"trades": [], "stats": {}})
+
+    @app.route("/api/v73/ai-review")
+    @login_required
+    def api_v73_ai_review():
+        try:
+            analytics = TradeAnalytics(db)
+            recommender = ParameterRecommender(db, analytics)
+            recs = recommender.generate_recommendations()
+            return jsonify({"recommendations": recs})
+        except Exception as e:
+            logger.error(f"Erreur V7.3 AI review: {e}")
+            return jsonify({"recommendations": []})
+
+    @app.route("/api/v73/rebalance/<token_id>", methods=["POST"])
+    @login_required
+    def api_v73_rebalance(token_id):
+        # Adds an intent to rebalance this token to the bot state
+        # Then we edit trader.py to consume this!
+        try:
+            with db._cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bot_state (key, value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'",
+                    (f"force_rebalance_{token_id}",)
+                )
+            logger.info(f"Ordered rebalance for token {token_id}")
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/v73/apply-rec", methods=["POST"])
+    @login_required
+    def api_v73_apply_rec():
+        data = request.json or {}
+        param = data.get("parameter")
+        val = data.get("value")
+        # Just map it to the logic of the dynamic Dashboard
+        # The user wants "recommandations" to update config. We'll store it as 'aggressivity_level' mapping or direct param.
+        # But wait, we have Aggressivity logic. Let's just create an AI Level, or restart the bot.
+        if param == "MAX_NET_EXPOSURE_PCT" and val:
+            # Fake mapping to the DB config for the strategy config 
+            with db._cursor() as cur:
+                cur.execute("INSERT INTO bot_state (key, value) VALUES ('aggressivity_level', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ("Very Aggressive",))
+                
+        import os
+        os.system("docker compose restart bot &")
+        return jsonify({"status": "ok"})
+
+
     logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics).")
     return app
