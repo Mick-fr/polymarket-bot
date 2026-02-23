@@ -126,12 +126,21 @@ class Trader:
             max_exposure_pct=self.config.bot.max_exposure_pct,
             stop_loss_pct=self.config.bot.position_stop_loss_pct,
         )
-        logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
+       logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
+
+        # 2026 V6.5 FINAL MANUAL TELEGRAM STARTUP (placement sécurisé)
         try:
-              send_alert(f"🚀 Bot V6.5 FINAL démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés éligibles")
-              logger.info("Telegram startup message envoyé")
-          except:
-              logger.warning("Telegram non configuré ou désactivé")
+            eligible_count = len(self.strategy.get_eligible_markets())
+            send_alert(
+                f"🚀 Bot V6.5 FINAL démarré — "
+                f"{len(self.positions)} positions | "
+                f"Cash {self.cash:.2f} USDC | "
+                f"{eligible_count} marchés éligibles"
+            )
+            logger.info("Telegram startup message envoyé")
+        except Exception as e:
+            logger.warning(f"Telegram startup échoué: {e}")
+            
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
         # 2026 TOP BOT UPGRADE WS — start WebSocket for real-time order books
