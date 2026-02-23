@@ -139,54 +139,24 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             return f'{sim_badge}<span class="kill-indicator kill-active"><span class="kill-dot"></span>BOT ARRETE</span>'
         return f'{sim_badge}<span class="kill-indicator kill-inactive"><span class="kill-dot"></span>BOT ACTIF</span>'
 
-    @app.route("/api/kill-switch-ui")
+    # 2026 V7.1 FIX KILL SWITCH — bidirectional
+    @app.route("/resume", methods=["POST"])
     @login_required
-    def api_kill_switch_ui():
-        """Bouton kill switch."""
-        active = db.get_kill_switch()
-        if active:
-            return """
-            <div style="display:flex; align-items:center; gap:16px;">
-                <span style="font-size:0.95rem;">Le bot est actuellement <strong class="text-red">en pause</strong>.</span>
-                <button class="btn btn-success"
-                        hx-post="/api/kill-switch"
-                        hx-vals='{"action": "off"}'
-                        hx-target="#kill-switch-area"
-                        hx-swap="innerHTML">
-                    Relancer le bot
-                </button>
-            </div>
-            """
-        return """
-        <div style="display:flex; align-items:center; gap:16px;">
-            <span style="font-size:0.95rem;">Le bot est actuellement <strong class="text-green">actif</strong>.</span>
-            <button class="btn btn-danger"
-                    hx-post="/api/kill-switch"
-                    hx-vals='{"action": "on"}'
-                    hx-target="#kill-switch-area"
-                    hx-swap="innerHTML"
-                    hx-confirm="Confirmer l'arret d'urgence du bot ?">
-                ARRET D'URGENCE
-            </button>
-        </div>
-        """
+    def api_resume():
+        import os
+        db.set_kill_switch(False)
+        logger.info("[DASHBOARD] Bot resumed by user")
+        db.add_log("INFO", "dashboard", "[DASHBOARD] Bot resumed by user")
+        os.system("docker compose restart bot &")
+        return jsonify({"status": "ok"})
 
-    @app.route("/api/kill-switch", methods=["POST"])
+    @app.route("/kill", methods=["POST"])
     @login_required
-    def api_kill_switch_toggle():
-        """Active ou désactive le kill switch."""
-        action = request.form.get("action") or (request.json or {}).get("action")
-        if action == "on":
-            db.set_kill_switch(True)
-            logger.warning("Kill switch ACTIVE via dashboard.")
-            db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
-        elif action == "off":
-            db.set_kill_switch(False)
-            logger.info("Kill switch DESACTIVE via dashboard.")
-            db.add_log("INFO", "dashboard", "Kill switch DESACTIVE")
-
-        # Retourne le nouveau bouton via htmx
-        return api_kill_switch_ui()
+    def api_kill():
+        db.set_kill_switch(True)
+        logger.warning("Kill switch ACTIVE via dashboard.")
+        db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
+        return jsonify({"status": "ok"})
 
     @app.route("/api/orders")
     @login_required
