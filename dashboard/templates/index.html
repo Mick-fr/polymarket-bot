@@ -1060,7 +1060,7 @@
             .then(() => { setTimeout(loadPortfolio, 500); toast(action === 'kill' ? '⏹ Bot arrêté' : '▶ Bot redémarré', action === 'kill' ? 'error' : 'success'); });
     }
 
-    // ── V8.0 Strategy Selector ─────────────────────────────────
+    // ── V8.1 Strategy Selector ─────────────────────────────────
     function setStrategy(mode) {
         const ind = document.getElementById('strategy-display');
         ind.textContent = '⏳ ...';
@@ -1070,7 +1070,11 @@
             body: JSON.stringify({ mode })
         }).then(r => r.json()).then(d => {
             if (d.status === 'ok') {
-                toast(`🎯 Stratégie → <strong>${d.mode}</strong> activée`, 'info');
+                if (d.mode === 'Info Edge Only') {
+                    toast('⚡ <strong>Info Edge Only activé</strong> — seulement BTC/ETH 5-60min, OBI désactivé', 'success');
+                } else {
+                    toast(`🎯 Stratégie → <strong>${d.mode}</strong> activée`, 'info');
+                }
                 setTimeout(syncLiveConfig, 400);
             } else {
                 toast('❌ ' + (d.error || 'Erreur'), 'error');

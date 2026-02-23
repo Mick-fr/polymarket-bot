@@ -449,16 +449,21 @@ class Trader:
             except Exception as e_ac:
                 logger.error("[SAFE MODE] Erreur check_auto_close_copied: %s", e_ac)
 
-        # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
-        #    Récupérer les marchés éligibles pour les partager avec CTF arb
-        # HOTFIX 2026-02-22 + 2026 TOP BOT — try/except pour sécurité cycle
+        # 6. Stratégie OBI / Info Edge → signaux (balance passée pour sizing dynamique)
+        # HOTFIX V8.1 — strategy_mode lu chaque cycle depuis la DB pour enforcement strict
         logger.info("[Cycle] Étape 6: analyse OBI / InfoEdge → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
         try:
             signals = []
-            info_edge_only = self.db.get_config("info_edge_only", "false") == "true"
-            if info_edge_only:
-                signals = self.info_edge_strategy.analyze(balance=balance)
+            strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+            
+            if strategy_mode == "Info Edge Only":
+                # MODE STRICT : désactiver OBI totalement, seuls BTC/ETH 5-60min
+                logger.info("[Cycle] Mode INFO EDGE ONLY → OBI désactivé, universe BTC/ETH 5-60min uniquement")
+                if hasattr(self, "info_edge_strategy"):
+                    signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
             else:
+                # Modes MM : OBI classique + Info Edge en complément
+                self.strategy._apply_live_aggressivity()
                 signals = self.strategy.analyze(balance=balance)
                 if hasattr(self, "info_edge_strategy"):
                     signals.extend(self.info_edge_strategy.analyze(balance=balance))
@@ -466,7 +471,8 @@ class Trader:
             logger.error("[Cycle] Erreur analyse OBI/InfoEdge: %s — signals=[]. Cycle continue.", _e6)
             self.db.add_log("ERROR", "trader", f"Erreur OBI/InfoEdge analyze: {_e6}")
             signals = []
-        logger.info("[Cycle] Étape 6: %d signal(s) généré(s)", len(signals))
+        logger.info("[Cycle] Étape 6: %d signal(s) généré(s) [mode=%s]", len(signals), self.db.get_config("strategy_mode", "MM Balanced"))
+
 
         # 7. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
         logger.info("[Cycle] Étape 7: CTF arb check")

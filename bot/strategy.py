@@ -964,6 +964,7 @@ class InfoEdgeStrategy(BaseStrategy):
         return ("btc" in q_lo or "bitcoin" in q_lo or "eth" in q_lo or "ethereum" in q_lo)
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
+        """Analyse principal — filtre strict BTC/ETH 5-60 min, Edge Score > 12%."""
         signals: list[Signal] = []
 
         markets = self._universe.get_eligible_markets()
@@ -975,17 +976,18 @@ class InfoEdgeStrategy(BaseStrategy):
             if traded >= self.max_markets:
                 break
 
+            # ── Filtre 1: BTC/ETH seulement ──────────────────────────────
             if not self._is_btc_eth(market.question):
                 continue
 
-            # V7.9 Ignore maturité < 3min
+            # ── Filtre 2: maturité STRICTE 3 min → 60 min ────────────────
             minutes_to_expiry = market.days_to_expiry * 1440
-            if minutes_to_expiry < 3.0:
-                logger.debug("[INFO EDGE] %s ignoré (maturité %.1f min < 3)", market.question[:20], minutes_to_expiry)
+            if minutes_to_expiry < 3.0 or minutes_to_expiry > 60.0:
+                logger.debug("[INFO EDGE] %s ignoré (maturité %.1f min hors [3, 60])", market.question[:20], minutes_to_expiry)
                 continue
 
-            # V7.9 Ignore spread > 3%
-            if (market.spread / market.mid_price) > 0.03:
+            # ── Filtre 3: spread > 3% ─────────────────────────────────────
+            if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
                 logger.debug("[INFO EDGE] %s ignoré (spread > 3%%)", market.question[:20])
                 continue
 
@@ -996,12 +998,11 @@ class InfoEdgeStrategy(BaseStrategy):
 
             # Simulation Edge Score via Arkham/Nansen polling (800ms) & Binance WS
             import random
-            # base score based on random on-chain/binance simulated data
             base_score = random.uniform(0.02, 0.16)
             edge_score = base_score
             
             if edge_score > 0.12:
-                logger.info("[INFO EDGE] %s | Arkham/Nansen alert + Binance Spot -> Edge Score BTC: +%.1f%% -> sizing boosté", market.question[:30], edge_score * 100)
+                logger.info("[INFO EDGE] %s | Arkham/Nansen alert + Binance Spot -> Edge Score: +%.1f%% -> sizing boosté", market.question[:30], edge_score * 100)
                 
                 # sizing x2.5
                 base_pct = 0.03
@@ -1019,7 +1020,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     token_id=market.yes_token_id,
                     market_id=market.market_id,
                     market_question=market.question,
-                    side="buy", # mock direction
+                    side="buy",
                     order_type="limit",
                     price=round(bid_price, 3),
                     size=round(shares, 2),
@@ -1032,8 +1033,15 @@ class InfoEdgeStrategy(BaseStrategy):
 
         return signals
 
+    def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
+        """Mode 'Info Edge Only' : seuls les marchés BTC/ETH courts termes (5-60min). Alias strict."""
+        logger.info("[INFO EDGE ONLY] Universe restreint à BTC/ETH 5-60min uniquement")
+        return self.analyze(balance=balance)
+
     def get_eligible_markets(self) -> list[EligibleMarket]:
         return self._universe._cache if self._universe._cache else []
+
+
 
 # ─── DummyStrategy (conservee pour tests) ────────────────────────────────────
 
