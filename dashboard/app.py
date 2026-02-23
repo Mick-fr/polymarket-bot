@@ -36,7 +36,45 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @login_required
     def index():
         """Dashboard principal."""
-        return render_template("index.html")
+        from datetime import datetime, timezone, timedelta
+        
+        positions = db.get_all_positions() if db else []
+        cash = 0
+        balances = db.get_balance_timeseries(limit=1)
+        if balances:
+            cash = balances[0]["balance"]
+        
+        portfolio_val = cash + sum(float(p.get("quantity") or 0) * float(p.get("current_mid") or p.get("avg_price") or 0) for p in positions)
+        
+        pnl_summary = db.get_pnl_summary() if db else {}
+        total_pnl = pnl_summary.get("total_pnl", 0)
+        
+        closed = db.get_closed_trades(limit=1000)
+        now = datetime.now(timezone.utc)
+        today_str = now.isoformat()[:10]
+        week_str = (now - timedelta(days=7)).isoformat()
+        
+        pnl_today = sum(t["pnl_usdc"] for t in closed if t.get("close_timestamp", "").startswith(today_str) and t.get("pnl_usdc"))
+        pnl_week = sum(t["pnl_usdc"] for t in closed if t.get("close_timestamp", "") >= week_str and t.get("pnl_usdc"))
+
+        # HWM
+        with db._cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = 'high_water_mark'")
+            r = cur.fetchone()
+            hwm = float(r["value"]) if r else portfolio_val
+            
+        hwm_pct = ((portfolio_val - hwm) / hwm * 100) if hwm > 0 else 0
+
+        return render_template(
+            "index.html",
+            portfolio_val=portfolio_val,
+            cash=cash,
+            hwm=hwm,
+            hwm_pct=hwm_pct,
+            pnl_today=pnl_today,
+            pnl_week=pnl_week,
+            total_pnl=total_pnl
+        )
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -556,7 +594,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 cash = balances[0]["balance"]
             
             # Value = cash + inventory value mid
-            portfolio_val = cash + sum(float(p.get("quantity", 0)) * float(p.get("current_mid", p.get("avg_price", 0))) for p in positions)
+            portfolio_val = cash + sum(float(p.get("quantity") or 0) * float(p.get("current_mid") or p.get("avg_price") or 0) for p in positions)
             
             # PnL logic
             pnl_summary = db.get_pnl_summary() if db else {}
@@ -600,15 +638,15 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             from datetime import datetime, timezone
             positions = db.get_all_positions() if db else []
             
-            portfolio_val = sum(float(p.get("quantity", 0)) * float(p.get("avg_price", 0)) for p in positions)
+            portfolio_val = sum(float(p.get("quantity") or 0) * float(p.get("avg_price") or 0) for p in positions)
             res = []
             now = datetime.now(timezone.utc)
             
             for p in positions:
-                qty = float(p.get("quantity", 0))
+                qty = float(p.get("quantity") or 0)
                 if qty < 0.01: continue
-                avg_price = float(p.get("avg_price", 0))
-                mid = float(p.get("current_mid", avg_price))
+                avg_price = float(p.get("avg_price") or 0)
+                mid = float(p.get("current_mid") or avg_price or 0)
                 val = qty * mid
                 pnl_usd = (mid - avg_price) * qty
                 pnl_pct = ((mid - avg_price) / avg_price * 100) if avg_price > 0 else 0

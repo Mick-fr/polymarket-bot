@@ -220,22 +220,36 @@
     <div class="grid-4" id="portfolio-panel">
         <div class="stat-box">
             <div class="stat-label">Total Portfolio</div>
-            <div class="stat-value" id="val-total">--</div>
-            <div style="font-size:0.85rem; color:#888;">Cash: <span id="val-cash" style="color:#fff;">--</span></div>
+            <div class="stat-value" id="val-total">${{ "%.2f"|format(portfolio_val) if portfolio_val != None else "0.00"
+                }}</div>
+            <div style="font-size:0.85rem; color:#888;">Cash: <span id="val-cash" style="color:#fff;">${{
+                    "%.2f"|format(cash) if cash != None else "0.00" }}</span></div>
         </div>
         <div class="stat-box">
             <div class="stat-label">High Water Mark (HWM)</div>
-            <div class="stat-value" id="val-hwm">--</div>
-            <div style="font-size:0.85rem;" id="val-hwm-pct">--</div>
+            <div class="stat-value" id="val-hwm">${{ "%.2f"|format(hwm) if hwm != None else "0.00" }}</div>
+            <div style="font-size:0.85rem;" id="val-hwm-pct">Depuis HWM:
+                <span class="{{ 'text-red' if hwm_pct < 0 else 'text-green' }}">{{ "+" if hwm_pct > 0 else "" }}{{
+                    "%.2f"|format(hwm_pct) if hwm_pct != None else "0.00" }}%</span>
+            </div>
         </div>
         <div class="stat-box">
             <div class="stat-label">PnL du Jour</div>
-            <div class="stat-value" id="val-pnl-today">--</div>
-            <div style="font-size:0.85rem;" id="val-pnl-week">-- sur 7j</div>
+            <div class="stat-value" id="val-pnl-today">
+                <span class="{{ 'text-red' if pnl_today < 0 else 'text-green' }}">{{ "+" if pnl_today > 0 else "" }}${{
+                    "%.2f"|format(pnl_today|abs) if pnl_today != None else "0.00" }}</span>
+            </div>
+            <div style="font-size:0.85rem;" id="val-pnl-week">
+                <span class="{{ 'text-red' if pnl_week < 0 else 'text-green' }}">{{ "+" if pnl_week > 0 else "" }}${{
+                    "%.2f"|format(pnl_week|abs) if pnl_week != None else "0.00" }}</span> sur 7j
+            </div>
         </div>
         <div class="stat-box">
             <div class="stat-label">Total PnL</div>
-            <div class="stat-value" id="val-pnl-total">--</div>
+            <div class="stat-value" id="val-pnl-total">
+                <span class="{{ 'text-red' if total_pnl < 0 else 'text-green' }}">{{ "+" if total_pnl > 0 else "" }}${{
+                    "%.2f"|format(total_pnl|abs) if total_pnl != None else "0.00" }}</span>
+            </div>
             <div style="font-size:0.85rem; color:#888;">Win Rate: <span id="val-winrate" class="text-accent">--</span>
             </div>
         </div>
@@ -249,7 +263,8 @@
 
     <!-- 2. POSITIONS EN COURS -->
     <div class="card">
-        <h3 class="card-title">Positions en cours <span class="badge badge-gray" id="pos-count">0</span></h3>
+        <h3 class="card-title">Positions en cours <span class="badge badge-gray" id="pos-count">{{ positions|length
+                }}</span></h3>
         <div style="overflow-x: auto;">
             <table id="positions-table">
                 <thead>
@@ -267,9 +282,36 @@
                     </tr>
                 </thead>
                 <tbody>
+                    {% if positions %}
+                    {% for p in positions %}
                     <tr>
-                        <td colspan="10" style="text-align:center;">Chargement des positions...</td>
+                        <td title="{{ p.market }}">{{ p.market }}</td>
+                        <td><span class="badge badge-gray">{{ p.token_id }}</span></td>
+                        <td>{{ "%.2f"|format(p.qty) }}</td>
+                        <td>${{ "%.3f"|format(p.avg_price) }}</td>
+                        <td>${{ "%.3f"|format(p.current_mid) }}</td>
+                        <td>${{ "%.2f"|format(p.value) }}</td>
+                        <td>
+                            <span class="{{ 'text-red' if p.pnl_usd < 0 else 'text-green' }}">
+                                {{ "+" if p.pnl_usd > 0 else "" }}${{ "%.2f"|format(p.pnl_usd|abs) }}
+                            </span>
+                            (
+                            <span class="{{ 'text-red' if p.pnl_pct < 0 else 'text-green' }}">
+                                {{ "+" if p.pnl_pct > 0 else "" }}{{ "%.2f"|format(p.pnl_pct|abs) }}%
+                            </span>
+                            )
+                        </td>
+                        <td>{{ "%.1f"|format(p.skew) }}%</td>
+                        <td>{{ p.age_days }} j</td>
+                        <td><button class="btn btn-outline" style="padding: 4px 8px; font-size:0.75rem;"
+                                onclick="rebalanceToken('{{ p.raw_token_id }}')">Rebalance</button></td>
                     </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr>
+                        <td colspan="10" style="text-align:center;">Inventaire vide</td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
