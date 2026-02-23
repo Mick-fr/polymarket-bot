@@ -442,7 +442,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
         self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
 
-    # 2026 V7.2/7.3.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    # 2026 V7.2/7.3.4 LIVE AGGRESSIVITY DASHBOARD CONTROL
     def _apply_live_aggressivity(self):
         """Met a jour les parametres de la strategie en fonction du dashboard live."""
         if not self.db:
@@ -477,6 +477,18 @@ class OBIMarketMakingStrategy(BaseStrategy):
         else:
             self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
             self.sizing_mult = 1.0
+        # 2026 V7.3.4 — log on change
+        if not hasattr(self, '_last_agg_level'):
+            self._last_agg_level = ""
+        if level != self._last_agg_level:
+            logger.info("[Config] Strategy aggressivity loaded: %s (skew=%.2f, sizing=%.2f, max_order=%.0f)",
+                        level, self.inv_skew_threshold, self.sizing_mult, self.max_order_size_usdc)
+            self._last_agg_level = level
+
+    # 2026 V7.3.4 — alias public pour trader.py
+    def reload_sizing(self):
+        """Recharge les paramètres de sizing depuis la DB (appelé par trader à chaque cycle)."""
+        self._apply_live_aggressivity()
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         self._apply_live_aggressivity()

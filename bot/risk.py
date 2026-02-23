@@ -66,6 +66,31 @@ class RiskManager:
         # En paper trading, le circuit breaker est désactivé pour ne pas
         # interrompre la simulation à cause des positions initiales corrompues
         self._paper_trading = getattr(config, "paper_trading", False)
+        # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — track last level for change detection
+        self._last_agg_level: str = ""
+
+    # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — rechargement dynamique chaque cycle
+    AGGRESSIVITY_MAP = {
+        "Conservative":     {"max_exposure_pct": 0.18},
+        "Balanced":         {"max_exposure_pct": 0.25},
+        "Aggressive":       {"max_exposure_pct": 0.35},
+        "Very Aggressive":  {"max_exposure_pct": 0.45},
+    }
+
+    def reload_aggressivity(self):
+        """Relit aggressivity_level depuis la DB et met à jour max_exposure_pct."""
+        try:
+            level = self.db.get_aggressivity_level()
+            params = self.AGGRESSIVITY_MAP.get(level)
+            if params:
+                self.config.max_exposure_pct = params["max_exposure_pct"]
+            # Log only on change
+            if level != self._last_agg_level:
+                logger.info("[Config] Aggressivity level loaded: %s (max_expo=%.0f%%)",
+                            level, self.config.max_exposure_pct * 100)
+                self._last_agg_level = level
+        except Exception as e:
+            logger.warning("[Config] reload_aggressivity error: %s", e)
 
     def check(self, signal: Signal, current_balance: float,
               portfolio_value: float = 0.0) -> RiskVerdict:

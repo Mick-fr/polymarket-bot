@@ -323,6 +323,11 @@ class Trader:
                 self._kill_switch_alerted = True
             return
 
+        # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — rechargement dynamique chaque cycle
+        self.risk.reload_aggressivity()
+        if self.strategy:
+            self.strategy.reload_sizing()
+
         # 2. Connectivité API — is_alive() avec timeout implicite de la lib
         logger.info("[Cycle] Étape 2: vérification connectivité API")
         if not self.pm_client.is_alive():
