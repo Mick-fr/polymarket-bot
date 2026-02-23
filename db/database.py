@@ -1198,6 +1198,8 @@ class Database:
             self.set_kill_switch(False)
             self.set_config("bot_active", "true")
             self.set_config("kill_switch_reason", "")
+            self.set_config("safe_mode", "true")
+            self.set_config("aggressivity_level", "Safe")
             
             if current_balance > 0:
                 self.update_high_water_mark(current_balance)

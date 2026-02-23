@@ -206,6 +206,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         ks = db.get_kill_switch()
         active = db.get_config("bot_active", "true") != "false"
         reason = db.get_config("kill_switch_reason", "") or None
+        safe_mode = db.get_config("safe_mode", "true") == "true"
         hwm = db.get_high_water_mark() if hasattr(db, 'get_high_water_mark') else 0.0
         portfolio = float(db.get_config("last_portfolio_value", 0) or 0)
         return jsonify({
@@ -213,9 +214,24 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             "kill_switch": ks,
             "bot_active": active,
             "reason": reason,
+            "safe_mode": safe_mode,
             "hwm": hwm,
             "portfolio": portfolio
         })
+
+    # 2026 V7.8 SAFE MODE Toggle
+    @app.route("/api/toggle-safe-mode", methods=["POST"])
+    @login_required
+    def api_toggle_safe_mode():
+        current = db.get_config("safe_mode", "true") == "true"
+        new_state = not current
+        db.set_config("safe_mode", "true" if new_state else "false")
+        if new_state:
+            db.set_config("aggressivity_level", "Safe")
+        logger.info("[DASHBOARD] Safe Mode toggled to %s", new_state)
+        import os
+        os.system("touch /tmp/reload_aggressivity.flag")
+        return jsonify({"status": "ok", "safe_mode": new_state})
 
     # 2026 V7.6 — Force reset kill switch (circuit breaker or manual)
     @app.route("/api/reset-kill-switch", methods=["POST"])

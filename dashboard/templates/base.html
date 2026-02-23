@@ -570,6 +570,11 @@
                 } else {
                     banner.classList.remove('visible');
                 }
+
+                // V7.8 Safe Mode
+                if (typeof updateSafeModeUI === 'function') {
+                    updateSafeModeUI(d.safe_mode);
+                }
             }).catch(function () { });
         }
         function resetKillSwitch() {

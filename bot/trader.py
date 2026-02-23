@@ -433,6 +433,12 @@ class Trader:
         # Déclenché ici (après cancel+replace) pour éviter les doubles SELL.
         if not self.config.bot.paper_trading:
             self._maybe_liquidate_partial(balance, portfolio_value)
+            
+            # V7.8 SAFE MODE: Auto-close positions copiées à -40% PnL
+            try:
+                self.risk.check_auto_close_copied(self.pm_client, self.db.get_all_positions())
+            except Exception as e_ac:
+                logger.error("[SAFE MODE] Erreur check_auto_close_copied: %s", e_ac)
 
         # 6. Stratégie OBI → signaux (balance passée pour sizing dynamique)
         #    Récupérer les marchés éligibles pour les partager avec CTF arb

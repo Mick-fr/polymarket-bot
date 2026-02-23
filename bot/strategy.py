@@ -444,6 +444,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
     # 2026 V7.3.8 OVERRIDE CONSTANTES DB — full preset mapping
     AGGRESSIVITY_PRESETS = {
+        "Safe":            {"order_size_pct": 0.018, "max_net_exposure_pct": 0.22, "inventory_skew_threshold": 0.35, "sizing_mult": 0.50, "max_order_usd": 10},
         "Conservative":    {"order_size_pct": 0.025, "max_net_exposure_pct": 0.18, "inventory_skew_threshold": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
         "Balanced":        {"order_size_pct": 0.03,  "max_net_exposure_pct": 0.25, "inventory_skew_threshold": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
         "Aggressive":      {"order_size_pct": 0.035, "max_net_exposure_pct": 0.35, "inventory_skew_threshold": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
@@ -503,6 +504,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
             balance, order_size_usdc, applied_order_size_pct * 100, applied_sizing_mult, self.max_order_size_usdc,
         )
 
+        # 2026 V7.8 SAFE MODE
+        safe_mode = getattr(self.db, "get_config", lambda k, d: "false")("safe_mode", "false") == "true" if self.db else False
+        applied_max_markets = 8 if safe_mode else self.max_markets
+
         markets = self._universe.get_eligible_markets()
         if not markets:
             logger.info("[OBI] Aucun marche eligible.")
@@ -510,7 +515,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
         traded = 0
         for market in markets:
-            if traded >= self.max_markets:
+            if traded >= applied_max_markets:
                 break
 
             # ── Verification cooldown news-breaker ──
@@ -523,6 +528,15 @@ class OBIMarketMakingStrategy(BaseStrategy):
             if (time.time() - last_quote) < self._quote_cooldown:
                 logger.debug("[OBI] '%s' re-cotation trop rapide, skip.", market.question[:40])
                 continue
+
+            # ── V7.8 Safe Mode Filters ──
+            if safe_mode:
+                if market.days_to_expiry < 3.0:
+                    logger.debug("[SAFE MODE] Ignoré '%s': maturité %.1fj < 3", market.question[:20], market.days_to_expiry)
+                    continue
+                if (market.spread / market.mid_price) > 0.04:
+                    logger.debug("[SAFE MODE] Ignoré '%s': spread > 4%%", market.question[:20])
+                    continue
 
             # ── Skip tokens inactifs (tous mécanismes mid ont échoué) ──────────
             # Évite 1 req get_order_book inutile par cycle pour les marchés
@@ -566,6 +580,11 @@ class OBIMarketMakingStrategy(BaseStrategy):
             if obi_result is None:
                 logger.info("[OBI] OBI non calculable pour '%s' (carnet vide sans fallback Gamma)",
                             market.question[:40])
+                continue
+
+            # V7.8 Safe Mode OBI filter
+            if safe_mode and abs(obi_result.obi) < 0.18:
+                logger.debug("[SAFE MODE] Ignoré '%s': OBI %.2f < 0.18", market.question[:20], obi_result.obi)
                 continue
 
             # ── News-Breaker : detection mouvement rapide (Set B: 7% au lieu de 10%) ──
@@ -662,11 +681,15 @@ class OBIMarketMakingStrategy(BaseStrategy):
             # ── Tweak 3 : Maturity-aware sizing ──
             # Marches < 3 jours de maturite = plus volatils → taille /2
             maturity_factor = MATURITY_SHORT_FACTOR if market.days_to_expiry < MATURITY_SHORT_DAYS else 1.0
-            effective_size = order_size_usdc * maturity_factor * copy_sizing
-            if maturity_factor < 1.0:
+            
+            # V7.8 Safe Mode BTC
+            btc_factor = 0.5 if (safe_mode and "btc" in market.question.lower()) else 1.0
+
+            effective_size = order_size_usdc * maturity_factor * copy_sizing * btc_factor
+            if maturity_factor < 1.0 or btc_factor < 1.0:
                 logger.info(
-                    "[OBI] Maturite courte (%.1fj < %.0fj) -> sizing x%.1f = %.2f USDC",
-                    market.days_to_expiry, MATURITY_SHORT_DAYS, maturity_factor, effective_size,
+                    "[OBI] Sizing ajusté (maturité=%.1f, btc=%.1f) -> %.2f USDC",
+                    maturity_factor, btc_factor, effective_size,
                 )
 
             # Sizing base sur prix (nombre de shares pour depenser effective_size)

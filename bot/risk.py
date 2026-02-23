@@ -72,6 +72,7 @@ class RiskManager:
 
     # 2026 V7.3.9 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
     AGGRESSIVITY_MAP = {
+        "Safe":             {"max_exposure_pct": 0.22},
         "Conservative":     {"max_exposure_pct": 0.18},
         "Balanced":         {"max_exposure_pct": 0.25},
         "Aggressive":       {"max_exposure_pct": 0.35},
@@ -380,3 +381,37 @@ class RiskManager:
     def update_high_water_mark(self, balance: float):
         """Appeler à chaque cycle après avoir récupéré le solde."""
         self.db.update_high_water_mark(balance)
+
+    def check_auto_close_copied(self, client, positions: list[dict]):
+        """V7.8 SAFE MODE: Auto-close automatique à -40 % unrealized sur TOUTES les positions copiées."""
+        safe_mode = self.db.get_config("safe_mode", "true") == "true"
+        if not safe_mode:
+            return
+            
+        try:
+            with self.db._cursor() as cur:
+                cur.execute("SELECT DISTINCT token_id FROM copy_trades")
+                copied_tokens = {r["token_id"] for r in cur.fetchall()}
+        except Exception:
+            return
+            
+        if not copied_tokens:
+            return
+            
+        for p in positions:
+            token_id = p.get("token_id", "")
+            qty = p.get("quantity", 0.0)
+            if qty <= 0 or token_id not in copied_tokens:
+                continue
+                
+            avg_price = p.get("avg_price", 0.0)
+            mid_price = p.get("current_mid", 0.0)
+            if avg_price > 0 and mid_price > 0:
+                pnl_pct = (mid_price - avg_price) / avg_price
+                if pnl_pct <= -0.40:
+                    logger.warning("[SAFE MODE] Auto-close position copiée '%s' (PnL %.1f%% <= -40%%)", token_id[:20], pnl_pct * 100)
+                    try:
+                        client.create_order(token_id=token_id, side="sell", order_type="market", size=qty)
+                        self.db.add_log("WARNING", "risk", f"[SAFE MODE] Auto-close copie {token_id[:10]} à {pnl_pct * 100:.1f}%")
+                    except Exception as e:
+                        logger.error("Erreur auto-close safe_mode %s: %s", token_id[:16], e)
