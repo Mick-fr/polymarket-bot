@@ -151,7 +151,7 @@ class MarketUniverse:
         self._cache_ts = now
         return eligible
 
-    # 2026 V6.4 ULTRA-SURGICAL
+    # 2026 V6.5 ULTRA-CHIRURGICAL
     def _detect_cross_arbitrage(self, event_id: str, bids: list, asks: list):
         if bids and max(b[0] for b in bids) >= 1.22:
             delta = max(b[0] for b in bids) - 1.0
@@ -159,7 +159,7 @@ class MarketUniverse:
         if asks and min(a[0] for a in asks) <= 0.78:
             delta = 1.0 - min(a[0] for a in asks)
             logger.warning(f"[ARB] {event_id} asks={delta:.1%}")
-        # 2026 V6.4 SPAM ZERO - plus aucun autre log ARB
+        # 2026 V6.5 SPAM ZERO - plus aucun autre log ARB
 
     def _fetch_gamma_markets(self, limit: int = 100) -> list[dict]:
         url = (
@@ -566,7 +566,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     ai_prob = cached[0]
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
-                # 2026 V6.4 ULTRA-SURGICAL
+                # 2026 V6.5 ULTRA-CHIRURGICAL
                 if ai_prob >= 0.0:
                     delta = ai_prob - mid
                     skew = delta * 4.0 * self.ai_weight

@@ -134,13 +134,13 @@ class Trader:
             try:
                 eligible = self.strategy.get_eligible_markets()
                 
-                # 2026 V6.4 ULTRA-SURGICAL
-                positions = self.db.get_all_positions() if self.db else []
-                cash = balance
-                eligible = len(self.strategy.get_eligible_markets() if self.strategy else [])
+                # 2026 V6.5 ULTRA-CHIRURGICAL
+                self.positions = self.db.get_all_positions() if self.db else []
+                self.cash = balance
+                eligible = self.strategy.get_eligible_markets() if self.strategy else []
                 from bot.telegram import send_alert
                 if self.config.bot.telegram_enabled:
-                    send_alert(f"🚀 Bot V6.4 ULTRA démarré — {len(positions)} positions | Cash {cash:.2f} USDC | {eligible} marchés éligibles")
+                    send_alert(f"🚀 Bot V6.5 ULTRA démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés")
                 
                 ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
                 if ws_tokens:
@@ -336,7 +336,7 @@ class Trader:
             self._connect()
         logger.info("[Cycle] Étape 2: API OK")
         
-        # 2026 V6.4 ULTRA-SURGICAL
+        # 2026 V6.5 ULTRA-CHIRURGICAL
         try:
             active_markets = getattr(self.pm_client.ws_client, "active_markets", [])
             logger.info(f"[WS] Subscribed to {len(active_markets)} active markets")
@@ -437,7 +437,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 V6.4 ULTRA-SURGICAL
+        # 2026 V6.5 ULTRA-CHIRURGICAL
         if len(signals) >= 2:
             logger.info(f"[BATCH] {len(signals)} ordres envoyés en 1 call")
             

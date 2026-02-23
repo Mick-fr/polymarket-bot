@@ -73,7 +73,7 @@ class BotConfig:
     telegram_token: str = ""
     telegram_chat_id: str = ""
     
-    # 2026 V6.4 ULTRA-SURGICAL
+    # 2026 V6.5 ULTRA-CHIRURGICAL
     telegram_enabled: bool = True
 
     # 2026 V6 SCALING
@@ -165,7 +165,7 @@ def load_config() -> AppConfig:
             telegram_token=os.getenv("TELEGRAM_TOKEN") or tgram_yml.get("token", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or str(tgram_yml.get("chat_id", "")),
             
-            # 2026 V6.4 ULTRA-SURGICAL
+            # 2026 V6.5 ULTRA-CHIRURGICAL
             telegram_enabled=True,
             
             # 2026 V6 SCALING
