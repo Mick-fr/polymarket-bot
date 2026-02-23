@@ -442,47 +442,46 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
         self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
 
-    # 2026 V7.2/7.3.4 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    # 2026 V7.3.8 OVERRIDE CONSTANTES DB — full preset mapping
+    AGGRESSIVITY_PRESETS = {
+        "Conservative":    {"order_size_pct": 0.025, "max_net_exposure_pct": 0.18, "inventory_skew_threshold": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
+        "Balanced":        {"order_size_pct": 0.03,  "max_net_exposure_pct": 0.25, "inventory_skew_threshold": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
+        "Aggressive":      {"order_size_pct": 0.035, "max_net_exposure_pct": 0.35, "inventory_skew_threshold": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
+        "Very Aggressive": {"order_size_pct": 0.045, "max_net_exposure_pct": 0.45, "inventory_skew_threshold": 0.38, "sizing_mult": 1.90, "max_order_usd": 30},
+    }
+
     def _apply_live_aggressivity(self):
-        """Met a jour les parametres de la strategie en fonction du dashboard live."""
+        """Lit le niveau d'agressivité depuis la DB et applique TOUS les params correspondants."""
         if not self.db:
             return
         level = self.db.get_aggressivity_level()
-        if level == "Conservative":
-            self.max_exposure_pct = 0.18
-            self.inv_skew_threshold = 0.72
-            self.sizing_mult = 0.75
-            self.max_order_size_usdc = 10.0
-        elif level == "Balanced":
-            self.max_exposure_pct = 0.25
-            self.inv_skew_threshold = 0.58
-            self.sizing_mult = 1.00
-            self.max_order_size_usdc = 15.0
-        elif level == "Aggressive":
-            self.max_exposure_pct = 0.35
-            self.inv_skew_threshold = 0.48
-            self.sizing_mult = 1.45
-            self.max_order_size_usdc = 22.0
-        elif level == "Very Aggressive":
-            self.max_exposure_pct = 0.45
-            self.inv_skew_threshold = 0.38
-            self.sizing_mult = 1.90
-            self.max_order_size_usdc = 30.0
+        preset = self.AGGRESSIVITY_PRESETS.get(level)
+        if preset:
+            self.order_size_pct = preset["order_size_pct"]
+            self.max_exposure_pct = preset["max_net_exposure_pct"]
+            self.inv_skew_threshold = preset["inventory_skew_threshold"]
+            self.sizing_mult = preset["sizing_mult"]
+            self.max_order_size_usdc = preset["max_order_usd"]
+            # Persist to DB so risk.py and trader.py can read the same values
+            self.db.set_config_dict(preset)
         elif level == "Custom":
-            # Si Custom (AI Apply All), on garde les parametres de config initiaux par defaut
-            self.max_exposure_pct = self._config.max_exposure_pct if hasattr(self._config, 'max_exposure_pct') else 0.20
-            self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
-            self.sizing_mult = 1.0
-            self.max_order_size_usdc = self._config.max_order_size if hasattr(self._config, 'max_order_size') else 15.0
+            # Custom = AI-applied values, read directly from DB
+            self.order_size_pct = self.db.get_config("order_size_pct", ORDER_SIZE_PCT)
+            self.max_exposure_pct = self.db.get_config("max_net_exposure_pct", 0.20)
+            self.inv_skew_threshold = self.db.get_config("inventory_skew_threshold", INVENTORY_SKEW_THRESHOLD)
+            self.sizing_mult = self.db.get_config("sizing_mult", 1.0)
+            self.max_order_size_usdc = self.db.get_config("max_order_usd", 15.0)
         else:
+            # Fallback to module constants
+            self.order_size_pct = ORDER_SIZE_PCT
             self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
             self.sizing_mult = 1.0
-        # 2026 V7.3.4 — log on change
+        # 2026 V7.3.4/V7.3.8 — log on change
         if not hasattr(self, '_last_agg_level'):
             self._last_agg_level = ""
         if level != self._last_agg_level:
-            logger.info("[Config] Strategy aggressivity loaded: %s (skew=%.2f, sizing=%.2f, max_order=%.0f)",
-                        level, self.inv_skew_threshold, self.sizing_mult, self.max_order_size_usdc)
+            logger.info("[LIVE CONFIG] level=%s | order_size_pct=%.3f | max_expo=%.2f | skew=%.2f | sizing=%.2f | max_order=%.0f",
+                        level, self.order_size_pct, self.max_exposure_pct, self.inv_skew_threshold, self.sizing_mult, self.max_order_size_usdc)
             self._last_agg_level = level
 
     # 2026 V7.3.4 — alias public pour trader.py
@@ -494,12 +493,14 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self._apply_live_aggressivity()
         signals: list[Signal] = []
 
-        # Taille par ordre : 3% du solde (Set B), min 1 USDC, plafond max_order_size_usdc
+        # Taille par ordre : order_size_pct du solde, min 1 USDC, plafond max_order_size_usdc
+        # 2026 V7.3.8 — uses instance var from DB instead of hardcoded ORDER_SIZE_PCT
+        applied_order_size_pct = getattr(self, "order_size_pct", ORDER_SIZE_PCT)
         applied_sizing_mult = getattr(self, "sizing_mult", 1.0)
-        order_size_usdc = max(1.0, min(balance * ORDER_SIZE_PCT * applied_sizing_mult, self.max_order_size_usdc))
+        order_size_usdc = max(1.0, min(balance * applied_order_size_pct * applied_sizing_mult, self.max_order_size_usdc))
         logger.info(
-            "[OBI] Sizing: solde=%.2f USDC -> order_size=%.2f USDC (%.0f%% x %.2f, plafond=%.2f)",
-            balance, order_size_usdc, ORDER_SIZE_PCT * 100, applied_sizing_mult, self.max_order_size_usdc,
+            "[OBI] Sizing: solde=%.2f USDC -> order_size=%.2f USDC (%.1f%% x %.2f, plafond=%.2f)",
+            balance, order_size_usdc, applied_order_size_pct * 100, applied_sizing_mult, self.max_order_size_usdc,
         )
 
         markets = self._universe.get_eligible_markets()

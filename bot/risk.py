@@ -66,10 +66,11 @@ class RiskManager:
         # En paper trading, le circuit breaker est désactivé pour ne pas
         # interrompre la simulation à cause des positions initiales corrompues
         self._paper_trading = getattr(config, "paper_trading", False)
-        # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — track last level for change detection
+        # 2026 V7.3.9 — mutable override for frozen config field
+        self._max_exposure_pct: float = getattr(config, "max_exposure_pct", 0.20)
         self._last_agg_level: str = ""
 
-    # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — rechargement dynamique chaque cycle
+    # 2026 V7.3.9 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
     AGGRESSIVITY_MAP = {
         "Conservative":     {"max_exposure_pct": 0.18},
         "Balanced":         {"max_exposure_pct": 0.25},
@@ -78,16 +79,22 @@ class RiskManager:
     }
 
     def reload_aggressivity(self):
-        """Relit aggressivity_level depuis la DB et met à jour max_exposure_pct."""
+        """Relit aggressivity_level depuis la DB et met à jour _max_exposure_pct.
+        Utilise un attribut mutable car BotConfig est frozen."""
         try:
             level = self.db.get_aggressivity_level()
             params = self.AGGRESSIVITY_MAP.get(level)
             if params:
-                self.config.max_exposure_pct = params["max_exposure_pct"]
+                self._max_exposure_pct = params["max_exposure_pct"]
+            else:
+                # Custom / AI-applied: read from DB
+                db_expo = self.db.get_config("max_net_exposure_pct")
+                if db_expo is not None:
+                    self._max_exposure_pct = db_expo
             # Log only on change
             if level != self._last_agg_level:
-                logger.info("[Config] Aggressivity level loaded: %s (max_expo=%.0f%%)",
-                            level, self.config.max_exposure_pct * 100)
+                logger.info("[LIVE CONFIG] RiskManager: level=%s | max_expo=%.0f%%",
+                            level, self._max_exposure_pct * 100)
                 self._last_agg_level = level
         except Exception as e:
             logger.warning("[Config] reload_aggressivity error: %s", e)
@@ -283,7 +290,7 @@ class RiskManager:
         config.max_exposure_pct * balance (défaut : 20%, configurable via BOT_MAX_EXPOSURE_PCT).
         Utilise le mid_price actuel du signal pour valoriser l'exposition existante.
         """
-        max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
+        max_exposure_pct = self._max_exposure_pct
         max_exposure = balance * max_exposure_pct
         # Exposition actuelle au prix de marché (mid), pas au prix d'achat
         current_exposure_usdc = self._get_current_exposure_usdc(
@@ -312,7 +319,7 @@ class RiskManager:
           = 1.0 → Liquidation unilatérale (Ask only)
         Utilise le mid_price actuel du signal pour valoriser l'exposition existante.
         """
-        max_exposure_pct = getattr(self.config, "max_exposure_pct", 0.20)
+        max_exposure_pct = self._max_exposure_pct
         max_exposure = balance * max_exposure_pct
         if max_exposure <= 0:
             return None

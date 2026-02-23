@@ -742,9 +742,10 @@ class Trader:
         rejetés en fractional sizing quand l'inventaire dépasse déjà la limite normale.
 
         Ce n'est PAS persisté en config — actif uniquement pour le cycle courant.
-        Valeur par défaut : config.max_exposure_pct (20%).
+        Valeur par défaut : risk._max_exposure_pct (lu depuis DB chaque cycle).
         """
-        base_pct = getattr(self.config.bot, "max_exposure_pct", 0.20)
+        # 2026 V7.3.9 — read from mutable RiskManager attr, not frozen config
+        base_pct = self.risk._max_exposure_pct
         if balance < 10.0:
             adaptive_pct = 0.35
             if adaptive_pct > base_pct:
@@ -754,18 +755,12 @@ class Trader:
                     balance, base_pct * 100, adaptive_pct * 100,
                 )
                 # Patch temporaire sur le RiskManager pour ce cycle uniquement
-                try:
-                    object.__setattr__(self.risk.config, "max_exposure_pct", adaptive_pct)
-                except (AttributeError, TypeError):
-                    pass  # config frozen dataclass → on ignore si indisponible
+                self.risk._max_exposure_pct = adaptive_pct
                 return adaptive_pct
         else:
-            # Restaurer la valeur par défaut si elle avait été patchée
-            if getattr(self.risk.config, "max_exposure_pct", base_pct) != base_pct:
-                try:
-                    object.__setattr__(self.risk.config, "max_exposure_pct", base_pct)
-                except (AttributeError, TypeError):
-                    pass
+            # Restaurer la valeur DB si elle avait été patchée
+            if self.risk._max_exposure_pct != base_pct:
+                self.risk._max_exposure_pct = base_pct
         return base_pct
 
     def _maybe_liquidate_partial(self, balance: float, portfolio_value: float) -> None:

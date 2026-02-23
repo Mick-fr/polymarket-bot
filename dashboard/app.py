@@ -196,17 +196,18 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
         return jsonify({"status": "ok"})
 
-    # 2026 V7.3.6 DROPDOWN AGGRESSIVITÉ INSTANT APPLY
+    # 2026 V7.3.8 DROPDOWN AGGRESSIVITÉ INSTANT APPLY + OVERRIDE CONSTANTES DB
     @app.route("/api/aggressivity", methods=["GET", "POST"])
     @login_required
     def api_aggressivity():
         import os
         VALID_LEVELS = ["Conservative", "Balanced", "Aggressive", "Very Aggressive"]
+        # Full preset mapping — same keys as strategy.py AGGRESSIVITY_PRESETS
         LEVEL_PARAMS = {
-            "Conservative":    {"max_expo": 0.18, "skew_ask_only": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
-            "Balanced":        {"max_expo": 0.25, "skew_ask_only": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
-            "Aggressive":      {"max_expo": 0.35, "skew_ask_only": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
-            "Very Aggressive":  {"max_expo": 0.45, "skew_ask_only": 0.38, "sizing_mult": 1.90, "max_order_usd": 30},
+            "Conservative":    {"order_size_pct": 0.025, "max_net_exposure_pct": 0.18, "inventory_skew_threshold": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
+            "Balanced":        {"order_size_pct": 0.03,  "max_net_exposure_pct": 0.25, "inventory_skew_threshold": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
+            "Aggressive":      {"order_size_pct": 0.035, "max_net_exposure_pct": 0.35, "inventory_skew_threshold": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
+            "Very Aggressive": {"order_size_pct": 0.045, "max_net_exposure_pct": 0.45, "inventory_skew_threshold": 0.38, "sizing_mult": 1.90, "max_order_usd": 30},
         }
         if request.method == "POST":
             data = request.json or {}
@@ -214,15 +215,19 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             if level not in VALID_LEVELS:
                 return jsonify({"error": f"Invalid level: {level}"}), 400
             db.set_aggressivity_level(level)
+            # 2026 V7.3.8 — persist ALL preset params to DB
+            preset = LEVEL_PARAMS.get(level, {})
+            if preset:
+                db.set_config_dict(preset)
             # Write reload flag so bot picks it up instantly next cycle
             try:
                 with open("/tmp/reload_aggressivity.flag", "w") as f:
                     f.write(level)
             except Exception:
                 pass  # Non-critical on Windows dev
-            logger.info(f"[V7.3.6] Aggressivity changed to: {level}")
+            logger.info(f"[V7.3.8] Aggressivity changed to: {level} — all params persisted to DB")
             db.add_log("INFO", "dashboard", f"Agressivité changée pour : {level}")
-            return jsonify({"status": "ok", "level": level, "params": LEVEL_PARAMS.get(level, {})})
+            return jsonify({"status": "ok", "level": level, "params": preset})
 
         # GET — retourne le niveau actuel + mapping paramètres
         level = db.get_aggressivity_level() if db else "Balanced"
@@ -757,6 +762,18 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             logger.error(f"Error updating config: {e}")
             return False
 
+    # 2026 V7.3.8 — AI parameter name to DB config key mapping
+    AI_PARAM_TO_DB_KEY = {
+        "MAX_NET_EXPOSURE_PCT": "max_net_exposure_pct",
+        "ORDER_SIZE_PCT": "order_size_pct",
+        "OBI_BULLISH_THRESHOLD": "obi_bullish_threshold",
+        "MIN_SPREAD": "min_spread",
+        "OBI_SKEW_FACTOR": "inventory_skew_threshold",
+        "max_net_exposure_pct": "max_net_exposure_pct",
+        "order_size_pct": "order_size_pct",
+        "inventory_skew_threshold": "inventory_skew_threshold",
+    }
+
     @app.route("/api/v73/apply-rec", methods=["POST"])
     @login_required
     def api_v73_apply_rec():
@@ -765,9 +782,18 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         val = data.get("value")
         if param and val is not None:
             _update_yaml_config(param, val)
+            # 2026 V7.3.8 — also save to DB for live reload
+            db_key = AI_PARAM_TO_DB_KEY.get(param)
+            if db_key and db:
+                db.set_config(db_key, val)
             if db:
                 db.set_aggressivity_level("Custom")
-                
+            # Write reload flag for instant pickup
+            try:
+                with open("/tmp/reload_aggressivity.flag", "w") as f:
+                    f.write("Custom")
+            except Exception:
+                pass
         import os
         os.system("docker compose restart bot &")
         return jsonify({"status": "ok"})
@@ -785,10 +811,20 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             for r in recs:
                 if r.get("direction") != "maintenir" and r.get("recommended_value") is not None:
                     _update_yaml_config(r.get("parameter"), r.get("recommended_value"))
+                    # 2026 V7.3.8 — also save to DB for live reload
+                    db_key = AI_PARAM_TO_DB_KEY.get(r.get("parameter"))
+                    if db_key and db:
+                        db.set_config(db_key, r.get("recommended_value"))
                     applied += 1
             
             if applied > 0 and db:
                 db.set_aggressivity_level("Custom")
+                # Write reload flag for instant pickup
+                try:
+                    with open("/tmp/reload_aggressivity.flag", "w") as f:
+                        f.write("Custom")
+                except Exception:
+                    pass
                 import os
                 os.system("docker compose restart bot &")
                 

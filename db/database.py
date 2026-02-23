@@ -200,6 +200,38 @@ class Database:
                 (level,)
             )
 
+    # 2026 V7.3.8 OVERRIDE CONSTANTES DB — config générique via bot_state
+    def get_config(self, key: str, default: float | None = None) -> float | None:
+        """Lit une valeur de config depuis bot_state, retourne default si absente."""
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = ?", (key,))
+            row = cur.fetchone()
+            if row and row["value"] is not None:
+                try:
+                    return float(row["value"])
+                except (ValueError, TypeError):
+                    return default
+            return default
+
+    def set_config(self, key: str, value):
+        """Écrit une valeur de config dans bot_state (upsert)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(value))
+            )
+
+    def set_config_dict(self, params: dict):
+        """Écrit plusieurs clés de config en une seule transaction."""
+        with self._cursor() as cur:
+            for key, value in params.items():
+                cur.execute(
+                    "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value))
+                )
+
     # ── Ordres ───────────────────────────────────────────────────
 
     def record_order(
