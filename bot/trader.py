@@ -143,13 +143,20 @@ class Trader:
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
-        # V7.9 INFO EDGE STRATEGY
+        # V10.0 BINANCE WS CLIENT (daemon thread)
+        from bot.binance_ws import BinanceWSClient
+        self.binance_ws = BinanceWSClient()
+        self.binance_ws.start()
+        logger.info("[V10.0] BinanceWSClient démarré (bookTicker BTC/ETH + funding rate)")
+
+        # V10.0 INFO EDGE STRATEGY (avec Binance WS)
         from bot.strategy import InfoEdgeStrategy
         self.info_edge_strategy = InfoEdgeStrategy(
             client=self.pm_client,
             db=self.db,
             max_markets=20,
-            max_order_size_usdc=self.config.bot.max_order_size
+            max_order_size_usdc=self.config.bot.max_order_size,
+            binance_ws=self.binance_ws
         )
 
         # 2026 V7.0 SCALING
@@ -464,8 +471,8 @@ class Trader:
             signals = []
 
             if strategy_mode == "Info Edge Only":
-                # ────── MODE STRICT V9.0 : OBI complètement désactivé ──────
-                logger.info("[ENFORCED V9.0] Info Edge Only actif — OBI désactivé → BTC/ETH 5-40min | min Edge 20%% | vol>15k")
+                # ────── MODE STRICT V10.0 : OBI complètement désactivé ──────
+                logger.info("[ENFORCED V10.0] Professional Info Edge — P_true log-normal | BTC/ETH 5-40min")
                 if hasattr(self, "info_edge_strategy"):
                     signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
                 # Aucun signal OBI

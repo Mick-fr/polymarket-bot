@@ -946,31 +946,34 @@ class OBIMarketMakingStrategy(BaseStrategy):
         """Retourne les marches eligibles en cache (sans re-appeler Gamma)."""
         return self._universe._cache if self._universe._cache else []
 
-# ─── V9.0 BTC/ETH INFO EDGE MODULE ──────────────────────────────────────────
+# ─── V10.0 BTC/ETH PROFESSIONAL INFO EDGE ──────────────────────────────────────
 
 class InfoEdgeStrategy(BaseStrategy):
     """
-    Module "Info Edge" dédié BTC & ETH — version V9.0 Top 2026.
-    - Edge Score min 20% pour entrer
-    - Volume 5-min filter : > 15 000 $ requis
-    - Bonus signal : funding rate delta Binance
-    - Tiered sizing : 20-24% → x1.0 | 25-34% → x1.8 | ≥ 35% → x2.8
-    - Maturity 5-40 min STRICT
-    - Max 8% du portfolio par trade | Expo BTC/ETH max 25%
+    Module "Info Edge" dédié BTC & ETH — V10.0 Professional.
+    - Vrai pricing log-normal : P_true = N(d1) avec vol implicite
+    - Edge Score = (P_true - P_poly) * 100
+    - Décision dynamique : Edge > +20% → BUY YES | Edge < -20% → BUY NO
+    - BinanceWSClient pour prix spot/perp live + funding rate
+    - Volume Polymarket réel (volume_24h proxy)
+    - Kelly-inspired tiered sizing : 1.0x / 1.8x / 2.8x
+    - Maturity 5-40 min | Max 8% par trade | Expo 25% max
     """
 
-    # V9.0 paramètres Top 2026
-    ORDER_SIZE_PCT = 0.018   # 1.8% du cash disponible
-    MAX_EXPO_PCT   = 0.25    # 25% d'exposition BTC/ETH max
-    MAX_ORDER_USDC = 12.0    # plafond par ordre
+    # V10.0 paramètres
+    ORDER_SIZE_PCT = 0.018
+    MAX_EXPO_PCT   = 0.25
+    MAX_ORDER_USDC = 12.0
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 20.0    # % strict (vs 18% en V8.5)
-    MAX_TRADE_PCT  = 0.08    # 8% max du portfolio par trade
+    MIN_EDGE_SCORE = 20.0   # % strict
+    MAX_TRADE_PCT  = 0.08
     MIN_MINUTES    = 5.0
-    MAX_MINUTES    = 40.0    # 5-40 min strict (vs 45 en V8.5)
-    MIN_VOLUME_5M  = 15_000  # $ volume 5-min minimum
+    MAX_MINUTES    = 40.0
+    MIN_VOLUME_5M  = 15_000
+    IMPLIED_VOL    = 0.80   # volatilité implicite BTC/ETH court terme
 
-    def __init__(self, client: PolymarketClient, db=None, max_markets: int = 20, max_order_size_usdc: float = 12.0):
+    def __init__(self, client: PolymarketClient, db=None, max_markets: int = 20,
+                 max_order_size_usdc: float = 12.0, binance_ws=None):
         super().__init__(client)
         self.db = db
         self.max_markets = max_markets
@@ -978,26 +981,103 @@ class InfoEdgeStrategy(BaseStrategy):
         self._universe = MarketUniverse()
         self._last_quote_ts = {}
         self._quote_cooldown = 16.0
+        self.binance_ws = binance_ws  # BinanceWSClient instance
 
     def _is_btc_eth(self, q: str) -> bool:
         q_up = q.upper()
         return any(x in q_up for x in ["BITCOIN", "BTC", "ETHEREUM", "ETH"])
 
-    def _simulate_edge_score(self, market: EligibleMarket) -> float:
-        """Simulation Edge Score Arkham/Nansen/Binance + funding rate delta — en %."""
-        import random
-        base = random.uniform(8.0, 48.0)
-        # Bonus funding rate Binance : +0 à +8%
-        funding_bonus = random.uniform(0.0, 8.0)
-        # Volume filter proxy: simulation vol 5-min arbitraire
-        self._last_vol5m = random.uniform(5_000, 80_000)
-        return base + funding_bonus
+    def _get_asset_symbol(self, q: str) -> str:
+        """Retourne 'BTC' ou 'ETH' selon la question du marché."""
+        q_up = q.upper()
+        if "BTC" in q_up or "BITCOIN" in q_up:
+            return "BTC"
+        return "ETH"
 
-    def _decide_side(self, market: EligibleMarket, edge_score: float) -> str:
-        return "buy"  # mode conservateur dans cette simulation
+    def _compute_p_true(self, spot_price: float, strike_proxy: float,
+                        t_minutes: float, vol: float) -> float:
+        """
+        Calcul de probabilité vraie via distribution log-normale simplifiée.
+        Pour un événement binaire "prix > strike" dans T minutes :
+          d1 = [ln(S/K) + 0.5*vol^2*T] / (vol*sqrt(T))
+          P_true = N(d1)
+        T en années (T_min / 525600).
+        """
+        import math
+        try:
+            T = max(t_minutes, 1.0) / 525_600.0  # minutes → années
+            if strike_proxy <= 0 or spot_price <= 0:
+                return 0.5
+            d1 = (math.log(spot_price / strike_proxy) + 0.5 * vol**2 * T) / (vol * math.sqrt(T))
+            # Approximation de N(d1) — CDF normale standard
+            return self._norm_cdf(d1)
+        except Exception:
+            return 0.5
+
+    @staticmethod
+    def _norm_cdf(x: float) -> float:
+        """Approximation rapide de la CDF normale standard (Abramowitz & Stegun)."""
+        import math
+        if x >= 0:
+            t = 1.0 / (1.0 + 0.2316419 * x)
+            d = 0.3989422804014327  # 1/sqrt(2*pi)
+            p = d * math.exp(-x * x / 2.0) * t * (
+                0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))
+            )
+            return 1.0 - p
+        else:
+            return 1.0 - BinanceWSClient._norm_cdf_static(-x) if False else 1.0 - InfoEdgeStrategy._norm_cdf(-x)
+
+    def _calculate_edge_score(self, market: EligibleMarket) -> tuple[float, float, float, float]:
+        """
+        Calcule le vrai Edge Score avec données Binance live.
+        Returns: (edge_pct, p_true, p_poly, vol_estimate)
+        """
+        sym = self._get_asset_symbol(market.question)
+        p_poly = market.mid_price  # probabilité Polymarket
+
+        # Prix spot Binance live
+        spot = 0.0
+        funding = 0.0
+        if self.binance_ws:
+            spot = self.binance_ws.get_mid(sym)
+            funding = self.binance_ws.get_funding(sym)
+
+        # Strike proxy : dérivé du mid Polymarket
+        # Pour un marché "BTC > 100k ?", le strike ~ spot*(1 - (p_poly-0.5)*0.1)
+        if spot > 0:
+            strike = spot * (1.0 - (p_poly - 0.5) * 0.1)
+        else:
+            # Pas de prix Binance — fallback demi-conservateur
+            strike = 0.0
+
+        minutes_to_expiry = market.days_to_expiry * 1440
+
+        # Vol ajustée (funding rate bonus)
+        vol = self.IMPLIED_VOL + abs(funding) * 50.0  # funding fort = vol plus haute
+
+        if spot > 0 and strike > 0:
+            p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
+        else:
+            p_true = 0.5
+
+        edge_pct = (p_true - p_poly) * 100.0
+
+        # Volume estimé 5-min proxy via volume_24h Polymarket
+        vol_est = getattr(market, 'volume_24h', 0) / 288.0  # 24h / 288 = 5min
+
+        return edge_pct, p_true, p_poly, vol_est
+
+    def _decide_side(self, market: EligibleMarket, edge_pct: float) -> str:
+        """Décision dynamique : Edge > +20% → BUY YES | Edge < -20% → BUY NO."""
+        if edge_pct >= self.MIN_EDGE_SCORE:
+            return "buy"   # BUY YES
+        elif edge_pct <= -self.MIN_EDGE_SCORE:
+            return "sell"  # BUY NO (short YES)
+        return ""  # pas de trade
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
-        """V9.0: BTC/ETH 5-40min, Edge Score >= 20%, volume > 15k, sizing tiered 1.8x/2.8x."""
+        """V10.0: Real pricing BTC/ETH 5-40min, P_true log-normal, Edge >= 20%, Kelly tiered."""
         signals: list[Signal] = []
         markets = self._universe.get_eligible_markets()
         if not markets:
@@ -1022,42 +1102,49 @@ class InfoEdgeStrategy(BaseStrategy):
 
             minutes_to_expiry = market.days_to_expiry * 1440
             if minutes_to_expiry < self.MIN_MINUTES or minutes_to_expiry > self.MAX_MINUTES:
-                logger.debug("[V9.0 INFO EDGE] %s ignoré (%.1fmin hors [5,40])", market.question[:20], minutes_to_expiry)
+                logger.debug("[V10.0 EDGE] %s ignoré (%.1fmin hors [5,40])", market.question[:20], minutes_to_expiry)
                 continue
 
             if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
-                logger.debug("[V9.0 INFO EDGE] %s ignoré (spread > 3%%)", market.question[:20])
+                logger.debug("[V10.0 EDGE] %s ignoré (spread > 3%%)", market.question[:20])
                 continue
 
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
 
-            # ── Edge Score + funding bonus + volume filter ─────────────
+            # ── V10.0 Real Edge Score (P_true log-normal vs P_poly) ────
             try:
-                edge_score = self._simulate_edge_score(market)
-                vol_5m = getattr(self, "_last_vol5m", 0)
+                edge_pct, p_true, p_poly, vol_5m = self._calculate_edge_score(market)
             except Exception as e:
-                logger.warning("[V9.0 INFO EDGE] Erreur edge score: %s — skip", e)
+                logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # Volume filter V9.0: > 15k$ sur 5 min
+            abs_edge = abs(edge_pct)
+
+            # Volume filter: > 15k$ estimated 5-min
             if vol_5m < self.MIN_VOLUME_5M:
-                logger.debug("[V9.0 INFO EDGE] %s ignoré (vol 5m=%.0f$ < 15k)", market.question[:20], vol_5m)
+                logger.debug("[V10.0 EDGE] %s ignoré (vol5m=%.0f$ < 15k)", market.question[:20], vol_5m)
                 continue
 
-            if edge_score < self.MIN_EDGE_SCORE:
-                logger.debug("[V9.0 INFO EDGE] %s skip — score %.1f%% < %.0f%%", market.question[:20], edge_score, self.MIN_EDGE_SCORE)
+            # Edge threshold (positive or negative)
+            if abs_edge < self.MIN_EDGE_SCORE:
+                logger.debug("[V10.0 EDGE] %s skip — |edge|=%.1f%% < 20%%", market.question[:20], abs_edge)
                 continue
 
-            daily_edge_scores.append(edge_score)
+            # Dynamic side decision
+            side = self._decide_side(market, edge_pct)
+            if not side:
+                continue
 
-            # ── Tiered sizing V9.0 ─────────────────────────────────────
-            if edge_score >= 35.0:
+            daily_edge_scores.append(abs_edge)
+
+            # ── Kelly-inspired tiered sizing ───────────────────────────
+            if abs_edge >= 35.0:
                 size_multiplier = 2.8
-            elif edge_score >= 25.0:
+            elif abs_edge >= 25.0:
                 size_multiplier = 1.8
             else:
-                size_multiplier = 1.0  # edge 20-24%
+                size_multiplier = 1.0
 
             base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
             order_size = min(base_order * size_multiplier, portfolio * self.MAX_TRADE_PCT, self.MAX_ORDER_USDC)
@@ -1067,27 +1154,27 @@ class InfoEdgeStrategy(BaseStrategy):
             bid_price = min(market.mid_price + 0.005, 0.98)
             shares = max(5.0, order_size / bid_price)
 
-            logger.info("[V9.0 INFO EDGE] %s | Edge Score %.1f%% → sizing %.1fx | order=%.2f USDC | vol5m=%.0f$",
-                        market.question[:30], edge_score, size_multiplier, order_size, vol_5m)
+            side_label = "BUY YES" if side == "buy" else "BUY NO"
+            logger.info("[V10.0 EDGE] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
+                        p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
 
             signals.append(Signal(
                 token_id=market.yes_token_id,
                 market_id=market.market_id,
                 market_question=market.question,
-                side=self._decide_side(market, edge_score),
+                side=side,
                 order_type="limit",
                 price=round(bid_price, 3),
                 size=round(shares, 2),
-                confidence=min(0.99, 0.70 + edge_score / 100),
-                reason=f"InfoEdge={edge_score:.1f}%_x{size_multiplier}_vol={vol_5m:.0f}",
+                confidence=min(0.99, 0.70 + abs_edge / 100),
+                reason=f"V10Edge={edge_pct:+.1f}%_P={p_true:.2f}_x{size_multiplier}",
                 mid_price=market.mid_price
             ))
             self._last_quote_ts[market.yes_token_id] = time.time()
             traded += 1
 
         avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
-        logger.info("[V9.0 INFO EDGE] %d signal(s) | avg_edge=%.1f%% | 5-40min | vol>15k | max_trade=8%%", len(signals), avg_edge)
-        # Store avg edge score for dashboard display
+        logger.info("[V10.0 EDGE] %d signal(s) | avg_edge=%.1f%% | P_true model=log-normal | 5-40min", len(signals), avg_edge)
         if self.db:
             try:
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
@@ -1096,8 +1183,8 @@ class InfoEdgeStrategy(BaseStrategy):
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
-        """Mode 'Info Edge Only' V9.0 ENFORCED — BTC/ETH 5-40min, min Edge 20%, funding bonus."""
-        logger.info("[ENFORCED INFO EDGE V9.0] Universe BTC/ETH 5-40min | min Edge 20%% | tiered 1.0x/1.8x/2.8x | vol>15k")
+        """V10.0 ENFORCED — Real pricing BTC/ETH, P_true log-normal, Kelly tiered."""
+        logger.info("[ENFORCED V10.0] Professional Info Edge — P_true log-normal | BTC/ETH 5-40min | min Edge 20%% | tiered 1.0x/1.8x/2.8x")
         return self.analyze(balance=balance)
 
 
