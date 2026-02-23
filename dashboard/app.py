@@ -196,31 +196,6 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
         return jsonify({"status": "ok"})
 
-    # 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
-    @app.route("/api/aggressivity", methods=["GET", "POST"])
-    @login_required
-    def api_aggressivity():
-        if request.method == "POST":
-            data = request.json or {}
-            level = data.get("level", "Balanced")
-            if level in ["Conservative", "Balanced", "Aggressive", "Very Aggressive"]:
-                db.set_aggressivity_level(level)
-                logger.info(f"Aggressivity level changed to: {level}")
-                db.add_log("INFO", "dashboard", f"Agressivité changée pour : {level}")
-                return jsonify({"status": "ok", "level": level})
-            return jsonify({"error": "Invalid level"}), 400
-
-        # GET
-        level = db.get_aggressivity_level()
-        # Mappings indicatifs
-        params = {
-            "Conservative": {"max_expo": 0.18, "skew_ask_only": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
-            "Balanced": {"max_expo": 0.25, "skew_ask_only": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
-            "Aggressive": {"max_expo": 0.35, "skew_ask_only": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
-            "Very Aggressive": {"max_expo": 0.45, "skew_ask_only": 0.38, "sizing_mult": 1.90, "max_order_usd": 30}
-        }
-        return jsonify({"level": level, "params": params.get(level, params["Balanced"])})
-
     @app.route("/api/orders")
     @login_required
     def api_orders():
