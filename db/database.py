@@ -598,6 +598,105 @@ class Database:
             "details": corrected_price,
         }
 
+    # 2026 V7.5 POSITION MERGING
+    def merge_positions(self) -> dict:
+        """Fusionne les positions du même market_id et supprime les positions fantômes (qty ≤ 0.001).
+        Retourne un résumé des opérations effectuées."""
+        import logging
+        _logger = logging.getLogger("database")
+        merged_count = 0
+        cleaned_count = 0
+        details = []
+
+        with self._cursor() as cur:
+            # 1. Supprimer les positions fantômes (qty ≈ 0)
+            cur.execute("SELECT token_id, quantity FROM positions WHERE abs(quantity) <= 0.001")
+            ghosts = cur.fetchall()
+            for g in ghosts:
+                cur.execute("DELETE FROM positions WHERE token_id = ?", (g["token_id"],))
+                cleaned_count += 1
+                _logger.info("[PositionMerge] Cleaned ghost position: %s (qty=%.4f)", g["token_id"][:20], g["quantity"])
+
+            # 2. Agréger par market_id — si le même market a YES et NO tokens, net them
+            cur.execute("""
+                SELECT market_id, COUNT(*) as cnt,
+                       SUM(quantity) as total_qty,
+                       SUM(quantity * avg_price) as total_cost
+                FROM positions
+                WHERE quantity > 0.001
+                GROUP BY market_id
+                HAVING cnt > 1
+            """)
+            groups = cur.fetchall()
+            for g in groups:
+                market_id = g["market_id"]
+                total_qty = g["total_qty"]
+                total_cost = g["total_cost"]
+                net_avg = total_cost / total_qty if total_qty > 0 else 0.50
+
+                # Get all tokens for this market
+                cur.execute("SELECT token_id, quantity, avg_price, question, side FROM positions WHERE market_id = ? AND quantity > 0.001 ORDER BY quantity DESC", (market_id,))
+                tokens = cur.fetchall()
+                if len(tokens) <= 1:
+                    continue
+
+                # Keep the largest position, delete the rest, add their qty to it
+                primary = tokens[0]
+                for secondary in tokens[1:]:
+                    # Merge into primary
+                    cur.execute("DELETE FROM positions WHERE token_id = ?", (secondary["token_id"],))
+                    merged_count += 1
+
+                # Update primary with net totals
+                now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+                cur.execute(
+                    "UPDATE positions SET quantity = ?, avg_price = ?, updated_at = ? WHERE token_id = ?",
+                    (total_qty, net_avg, now, primary["token_id"])
+                )
+                details.append({
+                    "market_id": market_id[:20],
+                    "tokens_merged": len(tokens),
+                    "net_qty": round(total_qty, 4),
+                    "net_avg": round(net_avg, 4),
+                })
+                _logger.info("[PositionMerge] Market %s: %d positions → 1 (qty=%.2f, avg=%.4f)",
+                            market_id[:20], len(tokens), total_qty, net_avg)
+
+        return {"merged": merged_count, "cleaned": cleaned_count, "details": details}
+
+    # 2026 V7.5 COPY-TRADING — table de suivi
+    def _ensure_copy_trades_table(self):
+        with self._cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS copy_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    source_wallet TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    pnl_usdc REAL DEFAULT 0.0
+                )
+            """)
+
+    def record_copy_trade(self, wallet: str, token_id: str, side: str, qty: float, price: float):
+        self._ensure_copy_trades_table()
+        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO copy_trades (timestamp, source_wallet, token_id, side, quantity, price, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'executed')",
+                (now, wallet, token_id, side, qty, price)
+            )
+
+    def get_copy_trades(self, limit: int = 50) -> list:
+        self._ensure_copy_trades_table()
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM copy_trades ORDER BY id DESC LIMIT ?", (limit,))
+            return [dict(r) for r in cur.fetchall()]
+
     # ── Cooldowns (news-breaker) ─────────────────────────────────
 
     def set_cooldown(self, token_id: str, duration_seconds: float, reason: str = ""):

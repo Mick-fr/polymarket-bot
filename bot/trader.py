@@ -338,6 +338,14 @@ class Trader:
         if self.strategy:
             self.strategy.reload_sizing()
 
+        # 2026 V7.5 POSITION MERGING — auto-merge every cycle
+        try:
+            merge_result = self.db.merge_positions()
+            if merge_result["merged"] > 0 or merge_result["cleaned"] > 0:
+                logger.info("[PositionMerge] Merged=%d, Cleaned=%d", merge_result["merged"], merge_result["cleaned"])
+        except Exception as e:
+            logger.warning("[PositionMerge] Error: %s", e)
+
         # 2. Connectivité API — is_alive() avec timeout implicite de la lib
         logger.info("[Cycle] Étape 2: vérification connectivité API")
         if not self.pm_client.is_alive():

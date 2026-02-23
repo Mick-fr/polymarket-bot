@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+{% block title %}Copy Trading — Polymarket Bot V7.5{% endblock %}
+
+{% block body %}
+<style>
+    :root {
+        --bg: #0a0a0a;
+        --surface: #111114;
+        --surface-2: #18181c;
+        --border: #222228;
+        --text: #f0f0f5;
+        --text-dim: #888897;
+        --accent: #a855f7;
+        --accent-dim: rgba(168, 85, 247, 0.12);
+        --green: #22c55e;
+        --red: #ef4444;
+        --orange: #f59e0b;
+        --radius: 14px;
+        --radius-sm: 8px;
+    }
+
+    body {
+        background: var(--bg);
+        font-family: 'Inter', -apple-system, sans-serif;
+    }
+
+    .ct-header {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 28px;
+        background: rgba(10, 10, 10, 0.92);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+    }
+
+    .ct-header a {
+        color: var(--text-dim);
+        text-decoration: none;
+        font-size: 0.85rem;
+    }
+
+    .ct-header a:hover {
+        color: var(--text);
+    }
+
+    .ct-logo {
+        font-weight: 700;
+        font-size: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .ct-ver {
+        font-size: 0.7rem;
+        color: var(--accent);
+        background: var(--accent-dim);
+        padding: 2px 7px;
+        border-radius: 20px;
+        font-weight: 600;
+    }
+
+    .ct-main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 28px 24px;
+    }
+
+    .ct-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
+
+    .ct-sub {
+        color: var(--text-dim);
+        font-size: 0.88rem;
+        margin-bottom: 24px;
+    }
+
+    .ct-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 14px;
+        overflow: hidden;
+    }
+
+    .ct-card-head {
+        padding: 16px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .ct-card-title {
+        font-size: 0.82rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+    }
+
+    .ct-card-body {
+        padding: 20px;
+    }
+
+    .ct-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.83rem;
+    }
+
+    .ct-table th {
+        text-align: left;
+        padding: 8px 12px;
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .ct-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        vertical-align: middle;
+    }
+
+    .ct-table tr:hover td {
+        background: rgba(255, 255, 255, 0.02);
+    }
+
+    .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 600;
+    }
+
+    .tag-green {
+        background: rgba(34, 197, 94, 0.12);
+        color: var(--green);
+    }
+
+    .tag-red {
+        background: rgba(239, 68, 68, 0.12);
+        color: var(--red);
+    }
+
+    .tag-blue {
+        background: rgba(99, 102, 241, 0.12);
+        color: #818cf8;
+    }
+
+    .hbtn {
+        padding: 7px 14px;
+        border-radius: var(--radius-sm);
+        font-size: 0.82rem;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text);
+        transition: all 0.15s;
+    }
+
+    .hbtn:hover {
+        background: var(--surface);
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .hbtn-accent {
+        background: var(--accent-dim);
+        border-color: rgba(168, 85, 247, 0.35);
+        color: var(--accent);
+    }
+
+    .hbtn-accent:hover {
+        background: rgba(168, 85, 247, 0.2);
+    }
+
+    .hbtn-danger {
+        background: rgba(239, 68, 68, 0.1);
+        border-color: rgba(239, 68, 68, 0.3);
+        color: var(--red);
+    }
+
+    .addr {
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        font-size: 0.78rem;
+        color: var(--accent);
+    }
+
+    .text-green {
+        color: var(--green);
+    }
+
+    .text-red {
+        color: var(--red);
+    }
+
+    #toast-container {
+        position: fixed;
+        top: 20px;
+        right: 24px;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .toast {
+        padding: 12px 18px;
+        border-radius: var(--radius-sm);
+        font-size: 0.84rem;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+        animation: slideIn 0.25s ease;
+        max-width: 340px;
+    }
+
+    .toast-success {
+        background: rgba(34, 197, 94, 0.12);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        color: var(--green);
+    }
+
+    .toast-info {
+        background: rgba(168, 85, 247, 0.12);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        color: var(--accent);
+    }
+
+    .toast-error {
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        color: var(--red);
+    }
+
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateX(20px)
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0)
+        }
+    }
+
+    .alloc-input {
+        width: 60px;
+        padding: 4px 8px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 0.82rem;
+        text-align: center;
+    }
+
+    .alloc-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    .metric-row {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+
+    @media(max-width:700px) {
+        .metric-row {
+            grid-template-columns: repeat(2, 1fr)
+        }
+    }
+
+    .metric-mini {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        text-align: center;
+    }
+
+    .metric-mini-val {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--accent);
+    }
+
+    .metric-mini-label {
+        font-size: 0.72rem;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-top: 4px;
+    }
+
+    .ct-footer {
+        border-top: 1px solid var(--border);
+        padding: 18px 28px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 28px;
+        font-size: 0.78rem;
+        color: var(--text-dim);
+    }
+
+    .ct-footer a {
+        color: var(--text-dim);
+        text-decoration: none;
+    }
+
+    .ct-footer a:hover {
+        color: var(--text);
+    }
+
+    select option {
+        background: #18181c;
+    }
+</style>
+
+<div id="toast-container"></div>
+
+<!-- HEADER -->
+<header class="ct-header">
+    <div class="ct-logo">
+        <span>🤖 Polymarket Bot</span>
+        <span class="ct-ver">V7.5</span>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center">
+        <a href="/">📊 Dashboard</a>
+        <a href="/copy-trading" style="color:var(--accent);font-weight:600">📋 Copy Trading</a>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </div>
+</header>
+
+<main class="ct-main">
+    <h1 class="ct-title">📋 Copy Trading</h1>
+    <p class="ct-sub">Copiez les positions des wallets les plus profitables de Polymarket et gérez vos positions
+        fusionnées.</p>
+
+    <!-- METRICS -->
+    <div class="metric-row">
+        <div class="metric-mini">
+            <div class="metric-mini-val" id="ct-total-wallets">6</div>
+            <div class="metric-mini-label">Wallets surveillés</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-mini-val text-green" id="ct-total-copies">0</div>
+            <div class="metric-mini-label">Copy trades</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-mini-val" id="ct-merge-cleaned">--</div>
+            <div class="metric-mini-label">Positions nettoyées</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-mini-val" id="ct-merge-merged">--</div>
+            <div class="metric-mini-label">Positions fusionnées</div>
+        </div>
+    </div>
+
+    <!-- TOP WALLETS -->
+    <div class="ct-card">
+        <div class="ct-card-head">
+            <span class="ct-card-title">🏆 Top Wallets Profitables (Fév 2026)</span>
+            <button class="hbtn" onclick="loadWallets()">⟳ Refresh</button>
+        </div>
+        <div style="overflow-x:auto">
+            <table class="ct-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Nom</th>
+                        <th>Adresse</th>
+                        <th>PnL 7j</th>
+                        <th>PnL 30j</th>
+                        <th>Win Rate</th>
+                        <th>Volume</th>
+                        <th>Alloc %</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="wallets-tbody">
+                    <tr>
+                        <td colspan="9" style="text-align:center;color:var(--text-dim);padding:24px">Chargement...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- POSITION MERGE -->
+    <div class="ct-card">
+        <div class="ct-card-head">
+            <span class="ct-card-title">🔄 Position Merging</span>
+            <button class="hbtn hbtn-accent" onclick="mergePositions()">⚡ Merge Now</button>
+        </div>
+        <div class="ct-card-body" id="merge-result">
+            <p style="color:var(--text-dim);font-size:0.85rem">Le merging automatique s'exécute à chaque cycle bot.
+                Cliquez pour forcer un merge immédiat.</p>
+        </div>
+    </div>
+
+    <!-- COPY TRADE HISTORY -->
+    <div class="ct-card">
+        <div class="ct-card-head">
+            <span class="ct-card-title">📜 Historique Copy Trades</span>
+            <button class="hbtn" onclick="loadHistory()">⟳ Refresh</button>
+        </div>
+        <div style="overflow-x:auto;max-height:320px;overflow-y:auto">
+            <table class="ct-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Wallet</th>
+                        <th>Token</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Prix</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="history-tbody">
+                    <tr>
+                        <td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</main>
+
+<footer class="ct-footer">
+    <div>Polymarket Bot V7.5 — Copy Trading Module</div>
+    <div style="display:flex;gap:16px">
+        <a href="/">📊 Dashboard</a>
+        <a href="https://github.com/Mick-fr/polymarket-bot" target="_blank">🐙 GitHub</a>
+    </div>
+</footer>
+
+<script>
+    function toast(msg, type = 'success') {
+        const d = document.createElement('div');
+        d.className = `toast toast-${type}`;
+        d.innerHTML = msg;
+        document.getElementById('toast-container').appendChild(d);
+        setTimeout(() => d.remove(), 3500);
+    }
+
+    function loadWallets() {
+        fetch('/api/top-wallets').then(r => r.json()).then(wallets => {
+            const tbody = document.getElementById('wallets-tbody');
+            document.getElementById('ct-total-wallets').textContent = wallets.length;
+            tbody.innerHTML = wallets.map((w, i) => `
+        <tr>
+          <td style="font-weight:700;color:var(--accent)">${i + 1}</td>
+          <td><strong>${w.name}</strong></td>
+          <td><a class="addr" href="https://polymarket.com/profile/${w.address}" target="_blank">${w.address.slice(0, 6)}…${w.address.slice(-4)}</a></td>
+          <td class="text-green">+$${w.pnl_7d.toLocaleString()}</td>
+          <td class="text-green">+$${w.pnl_30d.toLocaleString()}</td>
+          <td><span class="tag ${w.win_rate >= 65 ? 'tag-green' : 'tag-blue'}">${w.win_rate}%</span></td>
+          <td style="color:var(--text-dim)">$${(w.volume / 1000).toFixed(0)}k</td>
+          <td><input type="number" class="alloc-input" id="alloc-${i}" value="10" min="5" max="50" step="5">%</td>
+          <td><button class="hbtn hbtn-accent" onclick="copyWallet('${w.address}', ${i})">📋 Copier</button></td>
+        </tr>`).join('');
+        }).catch(() => toast('Erreur chargement wallets', 'error'));
+    }
+
+    function copyWallet(address, idx) {
+        const alloc = document.getElementById('alloc-' + idx).value || 10;
+        if (!confirm(`Copier ce wallet avec ${alloc}% de votre capital ? Les positions seront mirrorées en paper mode.`)) return;
+        fetch('/api/copy-wallet', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ address, alloc_pct: alloc })
+        }).then(r => r.json()).then(d => {
+            if (d.status === 'ok') {
+                toast(`✅ Copié ${d.wallet}: ${d.positions_copied} positions mirrorées`, 'success');
+                loadHistory();
+            } else toast('❌ ' + (d.error || 'Erreur'), 'error');
+        }).catch(() => toast('❌ Erreur réseau', 'error'));
+    }
+
+    function mergePositions() {
+        fetch('/api/merge-positions', { method: 'POST' }).then(r => r.json()).then(d => {
+            if (d.status === 'ok') {
+                document.getElementById('ct-merge-cleaned').textContent = d.cleaned;
+                document.getElementById('ct-merge-merged').textContent = d.merged;
+                const panel = document.getElementById('merge-result');
+                if (d.merged > 0 || d.cleaned > 0) {
+                    let html = `<p style="color:var(--green);font-weight:600;margin-bottom:8px">✅ Merge effectué : ${d.merged} fusionnées, ${d.cleaned} nettoyées</p>`;
+                    if (d.details && d.details.length) {
+                        html += d.details.map(det => `<div style="background:var(--surface-2);padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:0.82rem;border-left:3px solid var(--accent)">Market ${det.market_id} : ${det.tokens_merged} → 1 (qty=${det.net_qty}, avg=${det.net_avg})</div>`).join('');
+                    }
+                    panel.innerHTML = html;
+                } else {
+                    panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">✅ Aucune position à fusionner, inventaire propre.</p>';
+                }
+                toast(`⚡ Merge: ${d.merged} fusionnées, ${d.cleaned} nettoyées`, 'info');
+            } else toast('❌ ' + d.error, 'error');
+        }).catch(() => toast('❌ Erreur merge', 'error'));
+    }
+
+    function loadHistory() {
+        fetch('/api/copy-trades-history').then(r => r.json()).then(list => {
+            const tbody = document.getElementById('history-tbody');
+            document.getElementById('ct-total-copies').textContent = list.length;
+            if (!list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade</td></tr>'; return; }
+            tbody.innerHTML = list.map(t => `
+        <tr>
+          <td style="font-size:0.75rem;color:var(--text-dim)">${(t.timestamp || '').slice(0, 16).replace('T', ' ')}</td>
+          <td><span class="addr">${(t.source_wallet || '').slice(0, 6)}…${(t.source_wallet || '').slice(-4)}</span></td>
+          <td style="font-size:0.78rem">${(t.token_id || '').slice(0, 20)}</td>
+          <td><span class="tag ${t.side === 'buy' ? 'tag-green' : 'tag-red'}">${(t.side || '').toUpperCase()}</span></td>
+          <td>${parseFloat(t.quantity || 0).toFixed(2)}</td>
+          <td>$${parseFloat(t.price || 0).toFixed(3)}</td>
+          <td><span class="tag tag-green">${t.status || '--'}</span></td>
+        </tr>`).join('');
+        }).catch(() => { });
+    }
+
+    // Init
+    loadWallets();
+    loadHistory();
+</script>
+{% endblock %}
