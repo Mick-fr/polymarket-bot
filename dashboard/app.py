@@ -241,6 +241,25 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         os.system("docker compose restart bot &")
         return jsonify({"status": "ok", "active": True, "kill_switch": False})
 
+    # 2026 V7.7 — Factory Reset API
+    @app.route("/api/factory-reset", methods=["POST"])
+    @login_required
+    def api_factory_reset():
+        data = request.json or {}
+        if data.get("confirm_phrase") != "RESET":
+            return jsonify({"status": "error", "message": "Phrase de confirmation invalide"}), 400
+        
+        logger.warning("[DASHBOARD] FACTORY RESET invoqué par l'utilisateur")
+        res = db.factory_reset()
+        
+        if res.get("status") == "ok":
+            import os
+            # Redémarrer le bot pour prendre en compte la table vide
+            os.system("docker compose restart bot &")
+            return jsonify(res)
+        else:
+            return jsonify(res), 500
+
     @app.route("/api/toggle-bot", methods=["POST"])
     @login_required
     def api_toggle_bot():

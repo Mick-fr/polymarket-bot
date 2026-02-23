@@ -1162,8 +1162,52 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT timestamp, balance FROM balance_history ORDER BY id DESC LIMIT ?",
-                (limit,),
+                (limit,)
             )
-            rows = [dict(r) for r in cur.fetchall()]
-            rows.reverse()  # Ordre chronologique
-            return rows
+            return [dict(r) for r in cur.fetchall()][::-1]
+
+    # 2026 V7.7 — Factory Reset Complet
+    def factory_reset(self) -> dict:
+        """
+        Réinitialise entièrement l'état du bot :
+        - Vider les tables de positions, historique (trades, copy_trades)
+        - Vider active_copies, analytics_cache
+        - Vider les logs trop vieux (> 24h ou tout selon le choix, ici on vide tout le vieux et garde un log)
+        - Reset HWM = cash actuel
+        - Reset kill_switch = False
+        - Reset bot_active = True
+        - Reset kill_switch_reason = ''
+        """
+        try:
+            current_balance = float(self.get_config("last_portfolio_value", 0) or 0)
+            
+            with self._cursor() as cur:
+                # 1. Vider les tables
+                cur.execute("DELETE FROM positions")
+                cur.execute("DELETE FROM trades")
+                cur.execute("DELETE FROM copy_trades")
+                cur.execute("DELETE FROM active_copies")
+                cur.execute("DELETE FROM analytics_cache")
+                
+                # 2. Vider les logs (on supprime tout sauf les 10 deniers pour l'historique de reset)
+                cur.execute(
+                    "DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY timestamp DESC LIMIT 10)"
+                )
+            
+            # 3. Reset configs
+            self.set_kill_switch(False)
+            self.set_config("bot_active", "true")
+            self.set_config("kill_switch_reason", "")
+            
+            if current_balance > 0:
+                self.update_high_water_mark(current_balance)
+            
+            self.add_log(
+                "WARNING", "system", 
+                f"[Factory Reset] Tout réinitialisé — nouvelle base saine. Portfolio = {current_balance:.2f} USDC, HWM reset."
+            )
+            return {"status": "ok", "message": "Factory reset completed", "hwm": current_balance}
+        except Exception as e:
+            import logging
+            logging.getLogger("db").error(f"Factory reset failed: {e}")
+            return {"status": "error", "message": str(e)}

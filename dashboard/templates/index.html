@@ -673,7 +673,11 @@
         <button class="hbtn hbtn-danger" id="btn-kill" onclick="toggleBot('kill')">⏹ Kill</button>
         <button class="hbtn hbtn-success" id="btn-resume" onclick="toggleBot('resume')" style="display:none">▶
             Resume</button>
-        <a href="{{ url_for('logout') }}" class="hbtn">Logout</a>
+        <!-- V7.7 Factory Reset -->
+        <button class="hbtn hbtn-danger" onclick="factoryReset()"
+            style="margin-left:8px; border-color:var(--red); color:var(--red); background:rgba(239,68,68,0.1);">🔄
+            Factory Reset</button>
+        <a href="{{ url_for('logout') }}" class="hbtn" style="margin-left:8px;">Logout</a>
     </div>
 </header>
 
@@ -1057,6 +1061,35 @@
                 syncLiveConfig();
             }
         }).catch(() => toast('❌ Erreur réseau', 'error'));
+    }
+
+    // 2026 V7.7 — Factory Reset Complet
+    function factoryReset() {
+        var msg = "⚠️ ATTENTION DANGER ⚠️\n\nÊtes-vous sûr ? Cela vendra virtuellement TOUTES les positions, effacera tout l'historique copy, videra les journaux et remettra votre HWM au solde actuel.\n\nTapez 'RESET' en majuscules pour confirmer :";
+        var promptVal = prompt(msg);
+        if (promptVal !== "RESET") {
+            if (promptVal !== null) {
+                alert("Annulé : phrase de confirmation incorrecte.");
+            }
+            return;
+        }
+
+        toast('Démarrage du Factory Reset...', 'info');
+        fetch('/api/factory-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm_phrase: 'RESET' })
+        })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'ok') {
+                    alert("✅ Factory Reset terminé avec succès. Redémarrage de la page...");
+                    window.location.reload();
+                } else {
+                    toast("Erreur Factory Reset: " + (d.message || d.error), 'error');
+                }
+            })
+            .catch(e => toast('Erreur de connexion', 'error'));
     }
 
     // ── Apply AI Rec ───────────────────────────────────────────
