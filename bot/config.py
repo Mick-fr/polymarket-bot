@@ -73,7 +73,7 @@ class BotConfig:
     telegram_token: str = ""
     telegram_chat_id: str = ""
     
-    # 2026 V6.2 FINAL
+    # 2026 V6.3 FINAL
     telegram_enabled: bool = True
 
     # 2026 V6 SCALING
@@ -165,7 +165,7 @@ def load_config() -> AppConfig:
             telegram_token=os.getenv("TELEGRAM_TOKEN") or tgram_yml.get("token", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or str(tgram_yml.get("chat_id", "")),
             
-            # 2026 V6.2 FINAL
+            # 2026 V6.3 FINAL
             telegram_enabled=str(os.getenv("TELEGRAM_ENABLED", "true")).lower() == "true",
             
             # 2026 V6 SCALING

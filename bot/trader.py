@@ -134,10 +134,10 @@ class Trader:
             try:
                 eligible = self.strategy.get_eligible_markets()
                 
-                # 2026 V6.2 FINAL
+                # 2026 V6.3 FINAL
                 from bot.telegram import send_alert
                 positions = self.db.get_all_positions() if self.db else []
-                send_alert(f"🚀 Bot V6.2 démarré — {len(positions)} positions | Cash {balance:.2f} USDC | Universe {len(eligible) if eligible else 0} marchés")
+                send_alert(f"🚀 Bot V6.3 démarré — {len(positions)} positions | Cash {balance:.2f} USDC | {len(eligible) if eligible else 0} marchés éligibles")
                 
                 ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
                 if ws_tokens:
@@ -427,7 +427,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 V6.2 FINAL
+        # 2026 V6.3 FINAL
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
