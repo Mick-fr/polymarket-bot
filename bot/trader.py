@@ -80,6 +80,11 @@ class Trader:
         logger.info("=" * 60)
         self.db.add_log("INFO", "trader", "Démarrage du bot OBI")
 
+        # 2026 V7.5.1 — Force default active state at startup
+        self.db.set_kill_switch(False)
+        self.db.set_config("bot_active", "true")
+        logger.info("[Startup] bot_active=true, kill_switch=false — defaults set")
+
         if self.config.bot.paper_trading:
             logger.warning("=" * 60)
             logger.warning("MODE PAPER TRADING ACTIF — Aucun ordre réel ne sera passé")
@@ -314,14 +319,18 @@ class Trader:
         if hasattr(self.pm_client, "ws_client") and hasattr(self.pm_client.ws_client, "log_status"):
             self.pm_client.ws_client.log_status()
 
-        # 1. Kill switch
-        logger.debug("[Cycle] Étape 1: kill switch")
-        if self.db.get_kill_switch():
-            logger.debug("Kill switch activé – bot en pause.")
+        # 1. Kill switch + bot_active — V7.5.1 enhanced status logging
+        kill_switch = self.db.get_kill_switch()
+        bot_active = self.db.get_config("bot_active", "true") != "false"
+        logger.info("[Status] Bot active = %s | kill_switch = %s", bot_active, kill_switch)
+
+        if kill_switch or not bot_active:
+            logger.info("[Cycle] Bot en pause — aucun trade exécuté (kill=%s, active=%s)", kill_switch, bot_active)
             if not getattr(self, "_kill_switch_alerted", False):
                 send_alert("⚠️ KILL SWITCH ACTIVÉ — Le bot est en pause.")
                 self._kill_switch_alerted = True
             return
+        self._kill_switch_alerted = False
 
         # 2026 V7.3.6 AGGRESSIVITÉ LIVE — rechargement dynamique chaque cycle + flag instantané
         import os as _os

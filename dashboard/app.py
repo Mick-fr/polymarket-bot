@@ -183,18 +183,49 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     def api_resume():
         import os
         db.set_kill_switch(False)
+        db.set_config("bot_active", "true")
         logger.info("[DASHBOARD] Bot resumed by user")
         db.add_log("INFO", "dashboard", "[DASHBOARD] Bot resumed by user")
         os.system("docker compose restart bot &")
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "active": True, "kill_switch": False})
 
     @app.route("/kill", methods=["POST"])
     @login_required
     def api_kill():
         db.set_kill_switch(True)
+        db.set_config("bot_active", "false")
         logger.warning("Kill switch ACTIVE via dashboard.")
         db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "active": False, "kill_switch": True})
+
+    # 2026 V7.5.1 — Bot status API
+    @app.route("/api/bot-status")
+    @login_required
+    def api_bot_status():
+        ks = db.get_kill_switch()
+        active = db.get_config("bot_active", "true") != "false"
+        return jsonify({"active": not ks and active, "kill_switch": ks, "bot_active": active})
+
+    @app.route("/api/toggle-bot", methods=["POST"])
+    @login_required
+    def api_toggle_bot():
+        """Toggle bot active state."""
+        ks = db.get_kill_switch()
+        if ks:
+            # Resume
+            db.set_kill_switch(False)
+            db.set_config("bot_active", "true")
+            logger.info("[DASHBOARD] Bot toggled ON by user")
+            db.add_log("INFO", "dashboard", "Bot toggled ON")
+            import os; os.system("docker compose restart bot &")
+            return jsonify({"status": "ok", "active": True, "kill_switch": False})
+        else:
+            # Kill
+            db.set_kill_switch(True)
+            db.set_config("bot_active", "false")
+            logger.warning("[DASHBOARD] Bot toggled OFF by user")
+            db.add_log("WARNING", "dashboard", "Bot toggled OFF")
+            return jsonify({"status": "ok", "active": False, "kill_switch": True})
 
     # 2026 V7.3.8 DROPDOWN AGGRESSIVITÉ INSTANT APPLY + OVERRIDE CONSTANTES DB
     @app.route("/api/aggressivity", methods=["GET", "POST"])
