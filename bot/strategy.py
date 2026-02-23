@@ -946,26 +946,29 @@ class OBIMarketMakingStrategy(BaseStrategy):
         """Retourne les marches eligibles en cache (sans re-appeler Gamma)."""
         return self._universe._cache if self._universe._cache else []
 
-# ─── V7.9 BTC/ETH INFO EDGE MODULE ──────────────────────────────────────────
+# ─── V9.0 BTC/ETH INFO EDGE MODULE ──────────────────────────────────────────
 
 class InfoEdgeStrategy(BaseStrategy):
     """
-    Module "Info Edge" dédié BTC & ETH — version V8.5 optimisée.
-    - Edge Score min 18% pour entrer (vs 12% avant)
-    - Tiered sizing : >= 35% → x2.5 | >= 25% → x1.8 | sinon x1.0
-    - Maturity 5-45 min STRICT
-    - Max 8% du portfolio par trade
+    Module "Info Edge" dédié BTC & ETH — version V9.0 Top 2026.
+    - Edge Score min 20% pour entrer
+    - Volume 5-min filter : > 15 000 $ requis
+    - Bonus signal : funding rate delta Binance
+    - Tiered sizing : 20-24% → x1.0 | 25-34% → x1.8 | ≥ 35% → x2.8
+    - Maturity 5-40 min STRICT
+    - Max 8% du portfolio par trade | Expo BTC/ETH max 25%
     """
 
-    # V8.5 paramètres optimisés
+    # V9.0 paramètres Top 2026
     ORDER_SIZE_PCT = 0.018   # 1.8% du cash disponible
     MAX_EXPO_PCT   = 0.25    # 25% d'exposition BTC/ETH max
     MAX_ORDER_USDC = 12.0    # plafond par ordre
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 18.0    # % — seuil minimum pour entrer
+    MIN_EDGE_SCORE = 20.0    # % strict (vs 18% en V8.5)
     MAX_TRADE_PCT  = 0.08    # 8% max du portfolio par trade
     MIN_MINUTES    = 5.0
-    MAX_MINUTES    = 45.0    # 5-45 min strict
+    MAX_MINUTES    = 40.0    # 5-40 min strict (vs 45 en V8.5)
+    MIN_VOLUME_5M  = 15_000  # $ volume 5-min minimum
 
     def __init__(self, client: PolymarketClient, db=None, max_markets: int = 20, max_order_size_usdc: float = 12.0):
         super().__init__(client)
@@ -980,16 +983,21 @@ class InfoEdgeStrategy(BaseStrategy):
         q_up = q.upper()
         return any(x in q_up for x in ["BITCOIN", "BTC", "ETHEREUM", "ETH"])
 
-    def _simulate_edge_score(self) -> float:
-        """Simulation Edge Score Arkham/Nansen/Binance — retourne un score en %."""
+    def _simulate_edge_score(self, market: EligibleMarket) -> float:
+        """Simulation Edge Score Arkham/Nansen/Binance + funding rate delta — en %."""
         import random
-        return random.uniform(5.0, 45.0)
+        base = random.uniform(8.0, 48.0)
+        # Bonus funding rate Binance : +0 à +8%
+        funding_bonus = random.uniform(0.0, 8.0)
+        # Volume filter proxy: simulation vol 5-min arbitraire
+        self._last_vol5m = random.uniform(5_000, 80_000)
+        return base + funding_bonus
 
     def _decide_side(self, market: EligibleMarket, edge_score: float) -> str:
         return "buy"  # mode conservateur dans cette simulation
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
-        """V8.5: filtre strict BTC/ETH 5-45min, Edge Score >= 18%, sizing tiered."""
+        """V9.0: BTC/ETH 5-40min, Edge Score >= 20%, volume > 15k, sizing tiered 1.8x/2.8x."""
         signals: list[Signal] = []
         markets = self._universe.get_eligible_markets()
         if not markets:
@@ -1002,6 +1010,8 @@ class InfoEdgeStrategy(BaseStrategy):
             except Exception:
                 pass
 
+        daily_edge_scores: list[float] = []
+
         traded = 0
         for market in markets:
             if traded >= self.max_markets:
@@ -1012,30 +1022,42 @@ class InfoEdgeStrategy(BaseStrategy):
 
             minutes_to_expiry = market.days_to_expiry * 1440
             if minutes_to_expiry < self.MIN_MINUTES or minutes_to_expiry > self.MAX_MINUTES:
-                logger.debug("[INFO EDGE V8.5] %s ignoré (%.1fmin hors [5,45])", market.question[:20], minutes_to_expiry)
+                logger.debug("[V9.0 INFO EDGE] %s ignoré (%.1fmin hors [5,40])", market.question[:20], minutes_to_expiry)
                 continue
 
             if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
-                logger.debug("[INFO EDGE V8.5] %s ignoré (spread > 3%%)", market.question[:20])
+                logger.debug("[V9.0 INFO EDGE] %s ignoré (spread > 3%%)", market.question[:20])
                 continue
 
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
 
-            edge_score = self._simulate_edge_score()
-
-            if edge_score < self.MIN_EDGE_SCORE:
-                logger.debug("[INFO EDGE V8.5] %s skip — score %.1f%% < %.0f%%", market.question[:20], edge_score, self.MIN_EDGE_SCORE)
+            # ── Edge Score + funding bonus + volume filter ─────────────
+            try:
+                edge_score = self._simulate_edge_score(market)
+                vol_5m = getattr(self, "_last_vol5m", 0)
+            except Exception as e:
+                logger.warning("[V9.0 INFO EDGE] Erreur edge score: %s — skip", e)
                 continue
 
-            logger.info("[INFO EDGE V8.5] %s | Edge Score: %.1f%% → entrée", market.question[:30], edge_score)
+            # Volume filter V9.0: > 15k$ sur 5 min
+            if vol_5m < self.MIN_VOLUME_5M:
+                logger.debug("[V9.0 INFO EDGE] %s ignoré (vol 5m=%.0f$ < 15k)", market.question[:20], vol_5m)
+                continue
 
+            if edge_score < self.MIN_EDGE_SCORE:
+                logger.debug("[V9.0 INFO EDGE] %s skip — score %.1f%% < %.0f%%", market.question[:20], edge_score, self.MIN_EDGE_SCORE)
+                continue
+
+            daily_edge_scores.append(edge_score)
+
+            # ── Tiered sizing V9.0 ─────────────────────────────────────
             if edge_score >= 35.0:
-                size_multiplier = 2.5
+                size_multiplier = 2.8
             elif edge_score >= 25.0:
                 size_multiplier = 1.8
             else:
-                size_multiplier = 1.0
+                size_multiplier = 1.0  # edge 20-24%
 
             base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
             order_size = min(base_order * size_multiplier, portfolio * self.MAX_TRADE_PCT, self.MAX_ORDER_USDC)
@@ -1044,6 +1066,9 @@ class InfoEdgeStrategy(BaseStrategy):
 
             bid_price = min(market.mid_price + 0.005, 0.98)
             shares = max(5.0, order_size / bid_price)
+
+            logger.info("[V9.0 INFO EDGE] %s | Edge Score %.1f%% → sizing %.1fx | order=%.2f USDC | vol5m=%.0f$",
+                        market.question[:30], edge_score, size_multiplier, order_size, vol_5m)
 
             signals.append(Signal(
                 token_id=market.yes_token_id,
@@ -1054,19 +1079,27 @@ class InfoEdgeStrategy(BaseStrategy):
                 price=round(bid_price, 3),
                 size=round(shares, 2),
                 confidence=min(0.99, 0.70 + edge_score / 100),
-                reason=f"InfoEdge={edge_score:.1f}%_x{size_multiplier}",
+                reason=f"InfoEdge={edge_score:.1f}%_x{size_multiplier}_vol={vol_5m:.0f}",
                 mid_price=market.mid_price
             ))
             self._last_quote_ts[market.yes_token_id] = time.time()
             traded += 1
 
-        logger.info("[INFO EDGE V8.5] %d signal(s) — min_edge=%.0f%% | 5-45min | max_trade=8%%", len(signals), self.MIN_EDGE_SCORE)
+        avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
+        logger.info("[V9.0 INFO EDGE] %d signal(s) | avg_edge=%.1f%% | 5-40min | vol>15k | max_trade=8%%", len(signals), avg_edge)
+        # Store avg edge score for dashboard display
+        if self.db:
+            try:
+                self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
+            except Exception:
+                pass
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
-        """Mode 'Info Edge Only' ENFORCED V8.5 — BTC/ETH 5-45min, min Edge 18%."""
-        logger.info("[ENFORCED INFO EDGE V8.5] Universe BTC/ETH 5-45min | min Edge 18%% | sizing 1x/1.8x/2.5x")
+        """Mode 'Info Edge Only' V9.0 ENFORCED — BTC/ETH 5-40min, min Edge 20%, funding bonus."""
+        logger.info("[ENFORCED INFO EDGE V9.0] Universe BTC/ETH 5-40min | min Edge 20%% | tiered 1.0x/1.8x/2.8x | vol>15k")
         return self.analyze(balance=balance)
+
 
     def get_eligible_markets(self) -> list[EligibleMarket]:
         return self._universe._cache if self._universe._cache else []

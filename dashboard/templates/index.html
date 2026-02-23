@@ -688,10 +688,11 @@
 <!-- ════════ MAIN ════════ -->
 <main class="v74-main">
 
-    <!-- V8.2 Info Edge ENFORCED Banner -->
+    <!-- V9.0 Info Edge ENFORCED Banner -->
     <div id="info-edge-card"
-        style="display:none; background:rgba(239,68,68,0.12); border:2px solid #ef4444; color:#ef4444; padding:12px 20px; border-radius:10px; margin-bottom:15px; font-weight:700; font-size:1.05rem; text-align:center; letter-spacing:0.5px;">
-        ⚡ INFO EDGE ONLY ENFORCED — Universe limité BTC/ETH 5-60min uniquement, OBI désactivé
+        style="display:none; background:rgba(16,185,129,0.1); border:2px solid #10b981; color:#10b981; padding:12px 20px; border-radius:10px; margin-bottom:15px; font-weight:700; font-size:1.05rem; text-align:center; letter-spacing:0.5px;">
+        ⚡ <span id="info-edge-version-label">Info Edge Only V9.0</span> ENFORCED — BTC/ETH 5-40min | Edge Score moyen :
+        <span id="info-edge-avg-score">—</span>
     </div>
 
     <!-- ── METRIC CARDS ─────────────────────────────────────── -->
@@ -1176,8 +1177,14 @@
             document.getElementById('cfg-skew').textContent = (cfg.inventory_skew_threshold || 0).toFixed(2);
             document.getElementById('cfg-sizing').textContent = (cfg.sizing_mult || 1).toFixed(2) + '×';
             document.getElementById('cfg-max-order').textContent = '$' + (cfg.max_order_usd || 15).toFixed(0);
+            // V9.0: afficher l'Edge Score moyen du jour dans la bannière Info Edge
+            const avgScoreEl = document.getElementById('info-edge-avg-score');
+            if (avgScoreEl && cfg.info_edge_avg_score) {
+                avgScoreEl.textContent = parseFloat(cfg.info_edge_avg_score).toFixed(1) + '%';
+            }
         }).catch(() => { });
     }
+
 
 
 

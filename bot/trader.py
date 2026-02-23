@@ -464,8 +464,8 @@ class Trader:
             signals = []
 
             if strategy_mode == "Info Edge Only":
-                # ────── MODE STRICT : OBI complètement désactivé ──────
-                logger.info("[ENFORCED] OBI désactivé → InfoEdge uniquement BTC/ETH 5-60min")
+                # ────── MODE STRICT V9.0 : OBI complètement désactivé ──────
+                logger.info("[ENFORCED V9.0] Info Edge Only actif — OBI désactivé → BTC/ETH 5-40min | min Edge 20%% | vol>15k")
                 if hasattr(self, "info_edge_strategy"):
                     signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
                 # Aucun signal OBI
