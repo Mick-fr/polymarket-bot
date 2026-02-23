@@ -116,11 +116,6 @@ class Trader:
             logger.info("HWM réinitialisé: %.2f → %.2f USDC (solde actuel)", old_hwm, balance)
             self.db.add_log("INFO", "trader", f"HWM reset: {old_hwm:.2f} → {balance:.2f}")
 
-            # 2026 V6.1 HOTFIX
-            from bot.telegram import send_alert
-            positions = self.db.get_all_positions() if self.db else []
-            send_alert(f"🚀 Bot V6.1 démarré - {len(positions)} positions | Cash {balance:.2f} USDC")
-
         # Stratégie OBI avec accès à la DB pour cooldowns et inventaire
         self.strategy = OBIMarketMakingStrategy(
             client=self.pm_client,
@@ -138,6 +133,12 @@ class Trader:
         if not self.config.bot.paper_trading:
             try:
                 eligible = self.strategy.get_eligible_markets()
+                
+                # 2026 V6.2 FINAL
+                from bot.telegram import send_alert
+                positions = self.db.get_all_positions() if self.db else []
+                send_alert(f"🚀 Bot V6.2 démarré — {len(positions)} positions | Cash {balance:.2f} USDC | Universe {len(eligible) if eligible else 0} marchés")
+                
                 ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
                 if ws_tokens:
                     self.pm_client.ws_client.start(
@@ -426,7 +427,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 V6.1 HOTFIX
+        # 2026 V6.2 FINAL
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(

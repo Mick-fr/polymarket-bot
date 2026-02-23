@@ -72,6 +72,9 @@ class BotConfig:
     # 2026 FINAL TELEGRAM
     telegram_token: str = ""
     telegram_chat_id: str = ""
+    
+    # 2026 V6.2 FINAL
+    telegram_enabled: bool = True
 
     # 2026 V6 SCALING
     as_enabled: bool = True
@@ -161,6 +164,9 @@ def load_config() -> AppConfig:
             ai_weight=float(os.getenv("BOT_AI_WEIGHT") or bot_yml.get("ai_weight", 0.6)),
             telegram_token=os.getenv("TELEGRAM_TOKEN") or tgram_yml.get("token", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or str(tgram_yml.get("chat_id", "")),
+            
+            # 2026 V6.2 FINAL
+            telegram_enabled=str(os.getenv("TELEGRAM_ENABLED", "true")).lower() == "true",
             
             # 2026 V6 SCALING
             as_enabled=str(os.getenv("AS_ENABLED") or bot_yml.get("as_enabled", True)).lower() == "true",
