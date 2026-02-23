@@ -365,6 +365,14 @@
 
             <button class="btn btn-outline" style="width: 100%; margin-top: 5px;" onclick="loadAIReview()">🔄 Relancer
                 l'Analyse</button>
+
+            <!-- 2026 V7.3.10 Live Config Panel -->
+            <div id="live-config-panel"
+                style="margin-top: 15px; background: rgba(255,255,255,0.04); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <div style="font-size: 0.78rem; color: #888; margin-bottom: 6px;">⚡ Config Appliquée Live (rafraîchi
+                    toutes les 10s)</div>
+                <div style="color:#aaa; font-size:0.8rem;">Chargement...</div>
+            </div>
         </div>
     </div>
 </div>
@@ -560,10 +568,11 @@
                 // Show toast
                 const toast = document.createElement('div');
                 toast.style.cssText = 'position:fixed;top:20px;right:20px;background:linear-gradient(135deg,#1b5e20,#2e7d32);color:#fff;padding:14px 24px;border-radius:10px;z-index:9999;font-weight:bold;box-shadow:0 4px 20px rgba(0,0,0,0.4);animation:fadeIn 0.3s;';
-                toast.innerHTML = `🎯 Agressivité → <strong>${data.level}</strong><br><small>Bot rechargé au prochain cycle</small>`;
+                toast.innerHTML = `🎯 Agressivité → <strong>${data.level}</strong><br><small>Paramètres sauvegardés en DB — actifs au prochain cycle</small>`;
                 document.body.appendChild(toast);
                 setTimeout(() => toast.remove(), 3000);
                 setTimeout(loadPortfolio, 500);
+                syncLiveConfig();
             } else {
                 indicator.innerText = "❌ Erreur";
                 indicator.style.background = "#b71c1c";
@@ -604,8 +613,9 @@
                 method: 'POST'
             }).then(r => r.json()).then(data => {
                 if (data.status === "ok") {
-                    alert(`✅ ${data.applied_count} recommandations appliquées avec succès. Le bot redémarre et le mode Agressivité est passé en Custom.`);
+                    alert(`✅ ${data.applied_count} recommandations appliquées avec succès. Paramètres sauvegardés en DB — actifs au prochain cycle bot.`);
                     setTimeout(loadPortfolio, 1000);
+                    syncLiveConfig();
                 } else {
                     alert("Erreur lors de l'application des recommandations: " + data.error);
                 }
@@ -616,8 +626,51 @@
     }
 
     function exportCSV() {
-        // Redirection vers CSV old endpoint as fallback logic or basic redirect
         alert("Using external CSV exporter from previous dashboard iteration logic (mock).");
+    }
+
+    // 2026 V7.3.10 — Live config sync from DB
+    function syncLiveConfig() {
+        fetch('/api/current-config')
+            .then(r => r.json())
+            .then(cfg => {
+                // 1. Sync dropdown selector
+                const sel = document.getElementById('agg-select');
+                if (sel) {
+                    const level = cfg.aggressivity_level || 'Balanced';
+                    // Add Custom option if needed
+                    if (level === 'Custom' && !sel.querySelector('option[value="Custom"]')) {
+                        const opt = document.createElement('option');
+                        opt.value = 'Custom'; opt.text = '⚙️ Custom (AI)';
+                        sel.appendChild(opt);
+                    }
+                    sel.value = level;
+                    // Update badge
+                    const badge = document.getElementById('agg-indicator');
+                    if (badge) {
+                        badge.innerText = level;
+                        badge.style.background = level === 'Very Aggressive' ? '#b71c1c'
+                            : level === 'Aggressive' ? '#e65100'
+                                : level === 'Balanced' ? '#1565c0'
+                                    : level === 'Custom' ? '#6a1b9a'
+                                        : '#2e7d32';
+                    }
+                }
+                // 2. Update the live config panel
+                const panel = document.getElementById('live-config-panel');
+                if (panel) {
+                    panel.innerHTML = `
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; font-size:0.82rem;">
+                            <div><span style="color:#aaa;">order_size_pct</span><br><strong style="color:#64b5f6;">${(cfg.order_size_pct * 100).toFixed(1)}%</strong></div>
+                            <div><span style="color:#aaa;">max_expo</span><br><strong style="color:#64b5f6;">${(cfg.max_net_exposure_pct * 100).toFixed(0)}%</strong></div>
+                            <div><span style="color:#aaa;">skew_thresh</span><br><strong style="color:#64b5f6;">${cfg.inventory_skew_threshold}</strong></div>
+                            <div><span style="color:#aaa;">sizing_mult</span><br><strong style="color:#64b5f6;">${cfg.sizing_mult}×</strong></div>
+                            <div><span style="color:#aaa;">max_order_usd</span><br><strong style="color:#64b5f6;">$${cfg.max_order_usd}</strong></div>
+                            <div><span style="color:#aaa;">niveau</span><br><strong style="color:#ffd54f;">${cfg.aggressivity_level}</strong></div>
+                        </div>`;
+                }
+            })
+            .catch(() => { }); // Silent failure
     }
 
     // Init All
@@ -626,6 +679,7 @@
         loadPositions();
         loadTrades(50);
         loadAIReview();
+        syncLiveConfig();
     }
 
     initDashboard();
@@ -635,5 +689,8 @@
         loadPortfolio();
         loadPositions();
     }, 15000);
+
+    // Live config sync every 10 seconds
+    setInterval(syncLiveConfig, 10000);
 </script>
 {% endblock %}
