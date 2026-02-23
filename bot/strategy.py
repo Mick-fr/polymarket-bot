@@ -442,14 +442,46 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
         self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
 
+    # 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    def _apply_live_aggressivity(self):
+        """Met a jour les parametres de la strategie en fonction du dashboard live."""
+        if not self.db:
+            return
+        level = self.db.get_aggressivity_level()
+        if level == "Conservative":
+            self.max_exposure_pct = 0.18
+            self.inv_skew_threshold = 0.72
+            self.sizing_mult = 0.75
+            self.max_order_size_usdc = 10.0
+        elif level == "Balanced":
+            self.max_exposure_pct = 0.25
+            self.inv_skew_threshold = 0.58
+            self.sizing_mult = 1.00
+            self.max_order_size_usdc = 15.0
+        elif level == "Aggressive":
+            self.max_exposure_pct = 0.35
+            self.inv_skew_threshold = 0.48
+            self.sizing_mult = 1.45
+            self.max_order_size_usdc = 22.0
+        elif level == "Very Aggressive":
+            self.max_exposure_pct = 0.45
+            self.inv_skew_threshold = 0.38
+            self.sizing_mult = 1.90
+            self.max_order_size_usdc = 30.0
+        else:
+            self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
+            self.sizing_mult = 1.0
+
     def analyze(self, balance: float = 0.0) -> list[Signal]:
+        self._apply_live_aggressivity()
         signals: list[Signal] = []
 
         # Taille par ordre : 3% du solde (Set B), min 1 USDC, plafond max_order_size_usdc
-        order_size_usdc = max(1.0, min(balance * ORDER_SIZE_PCT, self.max_order_size_usdc))
+        applied_sizing_mult = getattr(self, "sizing_mult", 1.0)
+        order_size_usdc = max(1.0, min(balance * ORDER_SIZE_PCT * applied_sizing_mult, self.max_order_size_usdc))
         logger.info(
-            "[OBI] Sizing: solde=%.2f USDC -> order_size=%.2f USDC (%.0f%%, plafond=%.2f)",
-            balance, order_size_usdc, ORDER_SIZE_PCT * 100, self.max_order_size_usdc,
+            "[OBI] Sizing: solde=%.2f USDC -> order_size=%.2f USDC (%.0f%% x %.2f, plafond=%.2f)",
+            balance, order_size_usdc, ORDER_SIZE_PCT * 100, applied_sizing_mult, self.max_order_size_usdc,
         )
 
         markets = self._universe.get_eligible_markets()
@@ -646,15 +678,16 @@ class OBIMarketMakingStrategy(BaseStrategy):
             #   - Position existante → SELL uniquement
             #
             # LIVE TRADING : ordres limit dans le carnet, fill asynchrone.
-            #   → BUY si inv_ratio < 0.60 (Set B, ex: 0.70)
+            #   → BUY si inv_ratio < seuil cible (Set B, ex: 0.70)
             #   → SELL si position existante
-            #   → Inventory skewing via RiskManager (ratio >= 0.60 → ask only)
+            #   → Inventory skewing via RiskManager (ratio >= seuil → ask only)
             has_position = qty_held > 0.01
+            skew_thresh = getattr(self, "inv_skew_threshold", INVENTORY_SKEW_THRESHOLD)
             if self.paper_trading:
                 emit_sell = has_position
-                emit_buy  = (not has_position) and (inv_ratio < INVENTORY_SKEW_THRESHOLD)
+                emit_buy  = (not has_position) and (inv_ratio < skew_thresh)
             else:
-                emit_buy  = inv_ratio < INVENTORY_SKEW_THRESHOLD
+                emit_buy  = inv_ratio < skew_thresh
                 emit_sell = has_position
 
             logger.info(

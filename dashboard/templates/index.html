@@ -72,6 +72,31 @@
 </nav>
 
 <div class="container">
+    <!-- 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL -->
+    <div class="card" style="margin-bottom: 20px;">
+        <h3 style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Agressivité du Bot</span>
+            <span id="agg-indicator" style="font-size:0.9rem; color:#aaa">Chargement...</span>
+        </h3>
+        <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+            <button class="btn"
+                style="padding: 8px 16px; border:none; border-radius:4px; font-weight:bold; cursor:pointer; background-color: #4caf50; color: white;"
+                onclick="setAggressivity('Conservative')">Conservative</button>
+            <button class="btn"
+                style="padding: 8px 16px; border:none; border-radius:4px; font-weight:bold; cursor:pointer; background-color: #2196f3; color: white;"
+                onclick="setAggressivity('Balanced')">Balanced</button>
+            <button class="btn"
+                style="padding: 8px 16px; border:none; border-radius:4px; font-weight:bold; cursor:pointer; background-color: #ff9800; color: white;"
+                onclick="setAggressivity('Aggressive')">Aggressive</button>
+            <button class="btn"
+                style="padding: 8px 16px; border:none; border-radius:4px; font-weight:bold; cursor:pointer; background-color: #f44336; color: white;"
+                onclick="setAggressivity('Very Aggressive')">Very Aggressive</button>
+        </div>
+        <div id="agg-status"
+            style="padding: 10px; background: #2a2a2a; border-radius: 4px; font-family: monospace; font-size: 0.95rem;">
+            ...
+        </div>
+    </div>
     <div class="grid-2">
         <div class="card">
             <h3>PnL Cumule</h3>
@@ -167,6 +192,34 @@
     fetch('/health').then(r => r.json()).then(d => {
         if (d.kill_switch) document.getElementById('resume-btn').style.display = 'inline-block';
     });
+
+    // 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    function loadAggressivity() {
+        fetch('/api/aggressivity')
+            .then(r => r.json())
+            .then(data => {
+                const s = data.params;
+                document.getElementById('agg-status').innerHTML =
+                    `Niveau Actuel: <strong style="color:var(--accent)">${data.level}</strong><br>` +
+                    `<span style="color:#aaa">Max Expo:</span> ${s.max_expo} | ` +
+                    `<span style="color:#aaa">Inv Skew:</span> ${s.skew_ask_only} | ` +
+                    `<span style="color:#aaa">Sizing Mult:</span> ${s.sizing_mult} | ` +
+                    `<span style="color:#aaa">Max Order:</span> $${s.max_order_usd}`;
+                document.getElementById('agg-indicator').innerText = data.level;
+            }).catch(e => console.error(e));
+    }
+
+    function setAggressivity(level) {
+        document.getElementById('agg-indicator').innerText = "Mise à jour...";
+        fetch('/api/aggressivity', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ level: level })
+        }).then(() => loadAggressivity());
+    }
+
+    // Call loadAggressivity onload
+    loadAggressivity();
 
     // Refresh Live 30s
     renderCharts();

@@ -185,6 +185,21 @@ class Database:
                 ("on" if active else "off",),
             )
 
+    # 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    def get_aggressivity_level(self) -> str:
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = 'aggressivity_level'")
+            row = cur.fetchone()
+            return row["value"] if row else "Balanced"
+
+    def set_aggressivity_level(self, level: str):
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_state (key, value) VALUES ('aggressivity_level', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (level,)
+            )
+
     # ── Ordres ───────────────────────────────────────────────────
 
     def record_order(
