@@ -184,6 +184,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         import os
         db.set_kill_switch(False)
         db.set_config("bot_active", "true")
+        db.set_config("kill_switch_reason", "")
         logger.info("[DASHBOARD] Bot resumed by user")
         db.add_log("INFO", "dashboard", "[DASHBOARD] Bot resumed by user")
         os.system("docker compose restart bot &")
@@ -198,13 +199,47 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
         return jsonify({"status": "ok", "active": False, "kill_switch": True})
 
-    # 2026 V7.5.1 — Bot status API
+    # 2026 V7.6 — Enhanced Bot status API with reason, hwm, portfolio
     @app.route("/api/bot-status")
     @login_required
     def api_bot_status():
         ks = db.get_kill_switch()
         active = db.get_config("bot_active", "true") != "false"
-        return jsonify({"active": not ks and active, "kill_switch": ks, "bot_active": active})
+        reason = db.get_config("kill_switch_reason", "") or None
+        hwm = db.get_high_water_mark() if hasattr(db, 'get_high_water_mark') else 0.0
+        portfolio = float(db.get_config("last_portfolio_value", 0) or 0)
+        return jsonify({
+            "active": not ks and active,
+            "kill_switch": ks,
+            "bot_active": active,
+            "reason": reason,
+            "hwm": hwm,
+            "portfolio": portfolio
+        })
+
+    # 2026 V7.6 — Force reset kill switch (circuit breaker or manual)
+    @app.route("/api/reset-kill-switch", methods=["POST"])
+    @login_required
+    def api_reset_kill_switch():
+        import os
+        data = request.json or {}
+        update_hwm = data.get("update_hwm", False)
+        db.set_kill_switch(False)
+        db.set_config("bot_active", "true")
+        db.set_config("kill_switch_reason", "")
+        if update_hwm:
+            # Reset HWM to current portfolio value
+            current = float(db.get_config("last_portfolio_value", 0) or 0)
+            if current > 0:
+                db.update_high_water_mark(current)
+                logger.info("[DASHBOARD] Kill switch reset + HWM updated to %.2f USDC", current)
+            else:
+                logger.info("[DASHBOARD] Kill switch reset (HWM inconnu)")
+        else:
+            logger.info("[DASHBOARD] Kill switch reset by user (no HWM update)")
+        db.add_log("INFO", "dashboard", "[V7.6] Kill switch reset par utilisateur")
+        os.system("docker compose restart bot &")
+        return jsonify({"status": "ok", "active": True, "kill_switch": False})
 
     @app.route("/api/toggle-bot", methods=["POST"])
     @login_required
@@ -215,6 +250,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             # Resume
             db.set_kill_switch(False)
             db.set_config("bot_active", "true")
+            db.set_config("kill_switch_reason", "")  # V7.6 clear reason on resume
             logger.info("[DASHBOARD] Bot toggled ON by user")
             db.add_log("INFO", "dashboard", "Bot toggled ON")
             import os; os.system("docker compose restart bot &")
@@ -223,6 +259,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             # Kill
             db.set_kill_switch(True)
             db.set_config("bot_active", "false")
+            db.set_config("kill_switch_reason", "Manuel (dashboard)")
             logger.warning("[DASHBOARD] Bot toggled OFF by user")
             db.add_log("WARNING", "dashboard", "Bot toggled OFF")
             return jsonify({"status": "ok", "active": False, "kill_switch": True})

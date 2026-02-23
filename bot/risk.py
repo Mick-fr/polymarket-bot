@@ -46,7 +46,7 @@ logger = logging.getLogger("bot.risk")
 _MAX_NET_EXPOSURE_PCT_LEGACY = 0.08
 INVENTORY_SKEW_WARN    = 0.60   # Ratio > 60% → Ask only, cancel bids (ex: 70%)
 INVENTORY_SKEW_LIQ     = 1.00   # Ratio = 100% → liquidation unilaterale
-CIRCUIT_BREAKER_PCT    = 0.10   # Declenche si solde chute de 10% vs HWM
+CIRCUIT_BREAKER_PCT    = 0.10   # D\u00e9clenche si portfolio chute de 10% vs HWM (d\u00e9faut, override via DB: circuit_breaker_pct)
 
 
 @dataclass
@@ -209,25 +209,25 @@ class RiskManager:
 
     def _check_circuit_breaker(self, portfolio_value: float) -> RiskVerdict | None:
         """
-        Circuit breaker global : si la VALEUR TOTALE DU PORTFOLIO chute de 10% vs le HWM
-        journalier, déclenche le kill switch.
-
-        portfolio_value = USDC liquides + valeur inventaire (shares × avg_price).
-        Ce calcul évite les faux déclenchements lors d'un BUY normal :
-          avant BUY : 36 USDC → après BUY : 32 USDC + 10 shares × 0.40 = 36 USDC (stable).
-        Le CB ne se déclenche que si la valeur totale baisse réellement (perte sur les shares).
+        Circuit breaker global : si la VALEUR TOTALE DU PORTFOLIO chute vs le HWM
+        journalier au-delà du seuil configuré (default 10%, config: circuit_breaker_pct).
         """
         hwm = self.db.get_high_water_mark()
         if hwm <= 0 or portfolio_value <= 0:
             return None   # Pas encore de HWM (premier démarrage)
 
+        # V7.6 — Seuil configurable via DB
+        cb_pct = float(self.db.get_config("circuit_breaker_pct", CIRCUIT_BREAKER_PCT))
+
         drawdown = (hwm - portfolio_value) / hwm
-        if drawdown >= CIRCUIT_BREAKER_PCT:
+        if drawdown >= cb_pct:
+            drawdown_str = f"-{drawdown*100:.1f}% drawdown (HWM={hwm:.2f})"
             logger.critical(
-                "[RiskManager] CIRCUIT BREAKER: portfolio %.2f USDC = -%.1f%% vs HWM %.2f → kill switch",
-                portfolio_value, drawdown * 100, hwm,
+                "CIRCUIT BREAKER ACTIVÉ : -%s%% vs HWM %.2f (portfolio=%.2f) → kill_switch=True",
+                f"{drawdown*100:.1f}", hwm, portfolio_value,
             )
             self.db.set_kill_switch(True)
+            self.db.set_config("kill_switch_reason", f"Circuit Breaker {drawdown_str}")
             self.db.add_log(
                 "CRITICAL", "risk",
                 f"Circuit breaker déclenché: portfolio={portfolio_value:.2f} HWM={hwm:.2f} "
@@ -235,10 +235,30 @@ class RiskManager:
             )
             return RiskVerdict(
                 False,
-                f"Circuit breaker: drawdown {drawdown*100:.1f}% >= {CIRCUIT_BREAKER_PCT*100:.0f}%",
+                f"Circuit breaker: drawdown {drawdown*100:.1f}% >= {cb_pct*100:.0f}%",
                 "kill_switch",
             )
         return None
+
+    def reset_circuit_breaker(self, update_hwm: bool = False) -> str:
+        """V7.6 — Réinitialise le kill switch après un circuit breaker.
+        Optionnellement remet le HWM au portfolio actuel pour repartir proprement."""
+        self.db.set_kill_switch(False)
+        self.db.set_config("bot_active", "true")
+        self.db.set_config("kill_switch_reason", "")
+        if update_hwm:
+            # Récupère le portfolio actuel et le définit comme nouveau HWM
+            current_balance = float(self.db.get_config("last_portfolio_value", 0) or 0)
+            if current_balance > 0:
+                self.db.update_high_water_mark(current_balance)
+                msg = f"Circuit breaker reset — HWM mis à jour: {current_balance:.2f} USDC"
+            else:
+                msg = "Circuit breaker reset — HWM inchangé (valeur portfolio inconnue)"
+        else:
+            msg = "Circuit breaker reset — kill_switch=False, bot actif"
+        logger.info("[RiskManager] %s", msg)
+        self.db.add_log("INFO", "risk", msg)
+        return msg
 
     def _get_current_exposure_usdc(self, token_id: str, mid_price: float) -> float:
         """Calcule l'exposition actuelle en USDC pour un token.

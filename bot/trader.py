@@ -80,10 +80,19 @@ class Trader:
         logger.info("=" * 60)
         self.db.add_log("INFO", "trader", "Démarrage du bot OBI")
 
-        # 2026 V7.5.1 — Force default active state at startup
-        self.db.set_kill_switch(False)
-        self.db.set_config("bot_active", "true")
-        logger.info("[Startup] bot_active=true, kill_switch=false — defaults set")
+        # 2026 V7.6 — Startup: warn if kill switch was already active, don't auto-clear
+        if self.db.get_kill_switch():
+            reason = self.db.get_config("kill_switch_reason", "") or "inconnu"
+            logger.warning(
+                "Kill switch \u00e9tait actif au d\u00e9marrage (raison: %s). "
+                "R\u00e9initialisation manuelle requise via dashboard (/api/reset-kill-switch).",
+                reason
+            )
+        else:
+            # V7.5.1 — Force default active state at startup only if not already paused
+            self.db.set_kill_switch(False)
+            self.db.set_config("bot_active", "true")
+            logger.info("[Startup] bot_active=true, kill_switch=false \u2014 defaults set")
 
         if self.config.bot.paper_trading:
             logger.warning("=" * 60)
