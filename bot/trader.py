@@ -134,10 +134,13 @@ class Trader:
             try:
                 eligible = self.strategy.get_eligible_markets()
                 
-                # 2026 V6.3 FINAL
-                from bot.telegram import send_alert
+                # 2026 V6.4 ULTRA-SURGICAL
                 positions = self.db.get_all_positions() if self.db else []
-                send_alert(f"🚀 Bot V6.3 démarré — {len(positions)} positions | Cash {balance:.2f} USDC | {len(eligible) if eligible else 0} marchés éligibles")
+                cash = balance
+                eligible = len(self.strategy.get_eligible_markets() if self.strategy else [])
+                from bot.telegram import send_alert
+                if self.config.bot.telegram_enabled:
+                    send_alert(f"🚀 Bot V6.4 ULTRA démarré — {len(positions)} positions | Cash {cash:.2f} USDC | {eligible} marchés éligibles")
                 
                 ws_tokens = [m.yes_token_id for m in eligible] if eligible else []
                 if ws_tokens:
@@ -332,6 +335,13 @@ class Trader:
             self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
             self._connect()
         logger.info("[Cycle] Étape 2: API OK")
+        
+        # 2026 V6.4 ULTRA-SURGICAL
+        try:
+            active_markets = getattr(self.pm_client.ws_client, "active_markets", [])
+            logger.info(f"[WS] Subscribed to {len(active_markets)} active markets")
+        except Exception:
+            pass
 
         # 3. Solde brut initial (avant cancel) — sert à calculer la valeur portfolio
         logger.info("[Cycle] Étape 3: lecture solde brut CLOB")
@@ -427,7 +437,10 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 V6.3 FINAL
+        # 2026 V6.4 ULTRA-SURGICAL
+        if len(signals) >= 2:
+            logger.info(f"[BATCH] {len(signals)} ordres envoyés en 1 call")
+            
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
@@ -435,7 +448,6 @@ class Trader:
                     timeout=15.0,
                     label="place_orders_batch",
                 )
-                logger.info("[BATCH] %d ordres en 1 call", len(batch_orders))
             except Exception as be:
                 logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
 

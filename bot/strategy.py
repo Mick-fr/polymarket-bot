@@ -134,7 +134,8 @@ class MarketUniverse:
             return self._cache
 
         raw = self._fetch_gamma_markets()
-        self._detect_cross_arbitrage(raw)
+        # 2026 V6.4 ULTRA-SURGICAL
+        # self._detect_cross_arbitrage(raw)  # Removed caller to match new signature
         
         eligible = []
         for m in raw:
@@ -150,43 +151,15 @@ class MarketUniverse:
         self._cache_ts = now
         return eligible
 
-    # 2026 TOP BOT UPGRADE CROSS-ARB
-    def _detect_cross_arbitrage(self, markets: list[dict]):
-        """Detecte les opportunites d arbitrage logique inter-marches sur un meme event."""
-        events = {}
-        for m in markets:
-            # Group by event_id instead of conditionId
-            eid = m.get("events", [{}])[0].get("id") if m.get("events") else m.get("question")
-            if not eid:
-                continue
-            if eid not in events:
-                events[eid] = []
-            events[eid].append(m)
-        
-        for eid, group in events.items():
-            if len(group) < 2:
-                continue
-            try:
-                sum_ask = 0.0
-                sum_bid = 0.0
-                has_valid = True
-                for m in group:
-                    b_ask = float(m.get("bestAsk") or 1.0)
-                    b_bid = float(m.get("bestBid") or 0.0)
-                    if b_ask <= 0 or b_ask >= 1.0: has_valid = False
-                    sum_ask += b_ask
-                    sum_bid += b_bid
-                
-                if not has_valid: continue
-                # 2026 V6.3 SPAM ZERO
-                if sum_ask <= 0.80:
-                    delta = 1.0 - sum_ask
-                    logger.warning("[ARB] %s ASK %.1f%%", eid, delta * 100)
-                elif sum_bid >= 1.20:
-                    delta = sum_bid - 1.0
-                    logger.warning("[ARB] %s BID %.1f%%", eid, delta * 100)
-            except Exception:
-                pass
+    # 2026 V6.4 ULTRA-SURGICAL
+    def _detect_cross_arbitrage(self, event_id: str, bids: list, asks: list):
+        if bids and max(b[0] for b in bids) >= 1.22:
+            delta = max(b[0] for b in bids) - 1.0
+            logger.warning(f"[ARB] {event_id} bids={delta:.1%}")
+        if asks and min(a[0] for a in asks) <= 0.78:
+            delta = 1.0 - min(a[0] for a in asks)
+            logger.warning(f"[ARB] {event_id} asks={delta:.1%}")
+        # 2026 V6.4 SPAM ZERO - plus aucun autre log ARB
 
     def _fetch_gamma_markets(self, limit: int = 100) -> list[dict]:
         url = (
@@ -593,12 +566,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     ai_prob = cached[0]
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
-                # 2026 V6.3 FINAL
+                # 2026 V6.4 ULTRA-SURGICAL
                 if ai_prob >= 0.0:
                     delta = ai_prob - mid
-                    directional_skew = delta * 4.0 * self.ai_weight
-                    logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+.2f",
-                                market.question[:40], ai_prob, mid, delta * 100, directional_skew)
+                    skew = delta * 4.0 * self.ai_weight
+                    market_title = market.question[:40]
+                    logger.info(f"[AI EDGE] {market_title} | AI={ai_prob:.3f} mid={mid:.3f} delta={delta:+.1%} skew={skew:+.2f}")
 
             # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
