@@ -1171,22 +1171,32 @@ class Trader:
                     inv_mid_total / usdc_balance if usdc_balance > 0 else 0,
                 )
 
-            # 2026 FINAL TELEGRAM ALERT: Daily PnL ou Drawdown
+            # 2026 V6 SCALING : Daily Telegram Summary at 00:05 UTC & Alertes Critiques
             hwm = self.db.get_high_water_mark()
             start_balance = self.db.get_latest_balance() or self.config.bot.paper_balance
-            daily_pnl = portfolio_value - start_balance
             
-            # Drawdown logic :
+            now_utc = datetime.now(timezone.utc)
+            if now_utc.hour == 0 and now_utc.minute >= 5:
+                last_daily = getattr(self, "_last_daily_summary_date", None)
+                if last_daily != now_utc.date():
+                    trades = self.db.get_closed_trades(1000)
+                    wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+                    winrate = (wins / len(trades) * 100) if trades else 0.0
+                    dd = (hwm - portfolio_value) / hwm if hwm > 0 else 0.0
+                    dpnl = portfolio_value - start_balance
+                    from bot.telegram import send_alert
+                    send_alert(f"📊 DAILY SUMMARY\nPnL Jour: {dpnl:+.2f}$\nWinrate: {winrate:.1f}%\nMax Drawdown: -{dd*100:.1f}%\nPortfolio: ${portfolio_value:.2f}")
+                    self._last_daily_summary_date = now_utc.date()
+            
             drawdown = (hwm - portfolio_value) / hwm if hwm > 0 else 0
             
-            if daily_pnl > 5.0 and not getattr(self, "_pnl_alerted", False):
+            # Critical Drawdown Alert > 8%
+            if drawdown > 0.08 and not getattr(self, "_dd_alerted", False):
                 from bot.telegram import send_alert
-                send_alert(f"💰 PROFIT PnL JOUR: +${daily_pnl:.2f}\nPortfolio: ${portfolio_value:.2f}")
-                self._pnl_alerted = True
-            elif drawdown > 0.10 and not getattr(self, "_dd_alerted", False):
-                from bot.telegram import send_alert
-                send_alert(f"🚨 DRAWDOWN ALERTE: -{drawdown*100:.1f}%\nPortfolio: ${portfolio_value:.2f} (HWM: ${hwm:.2f})")
+                send_alert(f"🚨 CRITICAL DRAWDOWN: -{drawdown*100:.1f}%\nPortfolio: ${portfolio_value:.2f} (HWM: ${hwm:.2f})")
                 self._dd_alerted = True
+            elif drawdown < 0.05:
+                self._dd_alerted = False
 
         except Exception as e:
             logger.debug("[Portfolio] Erreur breakdown: %s", e)
@@ -1658,8 +1668,9 @@ class Trader:
                         "[Liquidation] SELL posé dans le carnet, sera préservé via DB: %s",
                         order_id[:16],
                     )
-                # 2026 ULTIMATE FINAL
-                send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | {order_id[:8]}")
+                # 2026 V6 SCALING
+                from bot.telegram import send_alert
+                send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]} | PnL est. N/A")
                 return
 
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
@@ -1688,8 +1699,20 @@ class Trader:
                     "Position mise à jour: %s %+.2f shares @ %.4f",
                     signal.token_id[:16], qty_delta, signal.price or 0.5,
                 )
-                # 2026 ULTIMATE FINAL
-                send_alert(f"✅ {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | {order_id[:8]}")
+                pnl_str = "N/A"
+                if signal.side == "sell":
+                    try:
+                        pts = self.db.get_all_positions()
+                        pos = next((x for x in pts if x["token_id"] == signal.token_id), None)
+                        if pos and pos.get("avg_price"):
+                            pnl_val = ((signal.price or 0.5) - pos["avg_price"]) * actual_size
+                            pnl_str = f"{pnl_val:+.2f}$"
+                    except Exception:
+                        pass
+                
+                # 2026 V6 SCALING
+                from bot.telegram import send_alert
+                send_alert(f"✅ {signal.side.upper()} {actual_size:.2f} @ {signal.price or 'market'} | orderID {order_id[:8]} | PnL est. {pnl_str}")
                 
                 # Paper trading : mise à jour du solde fictif (sur actual_size)
                 if self.config.bot.paper_trading:

@@ -331,8 +331,88 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/analytics")
     @login_required
     def analytics_page():
-        """Page d'analytique des trades."""
-        return render_template("analytics.html")
+        """Page d'analytique des trades (V6 Plotly Dashboard)."""
+        import pandas as pd
+        import plotly.express as px
+        import plotly.io as pio
+        from flask import render_template_string
+
+        pnl_data = analytics.cumulative_pnl_curve()
+        if pnl_data:
+            df_pnl = pd.DataFrame(pnl_data)
+            df_pnl['time'] = pd.to_datetime(df_pnl['timestamp'])
+            fig_pnl = px.line(df_pnl, x='time', y='cumulative_pnl', title="PnL Cumulée USDC", template="plotly_dark")
+            pnl_html = pio.to_html(fig_pnl, full_html=False, include_plotlyjs='cdn')
+        else:
+            pnl_html = "<p style='padding:20px;'>Data insufficient for PnL</p>"
+
+        positions = db.get_all_positions()
+        pos_df = pd.DataFrame(positions) if positions else pd.DataFrame([{"question": "Aucun", "quantity": 0, "avg_price": 0, "side": "NONE"}])
+        if positions:
+            pos_df['value'] = pos_df['quantity'] * pos_df['avg_price']
+            fig_pie = px.pie(pos_df, values='value', names='question', title="Exposition par Marché (USDC)", template="plotly_dark")
+            fig_heat = px.bar(pos_df, x='question', y='quantity', color='side', title="Inventory Skew (Qty)", template="plotly_dark")
+            pie_html = pio.to_html(fig_pie, full_html=False, include_plotlyjs=False)
+            heat_html = pio.to_html(fig_heat, full_html=False, include_plotlyjs=False)
+        else:
+            pie_html = "<p style='padding:20px;'>Aucune exposition en cours</p>"
+            heat_html = "<p style='padding:20px;'>Aucun inventaire</p>"
+
+        fills = [o for o in db.get_recent_orders(50) if o['status'] in ('filled', 'matched')]
+
+        template_v2 = """
+        {% extends "base.html" %}
+        {% block title %}Analytics V2 Plotly{% endblock %}
+        {% block body %}
+        <nav class="navbar">
+            <span class="navbar-brand">Polymarket Bot V6</span>
+            <div class="navbar-links">
+                <a href="{{ url_for('index') }}">Dashboard</a>
+                <a href="{{ url_for('analytics_page') }}" style="font-weight:600; color:var(--accent);">Analytics V2</a>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            </div>
+        </nav>
+        <div class="container" style="margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                <h2>Analytics Plotly V2</h2>
+                <button class="btn btn-danger" hx-post="/api/emergency-liquidate" hx-swap="outerHTML" hx-confirm="🚨 LIQUIDER TOUT L'INVENTAIRE AU PRIX DU MARCHE ? (Active le kill-switch)">Emergency Liquidate All</button>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start;">
+                <div class="card" style="padding:0; overflow:hidden;">{{ pnl_html|safe }}</div>
+                <div class="card" style="padding:0; overflow:hidden;">{{ pie_html|safe }}</div>
+                <div class="card" style="grid-column: span 2; padding:0; overflow:hidden;">{{ heat_html|safe }}</div>
+            </div>
+            <div class="card" style="margin-top:20px;">
+                <div class="card-header"><span class="card-title">Derniers Fills (50)</span></div>
+                <table>
+                    <thead><tr><th>Date</th><th>Question/Token</th><th>Side</th><th>Prix</th><th>Qty</th></tr></thead>
+                    <tbody>
+                    {% for f in fills %}
+                    <tr>
+                        <td>{{ f.timestamp[:16].replace('T', ' ') }}</td>
+                        <td>{{ f.question[:50] if f.question else f.token_id[:15] }}</td>
+                        <td>{{ f.side.upper() }}</td>
+                        <td>${{ "%.4f"|format(f.price|float) if f.price else "MARKET" }}</td>
+                        <td>{{ "%.2f"|format(f.size|float) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" style="text-align:center;">Aucun fill recent.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endblock %}
+        """
+        return render_template_string(template_v2, pnl_html=pnl_html, pie_html=pie_html, heat_html=heat_html, fills=fills)
+
+    @app.route("/api/emergency-liquidate", methods=["POST"])
+    @login_required
+    def api_emergency_liquidate():
+        """Bouton Emergency Liquidate All."""
+        db.set_kill_switch(True)
+        db.add_log("CRITICAL", "dashboard", "🚨 EMERGENCY LIQUIDATE ALL déclenché via Dashboard V2 !")
+        return "<button class='btn btn-danger' disabled>🚨 Liquidation enclenchée (Kill-Switch Actif)</button>"
 
     @app.route("/api/analytics/summary")
     @login_required

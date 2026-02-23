@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 
 # Charge le .env depuis la racine du projet
@@ -68,10 +69,17 @@ class BotConfig:
     rebates_eligible: bool = True
     ai_edge_threshold: float = 0.07
     ai_weight: float = 0.6
-    
     # 2026 FINAL TELEGRAM
     telegram_token: str = ""
     telegram_chat_id: str = ""
+
+    # 2026 V6 SCALING
+    as_enabled: bool = True
+    as_risk_aversion: float = 0.25
+    as_inventory_target: float = 0.0
+
+    copy_trading_enabled: bool = False
+    copy_top_n: int = 10
 
 @dataclass(frozen=True)
 class DashboardConfig:
@@ -115,9 +123,22 @@ def _load_password_hash(data_dir: Path) -> str:
 
 
 def load_config() -> AppConfig:
-    """Construit la configuration depuis les variables d'environnement."""
+    """Construit la configuration depuis les variables d'environnement et params.yaml."""
     data_dir = _PROJECT_ROOT / "data"
     data_dir.mkdir(exist_ok=True)
+    
+    # Charge le YAML (fallback si fichier absent)
+    config_yaml_path = _PROJECT_ROOT / "config" / "params.yaml"
+    yml = {}
+    if config_yaml_path.exists():
+        try:
+            with open(config_yaml_path, "r", encoding="utf-8") as f:
+                yml = yaml.safe_load(f) or {}
+        except Exception as e:
+            print(f"WARN: Impossible de charger {config_yaml_path}: {e}")
+
+    bot_yml = yml.get("bot", {})
+    tgram_yml = yml.get("telegram", {})
 
     return AppConfig(
         polymarket=PolymarketConfig(
@@ -126,20 +147,27 @@ def load_config() -> AppConfig:
             signature_type=int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0")),
         ),
         bot=BotConfig(
-            loop_interval=int(os.getenv("BOT_LOOP_INTERVAL", "60")),
-            max_order_size=float(os.getenv("BOT_MAX_ORDER_SIZE", "5.0")),
-            max_daily_loss=float(os.getenv("BOT_MAX_DAILY_LOSS", "10.0")),
+            loop_interval=int(os.getenv("BOT_LOOP_INTERVAL") or bot_yml.get("loop_interval", 60)),
+            max_order_size=float(os.getenv("BOT_MAX_ORDER_SIZE") or bot_yml.get("max_order_size", 5.0)),
+            max_daily_loss=float(os.getenv("BOT_MAX_DAILY_LOSS") or bot_yml.get("max_daily_loss", 10.0)),
             max_retries=int(os.getenv("BOT_MAX_RETRIES", "5")),
             retry_delay=int(os.getenv("BOT_RETRY_DELAY", "30")),
             paper_trading=os.getenv("BOT_PAPER_TRADING", "false").lower() == "true",
             paper_balance=float(os.getenv("BOT_PAPER_BALANCE", "1000.0")),
-            max_exposure_pct=float(os.getenv("BOT_MAX_EXPOSURE_PCT", "0.20")),
-            position_stop_loss_pct=float(os.getenv("BOT_STOP_LOSS_PCT", "0.25")),
+            max_exposure_pct=float(os.getenv("BOT_MAX_EXPOSURE_PCT") or bot_yml.get("max_exposure_pct", 0.20)),
+            position_stop_loss_pct=float(os.getenv("BOT_STOP_LOSS_PCT") or bot_yml.get("position_stop_loss_pct", 0.25)),
             rebates_eligible=os.getenv("BOT_REBATES_ELIGIBLE", "true").lower() == "true",
-            ai_edge_threshold=float(os.getenv("BOT_AI_EDGE_THRESHOLD", "0.07")),
-            ai_weight=float(os.getenv("BOT_AI_WEIGHT", "0.6")),
-            telegram_token=os.getenv("TELEGRAM_TOKEN", ""),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            ai_edge_threshold=float(os.getenv("BOT_AI_EDGE_THRESHOLD") or bot_yml.get("ai_edge_threshold", 0.07)),
+            ai_weight=float(os.getenv("BOT_AI_WEIGHT") or bot_yml.get("ai_weight", 0.6)),
+            telegram_token=os.getenv("TELEGRAM_TOKEN") or tgram_yml.get("token", ""),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or str(tgram_yml.get("chat_id", "")),
+            
+            # 2026 V6 SCALING
+            as_enabled=str(os.getenv("AS_ENABLED") or bot_yml.get("as_enabled", True)).lower() == "true",
+            as_risk_aversion=float(os.getenv("AS_RISK_AVERSION") or bot_yml.get("as_risk_aversion", 0.25)),
+            as_inventory_target=float(os.getenv("AS_INVENTORY_TARGET") or bot_yml.get("as_inventory_target", 0.0)),
+            copy_trading_enabled=str(os.getenv("COPY_TRADING_ENABLED") or bot_yml.get("copy_trading_enabled", False)).lower() == "true",
+            copy_top_n=int(os.getenv("COPY_TOP_N") or bot_yml.get("copy_top_n", 10)),
         ),
         dashboard=DashboardConfig(
             port=int(os.getenv("DASHBOARD_PORT", "8080")),

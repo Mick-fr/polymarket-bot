@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from bot.polymarket_client import PolymarketClient
+from bot.config import load_config
+from bot.copy_trader import CopyTrader
 
 logger = logging.getLogger("bot.strategy")
 
@@ -176,13 +178,16 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                # 2026 ULTIMATE FINAL
                 if sum_ask <= 0.88:
                     delta = 1.0 - sum_ask
                     logger.warning("[ARB] %s ASK %+.1f%%", eid, delta * 100)
+                    from bot.telegram import send_alert
+                    send_alert(f"🚨 ARBITRAGE ALERTE (>12%): {eid} ASK +{delta*100:.1f}%")
                 elif sum_bid >= 1.12:
                     delta = sum_bid - 1.0
                     logger.warning("[ARB] %s BID %+.1f%%", eid, delta * 100)
+                    from bot.telegram import send_alert
+                    send_alert(f"🚨 ARBITRAGE ALERTE (>12%): {eid} BID +{delta*100:.1f}%")
             except Exception:
                 pass
 
@@ -291,6 +296,29 @@ class MarketUniverse:
             end_date_ts=end_dt.timestamp(),
             days_to_expiry=days_left,
         )
+
+# ─── V6 SCALING : Avellaneda-Stoikov Skew ────────────────────────────────────
+
+class AvellanedaStoikovSkew:
+    """
+    Calcule le skew additionnel via le modèle d'Avellaneda-Stoikov simplifié.
+    Formule : reservation_price = mid - (q * gamma * sigma^2 * T)
+    - q : inventaire directionnel (négatif si short)
+    - gamma : as_risk_aversion
+    - sigma : volatilité historique
+    - T : temps restant (en fraction de jour ou année, ici jours pour la démo)
+    """
+    def __init__(self, risk_aversion: float = 0.25):
+        self.gamma = risk_aversion
+
+    def calculate_skew_ticks(self, q: float, sigma: float, t_days: float) -> int:
+        """Retourne le nombre de ticks de skew AS directionnel."""
+        # Réservation price
+        # Plus q est grand (inventaire long fort), plus RP baisse (pour inciter au ask bas)
+        rp_delta = - (q * self.gamma * (sigma ** 2) * max(t_days, 0.1))
+        # Skew directionnel (positif = penche à l'achat, négatif = penche à la vente)
+        directional_skew = rp_delta  # Si rp_delta négatif, on baisse les quotes
+        return round(directional_skew / TICK_SIZE)
 
 
 # ─── Calcul OBI ──────────────────────────────────────────────────────────────
@@ -439,6 +467,11 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # {token_id: last_quoted_mid}
         self._last_quoted_mid: dict[str, float] = {}
 
+        # 2026 V6 SCALING : Load configuration
+        self._config = load_config().bot
+        self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
+        self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
+
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         signals: list[Signal] = []
 
@@ -570,13 +603,24 @@ class OBIMarketMakingStrategy(BaseStrategy):
                     logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+.2f",
                                 market.question[:40], ai_prob, mid, delta * 100, directional_skew)
 
+            # ── Lecture de la position actuelle ──
+            qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
+
+            # 2026 V6 SCALING: Copy Trading
+            copy_direction = 0.0
+            if self._config.copy_trading_enabled and self.copy_trader:
+                copy_direction = self.copy_trader.get_market_direction(market.yes_token_id)
+
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
                 mid=mid,
                 spread=market.spread,
                 obi=obi_result,
                 volatility=current_vol,
-                ai_prob=ai_prob
+                ai_prob=ai_prob,
+                qty_held=qty_held,
+                days_to_expiry=market.days_to_expiry,
+                copy_direction=copy_direction
             )
 
             # Verifications de base
@@ -602,8 +646,6 @@ class OBIMarketMakingStrategy(BaseStrategy):
             bid_size = max(POLY_MIN_SHARES, round(effective_size / bid_price, 2))
             ask_size = max(POLY_MIN_SHARES, round(effective_size / ask_price, 2))
 
-            # ── Lecture de la position actuelle ──
-            qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
             # Ratio d'inventaire : cohérent avec RiskManager (configurable via BOT_MAX_EXPOSURE_PCT)
             max_exposure = max(balance * self.max_exposure_pct, self.max_order_size_usdc)
             net_exposure_usdc = qty_held * mid
@@ -729,7 +771,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
     def _compute_quotes(self, mid: float, spread: float,
                         obi: OBIResult, volatility: float = 0.0,
-                        ai_prob: float = -1.0) -> tuple[float, float]:
+                        ai_prob: float = -1.0,
+                        qty_held: float = 0.0,
+                        days_to_expiry: float = 14.0,
+                        copy_direction: float = 0.0) -> tuple[float, float]:
         """
         Calcule bid et ask avec skew ASYMETRIQUE base sur l'OBI.
         Paramétrage dynamique du spread en fonction de la volatilité en temps réel (EMA).
@@ -740,24 +785,40 @@ class OBIMarketMakingStrategy(BaseStrategy):
         dynamic_spread = spread * vol_multiplier
         half = dynamic_spread / 2.0
 
-        # Skew proportionnel asymetrique
-        skew_ticks = round(abs(obi.obi) * OBI_SKEW_FACTOR)
-        direction = 1 if obi.obi >= 0 else -1
+        # Skew proportionnel asymetrique OBI
+        obi_skew = round(abs(obi.obi) * OBI_SKEW_FACTOR) * (1 if obi.obi >= 0 else -1)
 
-        # 2026 FINAL POLISH — AI EDGE SKEW (log clair avec delta)
+        # 2026 V6 SCALING : Avellaneda-Stoikov
+        as_skew = 0
+        if getattr(self, "as_skew_calc", None) is not None:
+            as_skew = self.as_skew_calc.calculate_skew_ticks(
+                q=qty_held - self._config.as_inventory_target,
+                sigma=volatility,
+                t_days=days_to_expiry
+            )
+            skew_final = round(obi_skew * 0.55 + as_skew * 0.45)
+        else:
+            skew_final = obi_skew
+
+        # 2026 ULTIMATE FINAL
         ai_skew_ticks = 0
         if ai_prob >= 0.0 and abs(ai_prob - mid) > self.ai_edge_threshold:
             delta = ai_prob - mid
             directional_skew = delta * 4.0 * self.ai_weight
             ai_skew_ticks = round(directional_skew / TICK_SIZE)
-            logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+d",
+            logger.info("[AI EDGE] %s | AI=%.3f mid=%.3f delta=%+.1f%% skew=%+.2f",
                         self._ai_last_market_title[:40] if hasattr(self, "_ai_last_market_title") else "???",
-                        ai_prob, mid, delta * 100, ai_skew_ticks)
+                        ai_prob, mid, delta * 100, directional_skew)
+                        
+        # 2026 V6 SCALING : Copy Trading
+        copy_skew_ticks = 0
+        if copy_direction != 0.0:
+            copy_skew_ticks = round((copy_direction * 0.12) / TICK_SIZE)
 
         # OBI positif → ask monte, bid descend (protection BUY, exploitation ASK)
         # OBI negatif → bid monte, ask descend (opportunite BUY, protection SELL)
-        bid = mid - half - direction * skew_ticks * TICK_SIZE + ai_skew_ticks * TICK_SIZE
-        ask = mid + half + direction * skew_ticks * TICK_SIZE + ai_skew_ticks * TICK_SIZE
+        bid = mid - half - skew_final * TICK_SIZE + ai_skew_ticks * TICK_SIZE + copy_skew_ticks * TICK_SIZE
+        ask = mid + half + skew_final * TICK_SIZE + ai_skew_ticks * TICK_SIZE + copy_skew_ticks * TICK_SIZE
 
         # Arrondi au tick
         bid = round(round(bid / TICK_SIZE) * TICK_SIZE, 4)

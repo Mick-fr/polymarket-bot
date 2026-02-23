@@ -1,0 +1,28 @@
+bot:
+  # Intervalle entre chaque cycle de la boucle principale (secondes)
+  loop_interval: 60
+  # Capital maximum autorisé par ordre (en USDC)
+  max_order_size: 10.0
+  # Perte maximale quotidienne avant arrêt automatique (en USDC)
+  max_daily_loss: 10.0
+  # Exposition nette maximale par marché (fraction du solde disponible)
+  max_exposure_pct: 0.20
+  # Stop-loss par position
+  position_stop_loss_pct: 0.25
+  # AI Edge
+  ai_edge_threshold: 0.07
+  ai_weight: 0.6
+  
+  # 2026 V6 SCALING
+  # Avellaneda-Stoikov
+  as_enabled: true
+  as_risk_aversion: 0.25
+  as_inventory_target: 0.0
+  
+  # Copy Trading
+  copy_trading_enabled: false
+  copy_top_n: 10
+
+telegram:
+  token: ""
+  chat_id: ""
