@@ -359,7 +359,11 @@
                 <div style="text-align:center; padding: 20px; color:#888;">Analyse en cours...</div>
             </div>
 
-            <button class="btn btn-outline" style="width: 100%; margin-top: 15px;" onclick="loadAIReview()">🔄 Relancer
+            <button class="btn"
+                style="width: 100%; margin-top: 15px; margin-bottom: 10px; background: linear-gradient(90deg, #d53369 0%, #daae51 100%); color: #fff; font-size: 1.1rem; box-shadow: 0 4px 15px rgba(213, 51, 105, 0.4);"
+                onclick="applyAllAiRecs()">🚀 Appliquer TOUTES les recommandations AI en 1 clic</button>
+
+            <button class="btn btn-outline" style="width: 100%; margin-top: 5px;" onclick="loadAIReview()">🔄 Relancer
                 l'Analyse</button>
         </div>
     </div>
@@ -565,7 +569,25 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ parameter: param, value: val })
             }).then(() => {
-                alert("Paramètre sauvegardé. Le bot est en cours de redémarrage (Live).");
+                alert("Paramètre sauvegardé dans config.yaml. Le bot est en cours de redémarrage et le mode Agressivité est passé en Custom.");
+                setTimeout(loadPortfolio, 1000);
+            });
+        }
+    }
+
+    function applyAllAiRecs() {
+        if (confirm("🚀 Êtes-vous sûr de vouloir appliquer TOUTES les recommandations AI recommandées (sauf celles à maintenir) et redémarrer le bot ?")) {
+            fetch('/api/v73/apply-all-recs', {
+                method: 'POST'
+            }).then(r => r.json()).then(data => {
+                if (data.status === "ok") {
+                    alert(`✅ ${data.applied_count} recommandations appliquées avec succès. Le bot redémarre et le mode Agressivité est passé en Custom.`);
+                    setTimeout(loadPortfolio, 1000);
+                } else {
+                    alert("Erreur lors de l'application des recommandations: " + data.error);
+                }
+            }).catch(e => {
+                alert("Erreur réseau ou d'exécution.");
             });
         }
     }

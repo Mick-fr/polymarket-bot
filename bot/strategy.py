@@ -442,7 +442,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
         self.as_skew_calc = AvellanedaStoikovSkew(risk_aversion=self._config.as_risk_aversion) if self._config.as_enabled else None
         self.copy_trader = CopyTrader(top_n=self._config.copy_top_n) if self._config.copy_trading_enabled else None
 
-    # 2026 V7.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
+    # 2026 V7.2/7.3.2 LIVE AGGRESSIVITY DASHBOARD CONTROL
     def _apply_live_aggressivity(self):
         """Met a jour les parametres de la strategie en fonction du dashboard live."""
         if not self.db:
@@ -468,6 +468,12 @@ class OBIMarketMakingStrategy(BaseStrategy):
             self.inv_skew_threshold = 0.38
             self.sizing_mult = 1.90
             self.max_order_size_usdc = 30.0
+        elif level == "Custom":
+            # Si Custom (AI Apply All), on garde les parametres de config initiaux par defaut
+            self.max_exposure_pct = self._config.max_exposure_pct if hasattr(self._config, 'max_exposure_pct') else 0.20
+            self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
+            self.sizing_mult = 1.0
+            self.max_order_size_usdc = self._config.max_order_size if hasattr(self._config, 'max_order_size') else 15.0
         else:
             self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
             self.sizing_mult = 1.0

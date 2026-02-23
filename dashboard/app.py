@@ -727,23 +727,90 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/aggressivity", methods=["GET", "POST"])
+    @login_required
+    def api_aggressivity():
+        if request.method == "POST":
+            data = request.json or {}
+            level = data.get("level", "Balanced")
+            if db:
+                db.set_aggressivity_level(level)
+            return jsonify({"status": "ok", "level": level})
+        
+        level = db.get_aggressivity_level() if db else "Balanced"
+        s = {}
+        if level == "Conservative":
+            s = {"max_expo": "18%", "skew_ask_only": "0.72", "sizing_mult": "0.75", "max_order_usd": "10"}
+        elif level == "Balanced":
+            s = {"max_expo": "25%", "skew_ask_only": "0.58", "sizing_mult": "1.00", "max_order_usd": "15"}
+        elif level == "Aggressive":
+            s = {"max_expo": "35%", "skew_ask_only": "0.48", "sizing_mult": "1.45", "max_order_usd": "22"}
+        elif level == "Very Aggressive":
+            s = {"max_expo": "45%", "skew_ask_only": "0.38", "sizing_mult": "1.90", "max_order_usd": "30"}
+        else:
+            s = {"max_expo": "Custom", "skew_ask_only": "Custom", "sizing_mult": "Custom", "max_order_usd": "Custom"}
+        return jsonify({"level": level, "params": s})
+
+    def _update_yaml_config(param, val):
+        import re
+        try:
+            with open("config.yaml", "r") as f:
+                content = f.read()
+            if param == "MAX_NET_EXPOSURE_PCT":
+                content = re.sub(r"max_exposure_pct:\s*[0-9.]+", f"max_exposure_pct: {val}", content)
+            elif param == "ORDER_SIZE_PCT":
+                content = re.sub(r"order_size_pct:\s*[0-9.]+", f"order_size_pct: {val}", content)
+            elif param == "OBI_BULLISH_THRESHOLD":
+                content = re.sub(r"obi_bullish_threshold:\s*[0-9.]+", f"obi_bullish_threshold: {val}", content)
+            elif param == "MIN_SPREAD":
+                content = re.sub(r"min_spread:\s*[0-9.]+", f"min_spread: {val}", content)
+            elif param == "OBI_SKEW_FACTOR":
+                content = re.sub(r"obi_skew_factor:\s*[0-9.]+", f"obi_skew_factor: {val}", content)
+            with open("config.yaml", "w") as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            logger.error(f"Error updating config: {e}")
+            return False
+
     @app.route("/api/v73/apply-rec", methods=["POST"])
     @login_required
     def api_v73_apply_rec():
         data = request.json or {}
         param = data.get("parameter")
         val = data.get("value")
-        # Just map it to the logic of the dynamic Dashboard
-        # The user wants "recommandations" to update config. We'll store it as 'aggressivity_level' mapping or direct param.
-        # But wait, we have Aggressivity logic. Let's just create an AI Level, or restart the bot.
-        if param == "MAX_NET_EXPOSURE_PCT" and val:
-            # Fake mapping to the DB config for the strategy config 
-            with db._cursor() as cur:
-                cur.execute("INSERT INTO bot_state (key, value) VALUES ('aggressivity_level', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ("Very Aggressive",))
+        if param and val is not None:
+            _update_yaml_config(param, val)
+            if db:
+                db.set_aggressivity_level("Custom")
                 
         import os
         os.system("docker compose restart bot &")
         return jsonify({"status": "ok"})
+
+    @app.route("/api/v73/apply-all-recs", methods=["POST"])
+    @login_required
+    def api_v73_apply_all_recs():
+        try:
+            from bot.analytics import ParameterRecommender, TradeAnalytics
+            analytics = TradeAnalytics(db)
+            recommender = ParameterRecommender(db, analytics)
+            recs = recommender.generate_recommendations()
+            
+            applied = 0
+            for r in recs:
+                if r.get("direction") != "maintenir" and r.get("recommended_value") is not None:
+                    _update_yaml_config(r.get("parameter"), r.get("recommended_value"))
+                    applied += 1
+            
+            if applied > 0 and db:
+                db.set_aggressivity_level("Custom")
+                import os
+                os.system("docker compose restart bot &")
+                
+            return jsonify({"status": "ok", "applied_count": applied})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
 
     logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics).")
