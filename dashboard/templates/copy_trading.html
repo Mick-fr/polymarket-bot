@@ -379,8 +379,12 @@
     <!-- V7.5.2 ACTIVE COPY TRADING -->
     <div class="ct-card" style="border-left:3px solid var(--green)">
         <div class="ct-card-head">
-            <span class="ct-card-title" style="color:var(--green)">✅ Copy Trading Actif</span>
-            <span class="tag tag-green" id="active-count">0 actif</span>
+            <div>
+                <span class="ct-card-title" style="color:var(--green)">✅ Copy Trading Actif</span>
+                <span class="tag tag-green" id="active-count">0 actif</span>
+            </div>
+            <button class="hbtn hbtn-danger" style="font-size:0.75rem" onclick="autoCloseLosing()">🧹 Auto-close Losing
+                > -30%</button>
         </div>
         <div class="ct-card-body" id="active-copies-panel">
             <p style="color:var(--text-dim);font-size:0.85rem">Aucun copy trading actif pour le moment</p>
@@ -443,6 +447,7 @@
                         <th>Date</th>
                         <th>Wallet</th>
                         <th>Token</th>
+                        <th>Type</th>
                         <th>Side</th>
                         <th>Qty</th>
                         <th>Prix</th>
@@ -476,7 +481,7 @@
             var panel = document.getElementById('active-copies-panel');
             document.getElementById('active-count').textContent = copies.length + ' actif' + (copies.length > 1 ? 's' : '');
             if (!copies.length) { panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Aucun copy trading actif pour le moment</p>'; return }
-            panel.innerHTML = copies.map(function (c) { return '<div style="background:var(--surface-2);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:14px 16px;margin-bottom:8px;border-left:3px solid var(--green)"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div><strong style="font-size:0.92rem">' + c.name + '</strong> <span class="tag tag-green" style="margin-left:8px">ACTIF</span><div style="margin-top:4px"><span class="addr" style="font-size:0.76rem;user-select:all">' + c.address + '</span></div></div><div style="display:flex;align-items:center;gap:12px;font-size:0.82rem"><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">ALLOC</div><strong style="color:var(--accent)">' + c.alloc_pct + '%</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">POSITIONS</div><strong>' + c.positions_count + '</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">DEPUIS</div><strong style="font-size:0.75rem">' + (c.started_at || '').slice(0, 10) + '</strong></div><button class="hbtn hbtn-danger" style="font-size:0.78rem;padding:5px 10px" onclick="stopCopy(\'' + c.address + '\')">Stop</button></div></div></div>' }).join('')
+            panel.innerHTML = copies.map(function (c) { return '<div style="background:var(--surface-2);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:14px 16px;margin-bottom:8px;border-left:3px solid var(--green)"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div><strong style="font-size:0.92rem">Positions copiées de ' + c.name + '</strong> <span class="tag tag-green" style="margin-left:8px">ACTIF</span><div style="margin-top:4px"><span class="addr" style="font-size:0.76rem;user-select:all">' + c.address + '</span></div></div><div style="display:flex;align-items:center;gap:12px;font-size:0.82rem"><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">ALLOC</div><strong style="color:var(--accent)">' + c.alloc_pct + '%</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">POSITIONS</div><strong>' + c.positions_count + '</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">DEPUIS</div><strong style="font-size:0.75rem">' + (c.started_at || '').slice(0, 10) + '</strong></div><button class="hbtn hbtn-danger" style="font-size:0.78rem;padding:5px 10px" onclick="stopCopy(\'' + c.address + '\')">Arrêter ce copy</button></div></div></div>' }).join('')
         }).catch(function () { })
     }
 
@@ -502,11 +507,36 @@
 
     function copyWallet(address, idx) {
         var alloc = document.getElementById('alloc-' + idx).value || 10;
-        if (!confirm('Copier ce wallet avec ' + alloc + '% de votre capital ?')) return;
-        fetch('/api/copy-wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: address, alloc_pct: alloc }) }).then(function (r) { return r.json() }).then(function (d) {
-            if (d.status === 'ok') { toast('Copie ' + d.wallet + ': ' + d.positions_copied + ' positions', 'success'); loadActiveCopies(); loadWallets(); loadHistory() }
-            else toast('Erreur: ' + (d.error || ''), 'error')
-        }).catch(function () { toast('Erreur reseau', 'error') })
+        if (!confirm("Analyser ce wallet pour copier ses nouveaux trades avec " + alloc + "% de capital ?")) return;
+        fetch('/api/simulate-copy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: address, alloc_pct: alloc }) })
+            .then(function (r) { return r.json() }).then(function (sim) {
+                if (sim.status !== 'ok') { toast("Erreur d'analyse: " + (sim.error || ''), 'error'); return; }
+                var s = sim.summary;
+                var msg = "⚠️ CONFIRMATION COPY TRADING INTELLIGENT ⚠️\n\n" +
+                    "- Wallet : " + sim.wallet + "\n" +
+                    "- Total positions ouvertes : " + s.total_found + "\n" +
+                    "- Ignorées (déjà en perte > 30%) : " + s.ignored_loss + "\n" +
+                    "- Ignorées (anciennes positions) : " + s.ignored_old + "\n\n" +
+                    "✅ Positions à copier (Nouveaux trades) : " + s.to_copy + "\n" +
+                    "📉 Risque estimé sur capital : " + s.risk_est_pct + "%\n\n" +
+                    "Confirmer la copie ?";
+                if (confirm(msg)) {
+                    fetch('/api/copy-wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: address, alloc_pct: alloc, trades: sim.proposed_trades }) })
+                        .then(function (r) { return r.json() }).then(function (d) {
+                            if (d.status === 'ok') { toast("Copie " + d.wallet + " : " + d.positions_copied + " positions", 'success'); loadActiveCopies(); loadWallets(); loadHistory(); }
+                            else { toast("Erreur: " + (d.error || ''), 'error'); }
+                        }).catch(function () { toast('Erreur réseau', 'error') });
+                }
+            }).catch(function () { toast('Erreur analyse', 'error') });
+    }
+
+    function autoCloseLosing() {
+        if (!confirm("Fermer automatiquement toutes les positions du copy trading qui sont en perte de plus de 30% ?")) return;
+        fetch('/api/auto-close-losing-copies', { method: 'POST' })
+            .then(function (r) { return r.json() }).then(function (d) {
+                if (d.status === 'ok') { toast("🧹 Auto-close terminé: " + d.closed_count + " positions fermées (" + d.saved_usdc + "$ sauvés)", 'success'); }
+                else toast("Erreur auto-close", 'error');
+            }).catch(function () { toast("Erreur réseau", 'error') });
     }
 
     function mergePositions() {
@@ -529,8 +559,8 @@
         fetch('/api/copy-trades-history').then(function (r) { return r.json() }).then(function (list) {
             var tbody = document.getElementById('history-tbody');
             document.getElementById('ct-total-copies').textContent = list.length;
-            if (!list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade</td></tr>'; return }
-            tbody.innerHTML = list.map(function (t) { return '<tr><td style="font-size:0.75rem;color:var(--text-dim)">' + (t.timestamp || '').slice(0, 16).replace('T', ' ') + '</td><td><span class="addr">' + (t.source_wallet || '').slice(0, 10) + '</span></td><td style="font-size:0.78rem">' + (t.token_id || '').slice(0, 20) + '</td><td><span class="tag ' + (t.side === 'buy' ? 'tag-green' : 'tag-red') + '">' + (t.side || '').toUpperCase() + '</span></td><td>' + parseFloat(t.quantity || 0).toFixed(2) + '</td><td>$' + parseFloat(t.price || 0).toFixed(3) + '</td><td><span class="tag tag-green">' + (t.status || '--') + '</span></td></tr>' }).join('')
+            if (!list.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade</td></tr>'; return }
+            tbody.innerHTML = list.map(function (t) { return '<tr><td style="font-size:0.75rem;color:var(--text-dim)">' + (t.timestamp || '').slice(0, 16).replace('T', ' ') + '</td><td><span class="addr">' + (t.source_wallet || '').slice(0, 10) + '</span></td><td style="font-size:0.78rem">' + (t.token_id || '').slice(0, 20) + '</td><td><span class="tag ' + (t.trade_type === "New Trade" ? "tag-blue" : "tag") + '">' + (t.trade_type || 'Existing') + '</span></td><td><span class="tag ' + (t.side === 'buy' ? 'tag-green' : 'tag-red') + '">' + (t.side || '').toUpperCase() + '</span></td><td>' + parseFloat(t.quantity || 0).toFixed(2) + '</td><td>$' + parseFloat(t.price || 0).toFixed(3) + '</td><td><span class="tag tag-green">' + (t.status || '--') + '</span></td></tr>' }).join('')
         }).catch(function () { })
     }
 

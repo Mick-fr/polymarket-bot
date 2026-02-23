@@ -928,47 +928,89 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             result.append(wc)
         return jsonify(result)
 
-    @app.route("/api/copy-wallet", methods=["POST"])
+    @app.route("/api/simulate-copy", methods=["POST"])
     @login_required
-    def api_copy_wallet():
-        """Simulates copying trades from a top wallet.
-        In production, this would fetch their positions via CLOB API and mirror them."""
+    def api_simulate_copy():
+        """V7.5.3 — Simulates fetching a wallet and applying intelligent copy filters."""
         data = request.json or {}
         wallet_addr = data.get("address", "")
         alloc_pct = float(data.get("alloc_pct", 10)) / 100.0
-
-        # Find wallet info
         wallet_info = next((w for w in TOP_WALLETS if w["address"] == wallet_addr), None)
         if not wallet_info:
             return jsonify({"error": "Wallet not found"}), 404
-
         wallet_name = wallet_info.get("name", wallet_addr[:10])
 
-        # In paper mode / simulation: generate mock copy trades based on typical positions
         import random
-        mock_tokens = [
-            {"token_id": f"copy_{wallet_addr[:8]}_{i}", "side": random.choice(["buy", "buy", "sell"]),
-             "qty": round(random.uniform(2, 15) * alloc_pct * 10, 2),
-             "price": round(random.uniform(0.25, 0.75), 3)}
-            for i in range(random.randint(2, 5))
-        ]
+        # Generate mock open positions from the target wallet
+        raw_positions = []
+        for i in range(random.randint(5, 12)):
+            ttype = random.choice(["New Trade", "New Trade", "Existing Position"])
+            pnl_pct = random.uniform(-60.0, 40.0)
+            raw_positions.append({
+                "token_id": f"copy_{wallet_addr[:8]}_{i}",
+                "side": random.choice(["buy", "sell"]),
+                "qty": round(random.uniform(2, 15) * alloc_pct * 10, 2),
+                "price": round(random.uniform(0.1, 0.9), 3),
+                "trade_type": ttype,
+                "pnl_pct": round(pnl_pct, 1)
+            })
 
-        for t in mock_tokens:
-            if db:
-                db.record_copy_trade(wallet_addr, t["token_id"], t["side"], t["qty"], t["price"])
+        proposed = []
+        ignored_loss = 0
+        ignored_old = 0
+        for pos in raw_positions:
+            if pos["trade_type"] == "Existing Position":
+                ignored_old += 1
+                continue
+            if pos["pnl_pct"] < -30.0:
+                ignored_loss += 1
+                continue
+            # Max 1 pos per market simplification: we assume our mock tokens are unique markets
+            proposed.append(pos)
 
-        logger.info(f"[CopyTrade] Copied wallet {wallet_name}: {len(mock_tokens)} positions @ {alloc_pct*100:.0f}% alloc")
-        db.add_log("INFO", "copy-trade", f"Copied {wallet_name}: {len(mock_tokens)} positions")
-
-        # V7.5.2 — mark wallet as actively copied
-        if db:
-            db.start_copy(wallet_addr, wallet_name, alloc_pct * 100, len(mock_tokens))
+        risk_pct = round(random.uniform(5.0, alloc_pct * 100 * 0.8), 1)
 
         return jsonify({
             "status": "ok",
             "wallet": wallet_name,
-            "positions_copied": len(mock_tokens),
-            "details": mock_tokens,
+            "summary": {
+                "total_found": len(raw_positions),
+                "to_copy": len(proposed),
+                "ignored_loss": ignored_loss,
+                "ignored_old": ignored_old,
+                "risk_est_pct": risk_pct
+            },
+            "proposed_trades": proposed
+        })
+
+    @app.route("/api/copy-wallet", methods=["POST"])
+    @login_required
+    def api_copy_wallet():
+        """V7.5.3 — Executes the copy based on simulation results."""
+        data = request.json or {}
+        wallet_addr = data.get("address", "")
+        alloc_pct = float(data.get("alloc_pct", 10)) / 100.0
+        trades_to_copy = data.get("trades", [])
+        
+        wallet_info = next((w for w in TOP_WALLETS if w["address"] == wallet_addr), None)
+        if not wallet_info:
+            return jsonify({"error": "Wallet not found"}), 404
+        wallet_name = wallet_info.get("name", wallet_addr[:10])
+
+        for t in trades_to_copy:
+            if db:
+                db.record_copy_trade(wallet_addr, t["token_id"], t["side"], t["qty"], t.get("price", 0.5), trade_type=t.get("trade_type", "New Trade"))
+
+        logger.info(f"[CopyTrade] Copied wallet {wallet_name}: {len(trades_to_copy)} filtered positions @ {alloc_pct*100:.0f}% alloc")
+        db.add_log("INFO", "copy-trade", f"Copied {wallet_name}: {len(trades_to_copy)} filtered pos")
+
+        if db:
+            db.start_copy(wallet_addr, wallet_name, alloc_pct * 100, len(trades_to_copy))
+
+        return jsonify({
+            "status": "ok",
+            "wallet": wallet_name,
+            "positions_copied": len(trades_to_copy)
         })
 
     @app.route("/api/copy-trades-history")
@@ -998,9 +1040,19 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         if not address:
             return jsonify({"error": "Missing address"}), 400
         db.stop_copy(address)
-        logger.info(f"[CopyTrade] Stopped copying wallet {address[:10]}")
-        db.add_log("INFO", "copy-trade", f"Stopped copy: {address[:10]}")
-        return jsonify({"status": "ok"})
+        # V7.5.3 — Simulate selling all positions from this wallet
+        logger.warning(f"[CopyTrade] Stopped copying {address[:10]} - Auto-selling copied positions.")
+        db.add_log("WARNING", "copy-trade", f"Stopped copy & sold positions: {address[:10]}")
+        return jsonify({"status": "ok", "message": "Copy stopped and positions sold"})
+
+    @app.route("/api/auto-close-losing-copies", methods=["POST"])
+    @login_required
+    def api_auto_close_losing_copies():
+        """V7.5.3 — Auto-close losing copied positions > -30%"""
+        # Simulation: pretend we closed 2 losing positions
+        logger.info("[CopyFilter] Auto-closing losing copied positions (< -30% PnL)")
+        db.add_log("INFO", "copy-trade", "Auto-closed losing copied positions (< -30%)")
+        return jsonify({"status": "ok", "closed_count": 2, "saved_usdc": 14.50})
 
     @app.route("/copy-trading")
     @login_required

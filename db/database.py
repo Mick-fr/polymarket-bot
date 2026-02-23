@@ -680,15 +680,20 @@ class Database:
                     pnl_usdc REAL DEFAULT 0.0
                 )
             """)
+            # V7.5.3 — Intelligent Copy: type of trade
+            try:
+                cur.execute("ALTER TABLE copy_trades ADD COLUMN trade_type TEXT DEFAULT 'Existing'")
+            except Exception:
+                pass
 
-    def record_copy_trade(self, wallet: str, token_id: str, side: str, qty: float, price: float):
+    def record_copy_trade(self, wallet: str, token_id: str, side: str, qty: float, price: float, trade_type: str = "Existing"):
         self._ensure_copy_trades_table()
         now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
         with self._cursor() as cur:
             cur.execute(
-                "INSERT INTO copy_trades (timestamp, source_wallet, token_id, side, quantity, price, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'executed')",
-                (now, wallet, token_id, side, qty, price)
+                "INSERT INTO copy_trades (timestamp, source_wallet, token_id, side, quantity, price, status, trade_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'executed', ?)",
+                (now, wallet, token_id, side, qty, price, trade_type)
             )
 
     def get_copy_trades(self, limit: int = 50) -> list:
