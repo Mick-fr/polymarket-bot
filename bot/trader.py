@@ -127,6 +127,11 @@ class Trader:
             stop_loss_pct=self.config.bot.position_stop_loss_pct,
         )
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
+        try:
+              send_alert(f"🚀 Bot V6.5 FINAL démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés éligibles")
+              logger.info("Telegram startup message envoyé")
+          except:
+              logger.warning("Telegram non configuré ou désactivé")
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
         # 2026 TOP BOT UPGRADE WS — start WebSocket for real-time order books
