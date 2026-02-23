@@ -688,17 +688,10 @@
 <!-- ════════ MAIN ════════ -->
 <main class="v74-main">
 
-    <!-- V7.9 Info Edge Module Card -->
-    <div id="info-edge-card" class="v74-card"
-        style="margin-bottom:15px; border-left:4px solid #10b981; background:rgba(16,185,129,0.05); display:none;">
-        <div class="v74-card-head" style="margin-bottom:10px;">
-            <span class="v74-card-title" style="color:#10b981;">⚡ BTC/ETH INFO EDGE</span>
-            <span class="tag tag-green">Seul mode actif</span>
-        </div>
-        <div style="font-size:0.95rem; display:flex; align-items:center; gap:8px;">
-            <span class="live-dot" style="background:#10b981; animation:blink 1.5s infinite;"></span>
-            <span id="info-edge-live-text">Edge Score BTC 12PM : +18.4 % → sizing boosté</span>
-        </div>
+    <!-- V8.2 Info Edge ENFORCED Banner -->
+    <div id="info-edge-card"
+        style="display:none; background:rgba(239,68,68,0.12); border:2px solid #ef4444; color:#ef4444; padding:12px 20px; border-radius:10px; margin-bottom:15px; font-weight:700; font-size:1.05rem; text-align:center; letter-spacing:0.5px;">
+        ⚡ INFO EDGE ONLY ENFORCED — Universe limité BTC/ETH 5-60min uniquement, OBI désactivé
     </div>
 
     <!-- ── METRIC CARDS ─────────────────────────────────────── -->
@@ -1154,14 +1147,20 @@
             // Update display banner
             const ind = document.getElementById('strategy-display');
             if (ind) {
-                ind.textContent = `Stratégie : ${mode} ✅`;
-                if (mode === 'Info Edge Only') ind.className = 'tag tag-green';
-                else if (mode === 'MM Très Agressif') ind.className = 'tag tag-red';
-                else if (mode === 'MM Aggressif') ind.className = 'tag tag-orange';
-                else ind.className = 'tag tag-blue';
+                if (mode === 'Info Edge Only') {
+                    ind.textContent = 'INFO EDGE ONLY ENFORCED ⚡';
+                    ind.className = 'tag tag-red';
+                    ind.style.color = '#ef4444';
+                } else {
+                    ind.textContent = `Stratégie : ${mode} ✅`;
+                    ind.style.color = '';
+                    if (mode === 'MM Très Agressif') ind.className = 'tag tag-red';
+                    else if (mode === 'MM Aggressif') ind.className = 'tag tag-orange';
+                    else ind.className = 'tag tag-blue';
+                }
             }
 
-            // Show/Hide Info Edge Card
+            // Show/Hide Info Edge ENFORCED banner
             const ieCard = document.getElementById('info-edge-card');
             if (ieCard) {
                 ieCard.style.display = (mode === 'Info Edge Only') ? 'block' : 'none';

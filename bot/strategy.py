@@ -496,6 +496,14 @@ class OBIMarketMakingStrategy(BaseStrategy):
 
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         self._apply_live_aggressivity()
+
+        # V8.2 GARDE-FOU: si mode Info Edge Only, OBI ne génère AUCUN signal
+        if self.db:
+            strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+            if strategy_mode == "Info Edge Only":
+                logger.info("[OBI] BLOQUÉ — mode Info Edge Only actif, aucun signal OBI")
+                return []
+
         signals: list[Signal] = []
 
         # Taille par ordre : order_size_pct du solde, min 1 USDC, plafond max_order_size_usdc

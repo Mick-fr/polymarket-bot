@@ -380,6 +380,14 @@ class Trader:
             self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
             self._connect()
         logger.info("[Cycle] Étape 2: API OK")
+
+        # V8.2 ENFORCEMENT: relire strategy_mode AU DÉBUT de chaque cycle
+        strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
+        if strategy_mode == "Info Edge Only":
+            logger.info("[ENFORCED] Info Edge Only actif — universe limité BTC/ETH 5-60min")
+            self.db.set_config("info_edge_only", "true")
+        else:
+            self.db.set_config("info_edge_only", "false")
         
         # 2026 V6.5 ULTRA-CHIRURGICAL
         try:
@@ -449,20 +457,20 @@ class Trader:
             except Exception as e_ac:
                 logger.error("[SAFE MODE] Erreur check_auto_close_copied: %s", e_ac)
 
-        # 6. Stratégie OBI / Info Edge → signaux (balance passée pour sizing dynamique)
-        # HOTFIX V8.1 — strategy_mode lu chaque cycle depuis la DB pour enforcement strict
-        logger.info("[Cycle] Étape 6: analyse OBI / InfoEdge → signaux (max_expo=%.0f%%)", effective_max_expo * 100)
+        # 6. Stratégie OBI / Info Edge → signaux
+        # V8.2 ENFORCEMENT STRICT — strategy_mode déjà lu en haut de cycle
+        logger.info("[Cycle] Étape 6: analyse [mode=%s] (max_expo=%.0f%%)", strategy_mode, effective_max_expo * 100)
         try:
             signals = []
-            strategy_mode = self.db.get_config("strategy_mode", "MM Balanced")
-            
+
             if strategy_mode == "Info Edge Only":
-                # MODE STRICT : désactiver OBI totalement, seuls BTC/ETH 5-60min
-                logger.info("[Cycle] Mode INFO EDGE ONLY → OBI désactivé, universe BTC/ETH 5-60min uniquement")
+                # ────── MODE STRICT : OBI complètement désactivé ──────
+                logger.info("[ENFORCED] OBI désactivé → InfoEdge uniquement BTC/ETH 5-60min")
                 if hasattr(self, "info_edge_strategy"):
                     signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
+                # Aucun signal OBI
             else:
-                # Modes MM : OBI classique + Info Edge en complément
+                # ────── Modes MM : OBI classique + Info Edge complément ──────
                 self.strategy._apply_live_aggressivity()
                 signals = self.strategy.analyze(balance=balance)
                 if hasattr(self, "info_edge_strategy"):
@@ -471,13 +479,15 @@ class Trader:
             logger.error("[Cycle] Erreur analyse OBI/InfoEdge: %s — signals=[]. Cycle continue.", _e6)
             self.db.add_log("ERROR", "trader", f"Erreur OBI/InfoEdge analyze: {_e6}")
             signals = []
-        logger.info("[Cycle] Étape 6: %d signal(s) généré(s) [mode=%s]", len(signals), self.db.get_config("strategy_mode", "MM Balanced"))
+        logger.info("[Cycle] Étape 6: %d signal(s) généré(s) [mode=%s]", len(signals), strategy_mode)
 
-
-        # 7. CTF Inverse Spread Arb (réutilise les marchés déjà chargés par la stratégie)
-        logger.info("[Cycle] Étape 7: CTF arb check")
-        eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
-        self._check_ctf_arb(balance, eligible_markets)
+        # 7. CTF Inverse Spread Arb — désactivé en Info Edge Only
+        if strategy_mode == "Info Edge Only":
+            logger.info("[Cycle] Étape 7: CTF arb SKIP (Info Edge Only)")
+        else:
+            logger.info("[Cycle] Étape 7: CTF arb check")
+            eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
+            self._check_ctf_arb(balance, eligible_markets)
 
         # 2026 V7.0 SCALING: Auto-rebalance
         self._check_auto_rebalance(portfolio_value)
