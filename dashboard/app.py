@@ -196,6 +196,38 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.add_log("WARNING", "dashboard", "Kill switch ACTIVE")
         return jsonify({"status": "ok"})
 
+    # 2026 V7.3.6 DROPDOWN AGGRESSIVITÉ INSTANT APPLY
+    @app.route("/api/aggressivity", methods=["GET", "POST"])
+    @login_required
+    def api_aggressivity():
+        import os
+        VALID_LEVELS = ["Conservative", "Balanced", "Aggressive", "Very Aggressive"]
+        LEVEL_PARAMS = {
+            "Conservative":    {"max_expo": 0.18, "skew_ask_only": 0.72, "sizing_mult": 0.75, "max_order_usd": 10},
+            "Balanced":        {"max_expo": 0.25, "skew_ask_only": 0.58, "sizing_mult": 1.00, "max_order_usd": 15},
+            "Aggressive":      {"max_expo": 0.35, "skew_ask_only": 0.48, "sizing_mult": 1.45, "max_order_usd": 22},
+            "Very Aggressive":  {"max_expo": 0.45, "skew_ask_only": 0.38, "sizing_mult": 1.90, "max_order_usd": 30},
+        }
+        if request.method == "POST":
+            data = request.json or {}
+            level = data.get("level", "Balanced")
+            if level not in VALID_LEVELS:
+                return jsonify({"error": f"Invalid level: {level}"}), 400
+            db.set_aggressivity_level(level)
+            # Write reload flag so bot picks it up instantly next cycle
+            try:
+                with open("/tmp/reload_aggressivity.flag", "w") as f:
+                    f.write(level)
+            except Exception:
+                pass  # Non-critical on Windows dev
+            logger.info(f"[V7.3.6] Aggressivity changed to: {level}")
+            db.add_log("INFO", "dashboard", f"Agressivité changée pour : {level}")
+            return jsonify({"status": "ok", "level": level, "params": LEVEL_PARAMS.get(level, {})})
+
+        # GET — retourne le niveau actuel + mapping paramètres
+        level = db.get_aggressivity_level() if db else "Balanced"
+        return jsonify({"level": level, "params": LEVEL_PARAMS.get(level, LEVEL_PARAMS["Balanced"])})
+
     @app.route("/api/orders")
     @login_required
     def api_orders():

@@ -546,12 +546,35 @@
     }
 
     function setAggressivity(level) {
-        document.getElementById('agg-indicator').innerText = "Update...";
+        const indicator = document.getElementById('agg-indicator');
+        indicator.innerText = "⏳ Applying...";
+        indicator.style.background = "#555";
         fetch('/api/aggressivity', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ level: level })
-        }).then(() => setTimeout(loadPortfolio, 500));
+        }).then(r => r.json()).then(data => {
+            if (data.status === "ok") {
+                indicator.innerText = "✅ " + data.level;
+                indicator.style.background = "#1b5e20";
+                // Show toast
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:linear-gradient(135deg,#1b5e20,#2e7d32);color:#fff;padding:14px 24px;border-radius:10px;z-index:9999;font-weight:bold;box-shadow:0 4px 20px rgba(0,0,0,0.4);animation:fadeIn 0.3s;';
+                toast.innerHTML = `🎯 Agressivité → <strong>${data.level}</strong><br><small>Bot rechargé au prochain cycle</small>`;
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 3000);
+                setTimeout(loadPortfolio, 500);
+            } else {
+                indicator.innerText = "❌ Erreur";
+                indicator.style.background = "#b71c1c";
+            }
+            // Reset badge color after 3s
+            setTimeout(() => { indicator.style.background = "#333"; }, 3000);
+        }).catch(() => {
+            indicator.innerText = "❌ Erreur réseau";
+            indicator.style.background = "#b71c1c";
+            setTimeout(() => { indicator.style.background = "#333"; }, 3000);
+        });
     }
 
     function rebalanceToken(token) {

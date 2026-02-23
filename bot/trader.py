@@ -323,7 +323,17 @@ class Trader:
                 self._kill_switch_alerted = True
             return
 
-        # 2026 V7.3.4 AGGRESSIVITÉ LIVE FIX — rechargement dynamique chaque cycle
+        # 2026 V7.3.6 AGGRESSIVITÉ LIVE — rechargement dynamique chaque cycle + flag instantané
+        import os as _os
+        _flag_path = "/tmp/reload_aggressivity.flag"
+        _force_reload = False
+        if _os.path.exists(_flag_path):
+            try:
+                _os.remove(_flag_path)
+                _force_reload = True
+                logger.info("[V7.3.6] Reload flag detected — forcing aggressivity reload")
+            except Exception:
+                pass
         self.risk.reload_aggressivity()
         if self.strategy:
             self.strategy.reload_sizing()
