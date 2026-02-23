@@ -116,6 +116,11 @@ class Trader:
             logger.info("HWM réinitialisé: %.2f → %.2f USDC (solde actuel)", old_hwm, balance)
             self.db.add_log("INFO", "trader", f"HWM reset: {old_hwm:.2f} → {balance:.2f}")
 
+            # 2026 V6.1 HOTFIX
+            from bot.telegram import send_alert
+            positions = self.db.get_all_positions() if self.db else []
+            send_alert(f"🚀 Bot V6.1 démarré - {len(positions)} positions | Cash {balance:.2f} USDC")
+
         # Stratégie OBI avec accès à la DB pour cooldowns et inventaire
         self.strategy = OBIMarketMakingStrategy(
             client=self.pm_client,
@@ -421,7 +426,7 @@ class Trader:
             else:
                 cycle_rejected += 1
 
-        # 2026 V6
+        # 2026 V6.1 HOTFIX
         if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
             try:
                 resps = self._call_with_timeout(
@@ -429,7 +434,7 @@ class Trader:
                     timeout=15.0,
                     label="place_orders_batch",
                 )
-                logger.info("[BATCH] %d ordres envoyés en 1 call", len(batch_orders))
+                logger.info("[BATCH] %d ordres en 1 call", len(batch_orders))
             except Exception as be:
                 logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
 

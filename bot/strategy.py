@@ -178,13 +178,13 @@ class MarketUniverse:
                     sum_bid += b_bid
                 
                 if not has_valid: continue
-                # 2026 V6 SPAM FIX
-                if sum_ask <= 0.88:
+                # 2026 V6.1 HOTFIX SPAM ZERO
+                if sum_ask <= 0.85:
                     delta = 1.0 - sum_ask
-                    logger.warning("[ARB] %s ASK %.1f%%", eid, delta * 100)
-                elif sum_bid >= 1.12:
+                    logger.warning("[ARB] %s ASK +%.1f%%", eid, delta * 100)
+                elif sum_bid >= 1.15:
                     delta = sum_bid - 1.0
-                    logger.warning("[ARB] %s BID %.1f%%", eid, delta * 100)
+                    logger.warning("[ARB] %s BID +%.1f%%", eid, delta * 100)
             except Exception:
                 pass
 

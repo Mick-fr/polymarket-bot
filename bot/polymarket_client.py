@@ -97,14 +97,14 @@ class PolymarketWSClient:
             self.ws.close()
 
     def log_status(self):
-        # 2026 V6
+        # 2026 V6.1 HOTFIX
         if self.running and getattr(self, "active_markets", None):
             logger.info("[WS] Subscribed to %d active markets", len(self.active_markets))
 
     def _on_open(self, ws):
         msg = {"assets_ids": list(self.active_markets), "type": "market"}
         ws.send(json.dumps(msg))
-        # 2026 V6
+        # 2026 V6.1 HOTFIX
         logger.info("[WS] Subscribed to %d active markets", len(self.active_markets))
 
     def _on_message(self, ws, message):
