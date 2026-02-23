@@ -575,10 +575,19 @@ class OBIMarketMakingStrategy(BaseStrategy):
             # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
 
-            # 2026 V6 SCALING: Copy Trading
+            # 2026 V7.0 SCALING: Copy Trading
             copy_direction = 0.0
+            copy_sizing = 1.0
             if self._config.copy_trading_enabled and self.copy_trader:
-                copy_direction = self.copy_trader.get_market_direction(market.yes_token_id)
+                cinfo = self.copy_trader.get_market_direction(market.yes_token_id)
+                if isinstance(cinfo, dict):
+                    conf = cinfo.get("confidence", 0.0)
+                    if conf > 0.7:
+                        copy_direction = cinfo.get("direction", 0.0)
+                        sizing_pct = cinfo.get("sizing", 0.15)
+                        copy_sizing = 1.0 + sizing_pct
+                        logger.info("[COPY TRADE] Goldsky top-10 validé: conf=%.2f dir=%+.1f sizing=+%.0f%% sur %s",
+                                    conf, copy_direction, sizing_pct * 100, market.question[:30])
 
             # ── Calcul bid/ask avec skewing proportionnel (Set B) ──
             bid_price, ask_price = self._compute_quotes(
@@ -602,7 +611,7 @@ class OBIMarketMakingStrategy(BaseStrategy):
             # ── Tweak 3 : Maturity-aware sizing ──
             # Marches < 3 jours de maturite = plus volatils → taille /2
             maturity_factor = MATURITY_SHORT_FACTOR if market.days_to_expiry < MATURITY_SHORT_DAYS else 1.0
-            effective_size = order_size_usdc * maturity_factor
+            effective_size = order_size_usdc * maturity_factor * copy_sizing
             if maturity_factor < 1.0:
                 logger.info(
                     "[OBI] Maturite courte (%.1fj < %.0fj) -> sizing x%.1f = %.2f USDC",

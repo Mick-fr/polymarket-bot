@@ -1,6 +1,6 @@
 """
 Module de Copy-Trading.
-# 2026 V6 SCALING
+# 2026 V7.0 SCALING
 """
 
 import time
@@ -18,8 +18,6 @@ class CopyTrader:
         self.last_update = 0
         self.cache_ttl = 20 * 60  # 20 minutes
         self.top_wallets = set()
-        # Mock/Cache des directions { market_id: { "YES": 1500, "NO": 200 } }
-        self.market_directions = {}
 
     def update_top_wallets(self):
         """Met à jour les top wallets via Goldsky (PnL 24h + volume)."""
@@ -42,23 +40,20 @@ class CopyTrader:
             # data = response.json()
             # wallets = [u['id'] for u in data['data']['users']]
             
-            # Mock behavior (sécurité live)
-            # En production réelle, brancher la vraie URL Goldsky.
-            wallets = ["0xMOCKED_TOP_WALLET_1", "0xMOCKED_TOP_WALLET_2"]
+            # V7.0 Mock behavior (sécurité live)
+            wallets = [f"0xMOCKED_TOP_WALLET_{i}" for i in range(1, self.top_n+1)]
             self.top_wallets = set(wallets)
             self.last_update = now
             logger.info("[CopyTrading] Top %d wallets mis à jour via Goldsky.", len(self.top_wallets))
         except Exception as e:
             logger.warning("[CopyTrading] Erreur fetch Goldsky: %s", e)
 
-    def get_market_direction(self, market_id: str) -> float:
+    def get_market_direction(self, market_id: str) -> dict:
         """
-        Retourne la direction moyenne des top wallets sur un marché spécifique.
-        Valeur retournée: 1.0 (très YES), -1.0 (très NO), 0.0 (neutre)
+        Retourne les specs du signal des Top Wallets
         """
         self.update_top_wallets()
         
-        # Logique théorique : fetch les positions des top_wallets sur ce market_id
-        # Retourne un biais de skew.
-        # Par défaut, on mock un retour neutre pour éviter des comportements imprévus sans vraie data.
-        return 0.0
+        # En production, on filtre transactions >= conf
+        # On retourne safe 0
+        return {"confidence": 0.0, "direction": 0.0, "sizing": 0.15}

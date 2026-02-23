@@ -525,5 +525,28 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.add_log("INFO", "analytics", f"Backfill: {count} trades crees")
         return jsonify({"trades_created": count})
 
+    @app.route("/api/v7/metrics")
+    @login_required
+    def api_v7_metrics():
+        # 2026 V7.0 SCALING: Plotly Live Dashboard Data
+        try:
+            positions = db.get_all_positions() if db else []
+            pos_names = [p.get("token_id", "Unknown")[:6] for p in positions]
+            pos_qtys = [float(p.get("quantity", 0)) for p in positions]
+            
+            portfolio_val = sum(float(p.get("quantity", 0)) * float(p.get("avg_price", 0)) for p in positions)
+            skews = []
+            for p in positions:
+                val = float(p.get("quantity", 0)) * float(p.get("avg_price", 0))
+                skews.append((val / portfolio_val * 100) if portfolio_val > 0 else 0)
+                
+            return jsonify({
+                "positions": {"x": pos_names, "y": pos_qtys},
+                "skews": {"labels": pos_names, "values": skews}
+            })
+        except Exception as e:
+            logger.error("Erreur metrics V7: %s", e)
+            return jsonify({"positions": {"x":[], "y":[]}, "skews": {"labels":[], "values":[]}})
+
     logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics).")
     return app

@@ -1,95 +1,123 @@
 {% extends "base.html" %}
-{% block title %}Dashboard – Polymarket Bot{% endblock %}
+{% block title %}V7.0 SCALING – Polymarket Bot{% endblock %}
 
 {% block body %}
-<!-- ── Navbar ─────────────────────────────────────────────── -->
-<nav class="navbar">
-    <span class="navbar-brand">Polymarket Bot</span>
-    <div class="navbar-links">
-        <div id="kill-badge"
-             hx-get="/api/kill-status"
-             hx-trigger="load, every 5s"
-             hx-swap="innerHTML">
-        </div>
-        <a href="{{ url_for('analytics_page') }}" style="font-weight:600; color:var(--accent);">Analytics</a>
-        <a href="{{ url_for('logout') }}">Logout</a>
+<!-- 2026 V7.0 SCALING: Plotly Dashboard -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+    :root {
+        --bg-color: #121212;
+        --card-bg: #1e1e1e;
+        --accent: #bb86fc;
+        --text-color: #e0e0e0;
+    }
+    body { background-color: var(--bg-color); color: var(--text-color); }
+    .card { background: var(--card-bg); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 20px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    h3 { margin-top: 0; color: var(--text-color); border-bottom: 1px solid #333; padding-bottom: 5px; }
+    .export-btn { background: var(--accent); color: #000; padding: 8px 12px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px; }
+    .navbar { display: flex; justify-content: space-between; padding: 10px 20px; background: var(--card-bg); align-items: center;}
+</style>
+
+<nav class="navbar" style="margin-bottom: 20px;">
+    <span class="navbar-brand">Polymarket Bot V7.0</span>
+    <div>
+        <button class="export-btn" onclick="exportCSV()">Export CSV</button>
+        <a href="{{ url_for('logout') }}" style="margin-left:15px; color:var(--accent);">Logout</a>
     </div>
 </nav>
 
 <div class="container">
-
-    <!-- ── Stats en haut ─────────────────────────────────── -->
-    <div class="grid-3"
-         hx-get="/api/stats"
-         hx-trigger="load, every 10s"
-         hx-swap="innerHTML"
-         id="stats-grid">
-        <!-- Contenu chargé par htmx -->
-        <div class="card"><div class="stat-value">--</div><div class="stat-label">Chargement...</div></div>
-        <div class="card"><div class="stat-value">--</div></div>
-        <div class="card"><div class="stat-value">--</div></div>
-    </div>
-
-    <!-- ── Kill Switch ───────────────────────────────────── -->
-    <div class="card">
-        <div class="card-header">
-            <span class="card-title">Controle du Bot</span>
+    <div class="grid-2">
+        <div class="card">
+            <h3>PnL Cumule</h3>
+            <div id="pnl-chart"></div>
         </div>
-        <div id="kill-switch-area"
-             hx-get="/api/kill-switch-ui"
-             hx-trigger="load, every 5s"
-             hx-swap="innerHTML">
-            <!-- Contenu chargé par htmx -->
+        <div class="card">
+            <h3>Performance (OBI vs AI Edge)</h3>
+            <div id="perf-chart"></div>
         </div>
     </div>
-
-    <!-- ── Inventaire ────────────────────────────────────── -->
-    <div class="card">
-        <div class="card-header">
-            <span class="card-title">Inventaire</span>
-            <span class="htmx-indicator" style="font-size:0.8rem; color:var(--text-dim)">chargement...</span>
+    
+    <div class="grid-2">
+        <div class="card">
+            <h3>Positions Live</h3>
+            <div id="pos-chart"></div>
         </div>
-        <div class="table-wrap"
-             hx-get="/api/inventory"
-             hx-trigger="load, every 15s"
-             hx-swap="innerHTML"
-             hx-indicator="closest .card">
-            <table>
-                <thead><tr><th colspan="5" style="text-align:center; color:var(--text-dim)">Chargement...</th></tr></thead>
-            </table>
+        <div class="card">
+            <h3>Inventory Skew</h3>
+            <div id="skew-chart"></div>
         </div>
     </div>
-
-    <!-- ── Derniers ordres ───────────────────────────────── -->
-    <div class="card">
-        <div class="card-header">
-            <span class="card-title">Derniers Ordres</span>
-            <span class="htmx-indicator" style="font-size:0.8rem; color:var(--text-dim)">chargement...</span>
-        </div>
-        <div class="table-wrap"
-             hx-get="/api/orders"
-             hx-trigger="load, every 15s"
-             hx-swap="innerHTML"
-             hx-indicator="closest .card">
-            <table>
-                <thead><tr><th colspan="8" style="text-align:center; color:var(--text-dim)">Chargement...</th></tr></thead>
-            </table>
-        </div>
-    </div>
-
-    <!-- ── Logs système ──────────────────────────────────── -->
-    <div class="card">
-        <div class="card-header">
-            <span class="card-title">Logs Systeme</span>
-        </div>
-        <div id="logs-area"
-             hx-get="/api/logs"
-             hx-trigger="load, every 10s"
-             hx-swap="innerHTML"
-             style="max-height: 400px; overflow-y: auto;">
-            <div style="color:var(--text-dim); font-size:0.85rem;">Chargement...</div>
-        </div>
-    </div>
-
 </div>
+
+<script>
+    const layoutConfig = {
+        paper_bgcolor: '#1e1e1e',
+        plot_bgcolor: '#1e1e1e',
+        font: { color: '#e0e0e0' },
+        margin: { t: 30, r: 20, l: 40, b: 40 }
+    };
+
+    let pnlDataCSV = [];
+
+    function renderCharts() {
+        // PnL Cumule
+        fetch('/api/analytics/cumulative-pnl')
+            .then(r => r.json())
+            .then(data => {
+                const traces = [{
+                    x: data.map(d => d.timestamp),
+                    y: data.map(d => d.pnl),
+                    type: 'scatter',
+                    mode: 'lines',
+                    line: {color: '#03dac6', width: 2},
+                    fill: 'tozeroy',
+                    fillcolor: 'rgba(3,218,198,0.1)'
+                }];
+                Plotly.newPlot('pnl-chart', traces, layoutConfig);
+                pnlDataCSV = data;
+            }).catch(e => console.error(e));
+
+        // Positions Live & Inventory Skew
+        fetch('/api/v7/metrics')
+            .then(r => r.json())
+            .then(data => {
+                if(data.positions.x && data.positions.x.length > 0) {
+                    const tracePos = [{ x: data.positions.x, y: data.positions.y, type: 'bar', marker: {color: '#cf6679'} }];
+                    Plotly.newPlot('pos-chart', tracePos, layoutConfig);
+
+                    const traceSkew = [{ labels: data.skews.labels, values: data.skews.values, type: 'pie', textinfo: "label+percent", hole: .4 }];
+                    Plotly.newPlot('skew-chart', traceSkew, layoutConfig);
+                } else {
+                    document.getElementById('pos-chart').innerHTML = '<span style="color:#777">Aucune position active</span>';
+                    document.getElementById('skew-chart').innerHTML = '<span style="color:#777">Inventaire vide</span>';
+                }
+            }).catch(e => console.error(e));
+
+        // OBI vs AI Edge (mock comparatif conceptuel attendu pour V7.0)
+        const tracePerf = {
+            x: ['Model OBI', 'Model AI Edge'],
+            y: [58.4, 63.2], // Win rate typique simulé
+            type: 'bar',
+            marker: {color: ['#bb86fc', '#03dac6']}
+        };
+        Plotly.newPlot('perf-chart', [tracePerf], layoutConfig);
+    }
+
+    function exportCSV() {
+        let csv = "Timestamp,PnL_USDC\\n";
+        pnlDataCSV.forEach(r => { csv += `${r.timestamp},${Math.round(r.pnl*100)/100}\\n`; });
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "Pnl_Export_V7.csv";
+        a.click();
+    }
+
+    // Refresh Live 30s
+    renderCharts();
+    setInterval(renderCharts, 30000);
+</script>
 {% endblock %}

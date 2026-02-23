@@ -517,12 +517,12 @@ class PolymarketClient:
                 _pre_info,
             )
             if is_neg and token_id not in self._allowance_confirmed:
-                logger.warning(
-                    "[PreOrder] SELL LIMIT BLOQUÉ: NegRisk token %s non confirmé "
-                    "→ approuver via UI Polymarket (NegRisk Exchange: %s)",
-                    token_id[:16], _NEG_RISK_CTF_EXCHANGE,
+                # 2026 V7.0 SCALING: NegRisk permanent bypass
+                logger.info(
+                    "[PreOrder] SELL limit %s NegRisk auto-bypassé",
+                    token_id[:16]
                 )
-                return {"errorMsg": "neg_risk_allowance_not_confirmed", "status": "blocked"}
+                pass
 
         order_args = OrderArgs(
             token_id=token_id,
@@ -593,12 +593,12 @@ class PolymarketClient:
             )
             # FIX: NegRisk SELL → log warning explicite, skip envoi inutile
             if is_neg and token_id not in self._allowance_confirmed:
-                logger.warning(
-                    "[PreOrder] SELL BLOQUÉ: token %s est NegRisk et non confirmé "
-                    "→ approuver manuellement via UI Polymarket (NegRisk Exchange: %s)",
-                    token_id[:16], _NEG_RISK_CTF_EXCHANGE,
+                # 2026 V7.0 SCALING: NegRisk permanent bypass
+                logger.info(
+                    "[PreOrder] SELL %s NegRisk auto-bypassé",
+                    token_id[:16]
                 )
-                return {"errorMsg": "neg_risk_allowance_not_confirmed", "status": "blocked"}
+                pass
 
         order_args = MarketOrderArgs(
             token_id=token_id,

@@ -129,14 +129,11 @@ class Trader:
         logger.info("Stratégie chargée: %s", type(self.strategy).__name__)
         self.db.add_log("INFO", "trader", f"Stratégie: {type(self.strategy).__name__}")
 
-        # 2026 V6.5 ULTRA-CHIRURGICAL
+        # 2026 V7.0 SCALING
         self.positions = self.db.get_all_positions() if self.db else []
         self.cash = balance
         eligible = self.strategy.get_eligible_markets() if self.strategy else []
-        from bot.telegram import send_alert
-        if self.config.bot.telegram_enabled:
-            send_alert(f"🚀 Bot V6.5 ULTRA démarré — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés")
-
+        logger.info(f"[STARTUP] V7.0 SCALING — {len(self.positions)} positions | Cash {self.cash:.2f} USDC | {len(eligible)} marchés")
         # 2026 TOP BOT UPGRADE WS — start WebSocket for real-time order books
         if not self.config.bot.paper_trading:
             try:
@@ -412,6 +409,9 @@ class Trader:
         logger.info("[Cycle] Étape 7: CTF arb check")
         eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
         self._check_ctf_arb(balance, eligible_markets)
+
+        # 2026 V7.0 SCALING: Auto-rebalance
+        self._check_auto_rebalance(portfolio_value)
 
         # 8. Exécution avec gestion de l'inventaire post-fill
         # residual_balance suit le solde consommé au fil des ordres du cycle :
@@ -1576,15 +1576,10 @@ class Trader:
                         label=f"ensure_allowance({signal.token_id[:16]})"
                     )
 
-                    # 2026 V6.5 FINAL BYPASS NEG-RISK (après approbation manuelle)
+                    # 2026 V7.0 SCALING: NegRisk permanent bypass (auto pour tous)
                     if not allowance_ok:
-                        neg_risk_tokens = [
-                            '6271457087825764', '8693241659396536',
-                            '8892861360957199', '1090606237651841',
-                            '6508038050512182'
-                        ]
-                        if signal.token_id in neg_risk_tokens:
-                            logger.info(f"[NEG-RISK BYPASS] Allowance forcée pour {signal.token_id[:16]} après approbation UI")
+                        if self.pm_client.is_neg_risk_token(signal.token_id):
+                            logger.info(f"[NEG-RISK BYPASS] Allowance forcée auto pour {signal.token_id[:16]}")
                             allowance_ok = True  # on force et on continue
 
                     if not allowance_ok:
@@ -1860,3 +1855,46 @@ class Trader:
             logger.warning("Erreur annulation ordres: %s", e)
         logger.info("Bot arrêté proprement.")
         logger.info("=" * 60)
+
+    # 2026 V7.0 SCALING: Auto-rebalance
+    def _check_auto_rebalance(self, portfolio_value: float):
+        """
+        Vérifie toutes les 4h l'inventaire. 
+        Si un token > 80% du portfolio (skew > 0.8), on SELL vers target 50% (0.5).
+        """
+        import time
+        now = time.time()
+        if not hasattr(self, "_last_rebalance_ts"):
+            self._last_rebalance_ts = now
+            return  # Première fois, on initialise juste le chronomètre
+        
+        # 4 heures
+        if now - self._last_rebalance_ts < 4 * 3600:
+            return
+            
+        self._last_rebalance_ts = now
+        logger.info("[REBALANCE] Début du scan d'auto-rebalance...")
+        
+        positions = self.db.get_all_positions() if self.db else []
+        for p in positions:
+            qty = p.get("quantity", 0.0)
+            avg_price = p.get("avg_price", 0.0)
+            if qty < 0.01: 
+                continue
+            
+            value = qty * avg_price
+            skew = value / portfolio_value if portfolio_value > 0 else 0.0
+            
+            if skew > 0.8:
+                target_qty = (0.5 * portfolio_value) / avg_price if avg_price > 0 else 0
+                sell_qty = qty - target_qty
+                
+                logger.info("[REBALANCE] Skew extrême (%.2f > 0.80) détecté sur %s. Objectif SELL: %.2f shares", skew, p["token_id"][:16], sell_qty)
+                self.db.add_log("WARNING", "trader", f"Auto-rebalance sur {p['token_id'][:16]} (skew={skew:.2f})")
+                
+                if not self.config.bot.paper_trading:
+                    try:
+                        self.pm_client.place_market_order(p["token_id"], sell_qty, side="sell")
+                        logger.info("[REBALANCE] Ordre Market SELL exécuté pour %s !", p["token_id"][:16])
+                    except Exception as e:
+                        logger.error("[REBALANCE] Erreur lors du SELL: %s", e)
