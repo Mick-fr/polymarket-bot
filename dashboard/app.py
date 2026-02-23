@@ -702,29 +702,6 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/aggressivity", methods=["GET", "POST"])
-    @login_required
-    def api_aggressivity():
-        if request.method == "POST":
-            data = request.json or {}
-            level = data.get("level", "Balanced")
-            if db:
-                db.set_aggressivity_level(level)
-            return jsonify({"status": "ok", "level": level})
-        
-        level = db.get_aggressivity_level() if db else "Balanced"
-        s = {}
-        if level == "Conservative":
-            s = {"max_expo": "18%", "skew_ask_only": "0.72", "sizing_mult": "0.75", "max_order_usd": "10"}
-        elif level == "Balanced":
-            s = {"max_expo": "25%", "skew_ask_only": "0.58", "sizing_mult": "1.00", "max_order_usd": "15"}
-        elif level == "Aggressive":
-            s = {"max_expo": "35%", "skew_ask_only": "0.48", "sizing_mult": "1.45", "max_order_usd": "22"}
-        elif level == "Very Aggressive":
-            s = {"max_expo": "45%", "skew_ask_only": "0.38", "sizing_mult": "1.90", "max_order_usd": "30"}
-        else:
-            s = {"max_expo": "Custom", "skew_ask_only": "Custom", "sizing_mult": "Custom", "max_order_usd": "Custom"}
-        return jsonify({"level": level, "params": s})
 
     def _update_yaml_config(param, val):
         import re
