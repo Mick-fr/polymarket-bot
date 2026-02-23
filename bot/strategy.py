@@ -567,11 +567,10 @@ class OBIMarketMakingStrategy(BaseStrategy):
                 self._ai_last_market_title = market.question  # stocké pour le log
                 
                 # 2026 V6.5 ULTRA-CHIRURGICAL
-                if ai_prob >= 0.0:
-                    delta = ai_prob - mid
-                    skew = delta * 4.0 * self.ai_weight
-                    market_title = market.question[:40]
-                    logger.info(f"[AI EDGE] {market_title} | AI={ai_prob:.3f} mid={mid:.3f} delta={delta:+.1%} skew={skew:+.2f}")
+                market_title = market.question[:40]
+                delta = ai_prob - mid if ai_prob >= 0 else 0.0
+                skew = delta * 4.0 * self.ai_weight
+                logger.info(f"[AI EDGE] {market_title} | AI={ai_prob:.3f} mid={mid:.3f} delta={delta:+.1%} skew={skew:+.2f}")
 
             # ── Lecture de la position actuelle ──
             qty_held = self.db.get_position(market.yes_token_id) if self.db else 0.0
