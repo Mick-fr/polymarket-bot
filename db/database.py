@@ -697,6 +697,47 @@ class Database:
             cur.execute("SELECT * FROM copy_trades ORDER BY id DESC LIMIT ?", (limit,))
             return [dict(r) for r in cur.fetchall()]
 
+    # 2026 V7.5.2 — Active copy tracking
+    def _ensure_active_copies_table(self):
+        with self._cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS active_copies (
+                    address TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    alloc_pct REAL NOT NULL DEFAULT 10.0,
+                    started_at TEXT NOT NULL,
+                    total_pnl REAL DEFAULT 0.0,
+                    positions_count INTEGER DEFAULT 0
+                )
+            """)
+
+    def start_copy(self, address: str, name: str, alloc_pct: float, positions_count: int = 0):
+        self._ensure_active_copies_table()
+        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO active_copies (address, name, alloc_pct, started_at, positions_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (address, name, alloc_pct, now, positions_count)
+            )
+
+    def stop_copy(self, address: str):
+        self._ensure_active_copies_table()
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM active_copies WHERE address = ?", (address,))
+
+    def get_active_copies(self) -> list:
+        self._ensure_active_copies_table()
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM active_copies ORDER BY started_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+    def is_copy_active(self, address: str) -> bool:
+        self._ensure_active_copies_table()
+        with self._cursor() as cur:
+            cur.execute("SELECT 1 FROM active_copies WHERE address = ?", (address,))
+            return cur.fetchone() is not None
+
     # ── Cooldowns (news-breaker) ─────────────────────────────────
 
     def set_cooldown(self, token_id: str, duration_seconds: float, reason: str = ""):

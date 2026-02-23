@@ -376,6 +376,17 @@
         </div>
     </div>
 
+    <!-- V7.5.2 ACTIVE COPY TRADING -->
+    <div class="ct-card" style="border-left:3px solid var(--green)">
+        <div class="ct-card-head">
+            <span class="ct-card-title" style="color:var(--green)">✅ Copy Trading Actif</span>
+            <span class="tag tag-green" id="active-count">0 actif</span>
+        </div>
+        <div class="ct-card-body" id="active-copies-panel">
+            <p style="color:var(--text-dim);font-size:0.85rem">Aucun copy trading actif pour le moment</p>
+        </div>
+    </div>
+
     <!-- TOP WALLETS -->
     <div class="ct-card">
         <div class="ct-card-head">
@@ -393,13 +404,14 @@
                         <th>PnL 30j</th>
                         <th>Win Rate</th>
                         <th>Volume</th>
+                        <th>Statut</th>
                         <th>Alloc %</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody id="wallets-tbody">
                     <tr>
-                        <td colspan="9" style="text-align:center;color:var(--text-dim);padding:24px">Chargement...</td>
+                        <td colspan="10" style="text-align:center;color:var(--text-dim);padding:24px">Chargement...</td>
                     </tr>
                 </tbody>
             </table>
@@ -457,88 +469,72 @@
 </footer>
 
 <script>
-    function toast(msg, type = 'success') {
-        const d = document.createElement('div');
-        d.className = `toast toast-${type}`;
-        d.innerHTML = msg;
-        document.getElementById('toast-container').appendChild(d);
-        setTimeout(() => d.remove(), 3500);
+    function toast(msg, type) { type = type || 'success'; var d = document.createElement('div'); d.className = 'toast toast-' + type; d.innerHTML = msg; document.getElementById('toast-container').appendChild(d); setTimeout(function () { d.remove() }, 3500) }
+
+    function loadActiveCopies() {
+        fetch('/api/active-copies').then(function (r) { return r.json() }).then(function (copies) {
+            var panel = document.getElementById('active-copies-panel');
+            document.getElementById('active-count').textContent = copies.length + ' actif' + (copies.length > 1 ? 's' : '');
+            if (!copies.length) { panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Aucun copy trading actif pour le moment</p>'; return }
+            panel.innerHTML = copies.map(function (c) { return '<div style="background:var(--surface-2);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:14px 16px;margin-bottom:8px;border-left:3px solid var(--green)"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div><strong style="font-size:0.92rem">' + c.name + '</strong> <span class="tag tag-green" style="margin-left:8px">ACTIF</span><div style="margin-top:4px"><span class="addr" style="font-size:0.76rem;user-select:all">' + c.address + '</span></div></div><div style="display:flex;align-items:center;gap:12px;font-size:0.82rem"><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">ALLOC</div><strong style="color:var(--accent)">' + c.alloc_pct + '%</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">POSITIONS</div><strong>' + c.positions_count + '</strong></div><div style="text-align:center"><div style="color:var(--text-dim);font-size:0.68rem">DEPUIS</div><strong style="font-size:0.75rem">' + (c.started_at || '').slice(0, 10) + '</strong></div><button class="hbtn hbtn-danger" style="font-size:0.78rem;padding:5px 10px" onclick="stopCopy(\'' + c.address + '\')">Stop</button></div></div></div>' }).join('')
+        }).catch(function () { })
+    }
+
+    function stopCopy(address) {
+        if (!confirm('Arreter le copy trading pour ce wallet ?')) return;
+        fetch('/api/stop-copy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: address }) }).then(function (r) { return r.json() }).then(function (d) {
+            if (d.status === 'ok') { toast('Copy trading arrete', 'info'); loadActiveCopies(); loadWallets() }
+            else toast('Erreur: ' + (d.error || ''), 'error')
+        }).catch(function () { toast('Erreur reseau', 'error') })
     }
 
     function loadWallets() {
-        fetch('/api/top-wallets').then(r => r.json()).then(wallets => {
-            const tbody = document.getElementById('wallets-tbody');
+        fetch('/api/top-wallets').then(function (r) { return r.json() }).then(function (wallets) {
+            var tbody = document.getElementById('wallets-tbody');
             document.getElementById('ct-total-wallets').textContent = wallets.length;
-            tbody.innerHTML = wallets.map((w, i) => `
-        <tr>
-          <td style="font-weight:700;color:var(--accent)">${i + 1}</td>
-          <td><strong>${w.name}</strong></td>
-          <td><a class="addr" href="https://polymarket.com/profile/${w.address}" target="_blank">${w.address.slice(0, 6)}…${w.address.slice(-4)}</a></td>
-          <td class="text-green">+$${w.pnl_7d.toLocaleString()}</td>
-          <td class="text-green">+$${w.pnl_30d.toLocaleString()}</td>
-          <td><span class="tag ${w.win_rate >= 65 ? 'tag-green' : 'tag-blue'}">${w.win_rate}%</span></td>
-          <td style="color:var(--text-dim)">$${(w.volume / 1000).toFixed(0)}k</td>
-          <td><input type="number" class="alloc-input" id="alloc-${i}" value="10" min="5" max="50" step="5">%</td>
-          <td><button class="hbtn hbtn-accent" onclick="copyWallet('${w.address}', ${i})">📋 Copier</button></td>
-        </tr>`).join('');
-        }).catch(() => toast('Erreur chargement wallets', 'error'));
+            tbody.innerHTML = wallets.map(function (w, i) {
+                var statusTag = w.is_active ? '<span class="tag tag-green">Actif</span>' : '<span class="tag" style="background:rgba(255,255,255,0.05);color:var(--text-dim)">Inactif</span>';
+                var actionBtn = w.is_active ? '<button class="hbtn hbtn-danger" style="font-size:0.78rem" onclick="stopCopy(\'' + w.address + '\')">Stop</button>' : '<button class="hbtn hbtn-accent" onclick="copyWallet(\'' + w.address + '\',' + i + ')">Copier</button>';
+                return '<tr><td style="font-weight:700;color:var(--accent)">' + (i + 1) + '</td><td><strong>' + w.name + '</strong></td><td><a class="addr" href="https://polymarket.com/profile/' + w.address + '" target="_blank" style="user-select:all">' + w.address + '</a></td><td class="text-green">+$' + w.pnl_7d.toLocaleString() + '</td><td class="text-green">+$' + w.pnl_30d.toLocaleString() + '</td><td><span class="tag ' + (w.win_rate >= 65 ? 'tag-green' : 'tag-blue') + '">' + w.win_rate + '%</span></td><td style="color:var(--text-dim)">$' + (w.volume / 1000).toFixed(0) + 'k</td><td>' + statusTag + '</td><td><input type="number" class="alloc-input" id="alloc-' + i + '" value="10" min="5" max="50" step="5">%</td><td>' + actionBtn + '</td></tr>'
+            }).join('')
+        }).catch(function () { toast('Erreur chargement wallets', 'error') })
     }
 
     function copyWallet(address, idx) {
-        const alloc = document.getElementById('alloc-' + idx).value || 10;
-        if (!confirm(`Copier ce wallet avec ${alloc}% de votre capital ? Les positions seront mirrorées en paper mode.`)) return;
-        fetch('/api/copy-wallet', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address, alloc_pct: alloc })
-        }).then(r => r.json()).then(d => {
-            if (d.status === 'ok') {
-                toast(`✅ Copié ${d.wallet}: ${d.positions_copied} positions mirrorées`, 'success');
-                loadHistory();
-            } else toast('❌ ' + (d.error || 'Erreur'), 'error');
-        }).catch(() => toast('❌ Erreur réseau', 'error'));
+        var alloc = document.getElementById('alloc-' + idx).value || 10;
+        if (!confirm('Copier ce wallet avec ' + alloc + '% de votre capital ?')) return;
+        fetch('/api/copy-wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: address, alloc_pct: alloc }) }).then(function (r) { return r.json() }).then(function (d) {
+            if (d.status === 'ok') { toast('Copie ' + d.wallet + ': ' + d.positions_copied + ' positions', 'success'); loadActiveCopies(); loadWallets(); loadHistory() }
+            else toast('Erreur: ' + (d.error || ''), 'error')
+        }).catch(function () { toast('Erreur reseau', 'error') })
     }
 
     function mergePositions() {
-        fetch('/api/merge-positions', { method: 'POST' }).then(r => r.json()).then(d => {
+        fetch('/api/merge-positions', { method: 'POST' }).then(function (r) { return r.json() }).then(function (d) {
             if (d.status === 'ok') {
                 document.getElementById('ct-merge-cleaned').textContent = d.cleaned;
                 document.getElementById('ct-merge-merged').textContent = d.merged;
-                const panel = document.getElementById('merge-result');
+                var panel = document.getElementById('merge-result');
                 if (d.merged > 0 || d.cleaned > 0) {
-                    let html = `<p style="color:var(--green);font-weight:600;margin-bottom:8px">✅ Merge effectué : ${d.merged} fusionnées, ${d.cleaned} nettoyées</p>`;
-                    if (d.details && d.details.length) {
-                        html += d.details.map(det => `<div style="background:var(--surface-2);padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:0.82rem;border-left:3px solid var(--accent)">Market ${det.market_id} : ${det.tokens_merged} → 1 (qty=${det.net_qty}, avg=${det.net_avg})</div>`).join('');
-                    }
-                    panel.innerHTML = html;
-                } else {
-                    panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">✅ Aucune position à fusionner, inventaire propre.</p>';
-                }
-                toast(`⚡ Merge: ${d.merged} fusionnées, ${d.cleaned} nettoyées`, 'info');
-            } else toast('❌ ' + d.error, 'error');
-        }).catch(() => toast('❌ Erreur merge', 'error'));
+                    var html = '<p style="color:var(--green);font-weight:600;margin-bottom:8px">Merge: ' + d.merged + ' fusionnees, ' + d.cleaned + ' nettoyees</p>';
+                    if (d.details && d.details.length) html += d.details.map(function (det) { return '<div style="background:var(--surface-2);padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:0.82rem;border-left:3px solid var(--accent)">Market ' + det.market_id + ': ' + det.tokens_merged + ' > 1 (qty=' + det.net_qty + ', avg=' + det.net_avg + ')</div>' }).join('');
+                    panel.innerHTML = html
+                } else { panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Inventaire propre.</p>' }
+                toast('Merge: ' + d.merged + ' fusionnees, ' + d.cleaned + ' nettoyees', 'info')
+            } else toast('Erreur: ' + d.error, 'error')
+        }).catch(function () { toast('Erreur merge', 'error') })
     }
 
     function loadHistory() {
-        fetch('/api/copy-trades-history').then(r => r.json()).then(list => {
-            const tbody = document.getElementById('history-tbody');
+        fetch('/api/copy-trades-history').then(function (r) { return r.json() }).then(function (list) {
+            var tbody = document.getElementById('history-tbody');
             document.getElementById('ct-total-copies').textContent = list.length;
-            if (!list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade</td></tr>'; return; }
-            tbody.innerHTML = list.map(t => `
-        <tr>
-          <td style="font-size:0.75rem;color:var(--text-dim)">${(t.timestamp || '').slice(0, 16).replace('T', ' ')}</td>
-          <td><span class="addr">${(t.source_wallet || '').slice(0, 6)}…${(t.source_wallet || '').slice(-4)}</span></td>
-          <td style="font-size:0.78rem">${(t.token_id || '').slice(0, 20)}</td>
-          <td><span class="tag ${t.side === 'buy' ? 'tag-green' : 'tag-red'}">${(t.side || '').toUpperCase()}</span></td>
-          <td>${parseFloat(t.quantity || 0).toFixed(2)}</td>
-          <td>$${parseFloat(t.price || 0).toFixed(3)}</td>
-          <td><span class="tag tag-green">${t.status || '--'}</span></td>
-        </tr>`).join('');
-        }).catch(() => { });
+            if (!list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Aucun copy trade</td></tr>'; return }
+            tbody.innerHTML = list.map(function (t) { return '<tr><td style="font-size:0.75rem;color:var(--text-dim)">' + (t.timestamp || '').slice(0, 16).replace('T', ' ') + '</td><td><span class="addr">' + (t.source_wallet || '').slice(0, 10) + '</span></td><td style="font-size:0.78rem">' + (t.token_id || '').slice(0, 20) + '</td><td><span class="tag ' + (t.side === 'buy' ? 'tag-green' : 'tag-red') + '">' + (t.side || '').toUpperCase() + '</span></td><td>' + parseFloat(t.quantity || 0).toFixed(2) + '</td><td>$' + parseFloat(t.price || 0).toFixed(3) + '</td><td><span class="tag tag-green">' + (t.status || '--') + '</span></td></tr>' }).join('')
+        }).catch(function () { })
     }
 
-    // Init
-    loadWallets();
-    loadHistory();
+    loadActiveCopies(); loadWallets(); loadHistory();
+    setInterval(loadActiveCopies, 8000);
 </script>
 {% endblock %}

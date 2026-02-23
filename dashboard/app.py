@@ -920,7 +920,13 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/api/top-wallets")
     @login_required
     def api_top_wallets():
-        return jsonify(TOP_WALLETS)
+        # V7.5.2 — include active copy status per wallet
+        result = []
+        for w in TOP_WALLETS:
+            wc = dict(w)
+            wc["is_active"] = db.is_copy_active(w["address"]) if db else False
+            result.append(wc)
+        return jsonify(result)
 
     @app.route("/api/copy-wallet", methods=["POST"])
     @login_required
@@ -954,6 +960,10 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         logger.info(f"[CopyTrade] Copied wallet {wallet_name}: {len(mock_tokens)} positions @ {alloc_pct*100:.0f}% alloc")
         db.add_log("INFO", "copy-trade", f"Copied {wallet_name}: {len(mock_tokens)} positions")
 
+        # V7.5.2 — mark wallet as actively copied
+        if db:
+            db.start_copy(wallet_addr, wallet_name, alloc_pct * 100, len(mock_tokens))
+
         return jsonify({
             "status": "ok",
             "wallet": wallet_name,
@@ -969,6 +979,28 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             return jsonify(trades)
         except Exception as e:
             return jsonify([])
+
+    # 2026 V7.5.2 — Active copies management
+    @app.route("/api/active-copies")
+    @login_required
+    def api_active_copies():
+        try:
+            copies = db.get_active_copies()
+            return jsonify(copies)
+        except Exception:
+            return jsonify([])
+
+    @app.route("/api/stop-copy", methods=["POST"])
+    @login_required
+    def api_stop_copy():
+        data = request.json or {}
+        address = data.get("address", "")
+        if not address:
+            return jsonify({"error": "Missing address"}), 400
+        db.stop_copy(address)
+        logger.info(f"[CopyTrade] Stopped copying wallet {address[:10]}")
+        db.add_log("INFO", "copy-trade", f"Stopped copy: {address[:10]}")
+        return jsonify({"status": "ok"})
 
     @app.route("/copy-trading")
     @login_required
