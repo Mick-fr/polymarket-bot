@@ -823,11 +823,17 @@
         <!-- RIGHT COLUMN -->
         <div>
 
-            <!-- ── LIVE CONFIG ─────────────────────────────────── -->
+            <!-- ── LIVE CONFIG ──────────────────────────── -->
             <div class="v74-card">
                 <div class="v74-card-head">
                     <span class="v74-card-title">⚡ Config Live Bot</span>
-                    <span class="tag tag-blue" id="cfg-level">Balanced</span>
+                    <span class="tag" id="cfg-level"
+                        style="background:rgba(59,130,246,0.15);color:#60a5fa">Balanced</span>
+                </div>
+                <!-- V10.3 ENFORCED badge — affiché uniquement en Info Edge Only -->
+                <div id="cfg-enforced-badge"
+                    style="display:none;background:rgba(16,185,129,0.12);border:1.5px solid #10b981;color:#10b981;font-size:0.78rem;font-weight:700;text-align:center;padding:5px 10px;letter-spacing:0.5px;border-radius:6px;margin:0 12px 10px;">
+                    ⚡ INFO EDGE ONLY V10.3 &mdash; ENFORCED
                 </div>
                 <div class="v74-card-body">
                     <div class="config-grid" id="live-config-panel">
@@ -851,13 +857,34 @@
                             <div class="config-key">max_order $</div>
                             <div class="config-val" id="cfg-max-order">--</div>
                         </div>
+                        <!-- V10.3 Info Edge Only rows — masqués en mode MM -->
+                        <div class="config-item" id="cfg-ie-edge-row" style="display:none">
+                            <div class="config-key" style="color:#10b981">min_edge_score</div>
+                            <div class="config-val" id="cfg-ie-edge" style="color:#10b981">--</div>
+                        </div>
+                        <div class="config-item" id="cfg-ie-maturity-row" style="display:none">
+                            <div class="config-key" style="color:#10b981">maturity</div>
+                            <div class="config-val" id="cfg-ie-maturity" style="color:#10b981">--</div>
+                        </div>
+                        <div class="config-item" id="cfg-ie-vol-row" style="display:none">
+                            <div class="config-key" style="color:#10b981">min_vol_5m $</div>
+                            <div class="config-val" id="cfg-ie-vol" style="color:#10b981">--</div>
+                        </div>
+                        <div class="config-item" id="cfg-ie-tiered-row" style="display:none">
+                            <div class="config-key" style="color:#10b981">tiered sizing</div>
+                            <div class="config-val" id="cfg-ie-tiered" style="color:#10b981;font-size:0.75rem">--</div>
+                        </div>
+                        <div class="config-item" id="cfg-ie-avg-row" style="display:none">
+                            <div class="config-key" style="color:#10b981">avg_edge today</div>
+                            <div class="config-val" id="cfg-ie-avg" style="color:#10b981">--</div>
+                        </div>
                         <div class="config-item">
                             <div class="config-key">status</div>
-                            <div class="config-val" style="font-size:0.8rem;color:var(--green)">● live</div>
+                            <div class="config-val" style="font-size:0.8rem;color:var(--green)">&#9679; live</div>
                         </div>
                     </div>
-                    <p style="font-size:0.7rem;color:var(--text-dim);margin-top:10px;text-align:right">Rafraîchi toutes
-                        les 10s</p>
+                    <p style="font-size:0.7rem;color:var(--text-dim);margin-top:10px;text-align:right">↻ toutes les 5s
+                    </p>
                 </div>
             </div>
 
@@ -1171,13 +1198,46 @@
 
         // Update stats panel values by fetching /api/current-config
         fetch('/api/current-config').then(r => r.json()).then(cfg => {
-            document.getElementById('cfg-level').textContent = cfg.strategy_mode || 'MM Balanced';
+            const isIE = cfg.is_info_edge === true;
+            const mode = cfg.strategy_mode || 'MM Balanced';
+
+            // Title badge
+            const lvl = document.getElementById('cfg-level');
+            if (lvl) {
+                if (isIE) {
+                    lvl.textContent = 'INFO EDGE ONLY V10.3';
+                    lvl.style.cssText = 'background:rgba(16,185,129,0.15);color:#10b981;font-weight:700;font-size:0.75rem;padding:3px 8px;border-radius:5px;';
+                } else {
+                    lvl.textContent = mode;
+                    lvl.style.cssText = 'background:rgba(59,130,246,0.15);color:#60a5fa;font-weight:600;font-size:0.75rem;padding:3px 8px;border-radius:5px;';
+                }
+            }
+
+            // ENFORCED badge
+            const badge = document.getElementById('cfg-enforced-badge');
+            if (badge) badge.style.display = isIE ? 'block' : 'none';
+
+            // Common MM params
             document.getElementById('cfg-order-size').textContent = ((cfg.order_size_pct || 0) * 100).toFixed(1) + '%';
             document.getElementById('cfg-max-expo').textContent = ((cfg.max_net_exposure_pct || 0) * 100).toFixed(0) + '%';
-            document.getElementById('cfg-skew').textContent = (cfg.inventory_skew_threshold || 0).toFixed(2);
             document.getElementById('cfg-sizing').textContent = (cfg.sizing_mult || 1).toFixed(2) + '×';
-            document.getElementById('cfg-max-order').textContent = '$' + (cfg.max_order_usd || 15).toFixed(0);
-            // V9.0: afficher l'Edge Score moyen du jour dans la bannière Info Edge
+            document.getElementById('cfg-max-order').textContent = '$' + (cfg.max_order_usd || 12).toFixed(0);
+            const skewEl = document.getElementById('cfg-skew');
+            if (skewEl) skewEl.textContent = isIE ? 'N/A' : (cfg.inventory_skew_threshold || 0).toFixed(2);
+
+            // Info Edge Only exclusive rows
+            const ieRows = ['cfg-ie-edge-row', 'cfg-ie-maturity-row', 'cfg-ie-vol-row', 'cfg-ie-tiered-row', 'cfg-ie-avg-row'];
+            ieRows.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = isIE ? 'flex' : 'none'; });
+            if (isIE) {
+                document.getElementById('cfg-ie-edge').textContent = (cfg.min_edge_score || 12.5) + '%';
+                document.getElementById('cfg-ie-maturity').textContent = (cfg.min_minutes || 5) + '-' + (cfg.max_minutes || 90) + ' min';
+                document.getElementById('cfg-ie-vol').textContent = '>' + (cfg.min_volume_5m || 520) + ' $';
+                document.getElementById('cfg-ie-tiered').textContent = cfg.tiered_sizing || '1.0x / 1.8x / 2.8x';
+                const avgEl = document.getElementById('cfg-ie-avg');
+                if (avgEl) avgEl.textContent = cfg.info_edge_avg_score ? cfg.info_edge_avg_score.toFixed(1) + '%' : '—';
+            }
+
+            // Top-level Info Edge banner avg score
             const avgScoreEl = document.getElementById('info-edge-avg-score');
             if (avgScoreEl && cfg.info_edge_avg_score) {
                 avgScoreEl.textContent = parseFloat(cfg.info_edge_avg_score).toFixed(1) + '%';

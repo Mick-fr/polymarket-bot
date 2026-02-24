@@ -238,6 +238,43 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         
         return jsonify({"status": "ok", "mode": mode})
 
+    # V10.3 — Config Live Bot (paramètres réels de la stratégie active)
+    @app.route("/api/current-config", methods=["GET"])
+    @login_required
+    def api_current_config():
+        strategy_mode = db.get_config_str("strategy_mode", "MM Balanced")
+        info_edge_avg = db.get_config("info_edge_avg_score", 0) or 0
+
+        if strategy_mode == "Info Edge Only":
+            return jsonify({
+                "strategy_mode": strategy_mode,
+                "is_info_edge": True,
+                # Info Edge Only V10.3 params (constants)
+                "min_edge_score": 12.5,
+                "min_minutes": 5,
+                "max_minutes": 90,
+                "min_volume_5m": 520,
+                "order_size_pct": 0.018,
+                "max_net_exposure_pct": 0.25,
+                "sizing_mult": 1.0,
+                "max_order_usd": 12,
+                "inventory_skew_threshold": None,
+                "tiered_sizing": "1.0x / 1.8x / 2.8x",
+                "info_edge_avg_score": round(float(info_edge_avg), 2),
+            })
+
+        # MM modes: read live values from DB
+        return jsonify({
+            "strategy_mode": strategy_mode,
+            "is_info_edge": False,
+            "order_size_pct": db.get_config("order_size_pct", 0.018) or 0.018,
+            "max_net_exposure_pct": db.get_config("max_net_exposure_pct", 0.22) or 0.22,
+            "inventory_skew_threshold": db.get_config("inventory_skew_threshold", 0.35) or 0.35,
+            "sizing_mult": db.get_config("sizing_mult", 1.0) or 1.0,
+            "max_order_usd": db.get_config("max_order_usd", 10) or 10,
+            "info_edge_avg_score": round(float(info_edge_avg), 2),
+        })
+
     # 2026 V7.6 — Force reset kill switch (circuit breaker or manual)
     @app.route("/api/reset-kill-switch", methods=["POST"])
     @login_required
