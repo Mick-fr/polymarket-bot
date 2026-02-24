@@ -1195,16 +1195,15 @@ class InfoEdgeStrategy(BaseStrategy):
         max_edge_found = 0.0
         min_spread_found = 999.0
         sprint_markets_count = 0
-        # --- DIAGNOSTIC V12.8 (FIX V12.9) ---
+        # --- V12.10 : LECTURE DIRECTE EN DB ---
         m30 = 0.0
         o_val = 0.0
-        if hasattr(self, 'binance_client') and self.binance_client:
-            metrics = self.binance_client.get_metrics()
-            m30 = metrics.get('momentum_30s', 0.0)
-            o_val = metrics.get('obi', 0.0)
+        if self.db:
+            m30 = float(self.db.get_config("live_btc_mom30s", 0) or 0)
+            o_val = float(self.db.get_config("live_btc_obi", 0) or 0)
         
-        # On force la visibilité dans les logs de ce que le bot "pense"
-        logger.info(f"[DEBUG RADAR] Bot Brain: Mom={m30:.4f}% | OBI={o_val:.2f}")
+        # Log de vérification (Bot Brain doit maintenant afficher comme le dashboard)
+        logger.info(f"[DEBUG RADAR] Bot Brain (DB Sync): Mom={m30:.4f}% | OBI={o_val:.2f}")
 
         traded = 0
         for market in markets:
@@ -1253,10 +1252,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.9 : SNIPER SPRINT SANS CRASH ---
+            # --- V12.10 : SNIPER SPRINT DB SYNC ---
             if is_sprint:
-                # Récupération sécurisée Binance via les variables m30 / o_val calculées plus haut
-                
                 # Mise à jour télémétrie avant tout filtre
                 # On force l'affichage du spread réel (ou 0.01 si Gamma bug)
                 current_spread = market.spread if market.spread > 0 else 0.01
@@ -1292,11 +1289,11 @@ class InfoEdgeStrategy(BaseStrategy):
                     # Utilisation du logger global 'logger' au lieu de 'self.logger'
                     print(f"🚨 [FIRE] SPRINT DETECTÉ: {side.upper()}")
                     if self.db:
-                        spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
+                        spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
                 else:
                     if self.db:
-                        spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
+                        spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
                 
                 continue # Bypass complet
