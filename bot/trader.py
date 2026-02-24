@@ -159,6 +159,12 @@ class Trader:
             binance_ws=self.binance_ws
         )
 
+        # V10.2 — Au startup : si mode Info Edge Only, loguer le switch immédiat
+        _startup_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
+        if _startup_mode == "Info Edge Only":
+            logger.info("[V10.3] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520")
+            self.db.add_log("INFO", "trader", "[V10.3] InfoEdgeStrategy forcé au startup")
+
         # 2026 V7.0 SCALING
         self.positions = self.db.get_all_positions() if self.db else []
         self.cash = balance
@@ -471,11 +477,17 @@ class Trader:
             signals = []
 
             if strategy_mode == "Info Edge Only":
-                # ────── MODE STRICT V10.0 : OBI complètement désactivé ──────
-                logger.info("[ENFORCED V10.0] Professional Info Edge — P_true log-normal | BTC/ETH 5-40min")
-                if hasattr(self, "info_edge_strategy"):
-                    signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
-                # Aucun signal OBI
+                # ────── V10.2 ENFORCED : InfoEdgeStrategy SEULE, zéro OBI ──────
+                logger.info("[V10.3] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520")
+                if not hasattr(self, "info_edge_strategy") or self.info_edge_strategy is None:
+                    from bot.strategy import InfoEdgeStrategy
+                    self.info_edge_strategy = InfoEdgeStrategy(
+                        client=self.pm_client, db=self.db,
+                        max_markets=20, max_order_size_usdc=self.config.bot.max_order_size,
+                        binance_ws=getattr(self, "binance_ws", None)
+                    )
+                    logger.info("[V10.2] InfoEdgeStrategy instancié en urgence (fallback startup)")
+                signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
             else:
                 # ────── Modes MM : OBI classique + Info Edge complément ──────
                 self.strategy._apply_live_aggressivity()
