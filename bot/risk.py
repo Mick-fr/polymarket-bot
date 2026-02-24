@@ -57,6 +57,52 @@ class RiskVerdict:
     action:    str = "none"   # 'none' | 'cancel_bids' | 'liquidate' | 'kill_switch'
 
 
+class TrailingStopManager:
+    """V14: Gère les trailing stops ajustés à la volatilité."""
+    def __init__(self, db: Database):
+        self.db = db
+        self._position_max_pnl: dict[str, float] = {}
+
+    def update_and_check(self, positions: list[dict], current_vol: float) -> list[dict]:
+        to_close = []
+        for p in positions:
+            token_id = p.get("token_id", "")
+            qty = p.get("quantity", 0.0)
+            if qty <= 0:
+                continue
+
+            avg_price = p.get("avg_price", 0.0)
+            mid_price = p.get("current_mid", 0.0)
+            if avg_price <= 0 or mid_price <= 0:
+                continue
+                
+            pnl_pct = (mid_price - avg_price) / avg_price
+            
+            # Record HWM 
+            max_pnl = self._position_max_pnl.get(token_id, 0.0)
+            if pnl_pct > max_pnl:
+                max_pnl = pnl_pct
+                self._position_max_pnl[token_id] = max_pnl
+                
+            # Logique Trailing Stop (déclenche après +2% ROI)
+            if max_pnl >= 0.02:
+                # Si vol = 0.50 (calme), gap = 1%. Si vol = 1.00 (agité), gap = 2%
+                vol_gap = max(0.01, min(0.03, current_vol * 0.02))
+                trailing_sl = max_pnl - vol_gap
+                
+                # Breakeven garanti + 0.2%
+                trailing_sl = max(0.002, trailing_sl)
+                
+                if pnl_pct <= trailing_sl:
+                    to_close.append({
+                        "token_id": token_id,
+                        "qty": qty,
+                        "reason": f"Trailing SL (Max: +{max_pnl*100:.1f}%, Gap: {vol_gap*100:.1f}%, Chute à {pnl_pct*100:.1f}%)"
+                    })
+                    self._position_max_pnl.pop(token_id, None)
+                    
+        return to_close
+
 class RiskManager:
     """Contrôle des risques pré-exécution avec règles OBI étendues."""
 
@@ -69,6 +115,7 @@ class RiskManager:
         # 2026 V7.3.9 — mutable override for frozen config field
         self._max_exposure_pct: float = getattr(config, "max_exposure_pct", 0.20)
         self._last_agg_level: str = ""
+        self.trailing_stops = TrailingStopManager(db)
 
     # 2026 V8.0 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
     AGGRESSIVITY_MAP = {
@@ -431,8 +478,24 @@ class RiskManager:
                     except Exception as e:
                         logger.error("Erreur auto-close safe_mode %s: %s", token_id[:16], e)
 
-    def check_auto_close_btc_eth(self, client, positions: list[dict]):
-        """V7.9 INFO EDGE: Auto-close à -25% sur marchés BTC/ETH."""
+    def check_auto_close_btc_eth(self, client, positions: list[dict], current_vol: float = 0.80):
+        """V14: INFO EDGE Auto-close & Trailing Stop pour marchés BTC/ETH."""
+        # 1. Trailing Stops V14
+        to_close = self.trailing_stops.update_and_check(positions, current_vol)
+        for action in to_close:
+            token_id = action["token_id"]
+            qty = action["qty"]
+            reason = action["reason"]
+            logger.warning("[TRAILING STOP] %s sur '%s'", reason, token_id[:20])
+            try:
+                # Fallback to general market sale logic used in V13
+                # Si pm_client expose place_market_order, on prefère ça
+                client.place_market_order(token_id=token_id, amount=qty, side="sell")
+                self.db.add_log("WARNING", "risk", f"[TRAILING STOP] {token_id[:10]} {reason}")
+            except Exception as e:
+                logger.error("Erreur trailing stop %s: %s", token_id[:16], e)
+
+        # 2. Hard Stop Loss Classique (-25%)
         for p in positions:
             qty = p.get("quantity", 0.0)
             if qty <= 0:
@@ -446,9 +509,9 @@ class RiskManager:
                 if avg_price > 0 and mid_price > 0:
                     pnl_pct = (mid_price - avg_price) / avg_price
                     if pnl_pct <= -0.25:
-                        logger.warning("[INFO EDGE] Auto-close position BTC/ETH '%s' (PnL %.1f%% <= -25%%)", token_id[:20], pnl_pct * 100)
+                        logger.warning("[INFO EDGE] Hard Stop-Loss BTC/ETH '%s' (PnL %.1f%% <= -25%%)", token_id[:20], pnl_pct * 100)
                         try:
-                            client.create_order(token_id=token_id, side="sell", order_type="market", size=qty)
-                            self.db.add_log("WARNING", "risk", f"[INFO EDGE] Auto-close {token_id[:10]} à {pnl_pct * 100:.1f}%")
+                            client.place_market_order(token_id=token_id, amount=qty, side="sell")
+                            self.db.add_log("WARNING", "risk", f"[INFO EDGE] Hard Stop {token_id[:10]} à {pnl_pct * 100:.1f}%")
                         except Exception as e:
-                            logger.error("Erreur auto-close BTC/ETH %s: %s", token_id[:16], e)
+                            logger.error("Erreur hard stop BTC/ETH %s: %s", token_id[:16], e)

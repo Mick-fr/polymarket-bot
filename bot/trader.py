@@ -349,6 +349,7 @@ class Trader:
 
     def _on_price_tick(self, symbol: str, mid: float):
         """V13.0: Déclenché asynchronement depuis BinanceWSClient à chaque tick de prix BTC/ETH."""
+        tick_start_ts = time.time()  # V14.0 Latency Trace Start
         if symbol != "BTCUSDT":
             return
             
@@ -402,7 +403,7 @@ class Trader:
                 
             self._last_signal_ts[sig.token_id] = now
                 
-            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=[])
+            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=[], tick_start_ts=tick_start_ts)
             if approved:
                 if sig.side == "buy" and sig.price:
                     residual_balance = max(0.0, residual_balance - sig.size * sig.price)
@@ -449,7 +450,17 @@ class Trader:
         balance = self._fetch_available_balance(balance_raw)
         self.db.record_balance(balance)
 
-        # 4. Safe Mode et Liquidations partiels
+        # 4.a V14.0 Anti-Stale AI Sentiment isolation
+        try:
+            from bot.ai_edge import get_ai_global_sentiment_bias
+            bias = get_ai_global_sentiment_bias()
+            if bias != 1.0:
+                self.db.set_config("live_ai_sentiment_bias", round(bias, 3))
+                logger.debug("[AI Bias] Sentiment rafraîchi via Grok: x%.2f", bias)
+        except Exception as e_ai:
+            logger.debug("[AI Bias] Erreur: %s", e_ai)
+
+        # 4.b Safe Mode et Liquidations partiels
         if not self.config.bot.paper_trading:
             self._maybe_liquidate_partial(balance, portfolio_value)
             try:
@@ -1472,9 +1483,31 @@ class Trader:
         """Callback déclenché par le WebSocket à chaque mise à jour de carnet."""
         logger.debug("[WS] Book update reçu pour %s", token_id[:16])
 
+    def _latency_trace(func):
+        """V14: Deécorateur pour tracer la latence d'exécution depuis le tick Binance."""
+        import functools
+        import time
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            tick_start = kwargs.get("tick_start_ts", time.time())
+            result = func(self, *args, **kwargs)
+            if result and tick_start > 0:
+                diff_ms = (time.time() - tick_start) * 1000.0
+                if diff_ms > 200.0:
+                    sig = args[0] if args else None
+                    tok = sig.token_id[:8] if sig else "?"
+                    msg = f"WS->Order Latency > 200ms ({diff_ms:.1f}ms) sur {tok}! Bottleneck détecté."
+                    logger.warning("[PERF_WARNING] %s", msg)
+                    if hasattr(self, 'db'):
+                        self.db.add_log("WARNING", "perf", msg)
+            return result
+        return wrapper
+
+    @_latency_trace
     def _execute_signal(self, signal: Signal, current_balance: float,
                         portfolio_value: float = 0.0,
-                        collect_batch: list = None) -> bool:
+                        collect_batch: list = None,
+                        tick_start_ts: float = 0.0) -> bool:
         """Vérifie le risque, exécute, met à jour l'inventaire.
         Retourne True si le signal a été approuvé par le RiskManager, False sinon."""
 
@@ -1614,6 +1647,33 @@ class Trader:
                     label=f"place_limit({signal.token_id[:16]})"
                 )
             else:
+                # V14.0: Smart Liquidity Check sur WS avant market order
+                if hasattr(self.pm_client, "ws_client") and self.pm_client.ws_client.running:
+                    ob = self.pm_client.ws_client.get_order_book(signal.token_id)
+                    if ob:
+                        levels = ob.get("asks" if signal.side == "buy" else "bids", [])
+                        if levels:
+                            best_p = float(levels[0]["price"])
+                            accumulated_size = 0.0
+                            accumulated_cost = 0.0
+                            target_size = signal.size
+                            for lvl in levels[:2]: # Check top 2 levels
+                                p = float(lvl["price"])
+                                s = float(lvl["size"])
+                                take = min(s, target_size - accumulated_size)
+                                accumulated_size += take
+                                accumulated_cost += take * p
+                                if accumulated_size >= target_size:
+                                    break
+                            
+                            if accumulated_size > 0:
+                                avg_fill = accumulated_cost / accumulated_size
+                                slippage = abs(avg_fill - best_p) / best_p
+                                if slippage > 0.015: # > 1.5%
+                                    logger.warning("[SLIPPAGE_PROTECT] Cancel %s: Slippage %.2f%% > 1.5%% (Avg: %.4f, Best: %.4f)", signal.token_id[:8], slippage*100, avg_fill, best_p)
+                                    self.db.add_log("WARNING", "risk", f"SLIPPAGE_PROTECT {slippage*100:.1f}%")
+                                    return False
+                                    
                 resp = self._call_with_timeout(
                     lambda: self.pm_client.place_market_order(
                         token_id=signal.token_id,

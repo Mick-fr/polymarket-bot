@@ -1108,6 +1108,42 @@ class InfoEdgeStrategy(BaseStrategy):
         else:
             return 1.0 - BinanceWSClient._norm_cdf_static(-x) if False else 1.0 - InfoEdgeStrategy._norm_cdf(-x)
 
+    def _get_dynamic_vol(self, symbol: str) -> float:
+        """
+        V14.0: Volatilité dynamique (Ecart-type des rendements 1-sec annualisé).
+        """
+        import math
+        history = []
+        if self.binance_ws:
+            with self.binance_ws._lock:
+                if symbol == "BTC" and self.binance_ws.btc_history:
+                    history = list(self.binance_ws.btc_history)
+                elif symbol == "ETH" and self.binance_ws.eth_history:
+                    history = list(self.binance_ws.eth_history)
+        
+        if len(history) < 10:
+            return self.IMPLIED_VOL
+            
+        returns = []
+        for i in range(1, len(history)):
+            p0 = history[i-1][1]
+            p1 = history[i][1]
+            if p0 > 0 and p1 > 0:
+                returns.append(math.log(p1 / p0))
+                
+        if not returns:
+            return self.IMPLIED_VOL
+            
+        mean_ret = sum(returns) / len(returns)
+        var = sum((r - mean_ret)**2 for r in returns) / len(returns)
+        std_dev = math.sqrt(var)
+        
+        # Annualisation des données d'une seconde (31_536_000 sec/an)
+        ann_vol = std_dev * math.sqrt(31_536_000)
+        
+        # Borner pour éviter les extrêmes explosifs dans d1
+        return max(0.40, min(1.50, ann_vol))
+
     def _calculate_edge_score(self, market: EligibleMarket) -> tuple[float, float, float, float]:
         """
         Calcule le vrai Edge Score avec données Binance live.
@@ -1127,14 +1163,20 @@ class InfoEdgeStrategy(BaseStrategy):
         # Pour un marché "BTC > 100k ?", le strike ~ spot*(1 - (p_poly-0.5)*0.1)
         if spot > 0:
             strike = spot * (1.0 - (p_poly - 0.5) * 0.1)
+            # V14.0 : Funding Rate Alpha Drift
+            # Si le funding est fortement positif, le proxy strike est artificiellement baissé
+            # pour pousser p_true à la hausse (sentiment dérivé bullish)
+            if abs(funding) > 0.0001:  # > 0.01%
+                strike = strike * (1.0 - (funding * 50.0))
         else:
             # Pas de prix Binance — fallback demi-conservateur
             strike = 0.0
 
         minutes_to_expiry = market.days_to_expiry * 1440
 
-        # Vol ajustée (funding rate bonus)
-        vol = self.IMPLIED_VOL + abs(funding) * 50.0  # funding fort = vol plus haute
+        # V14.0 : Utilisation de la Volatilité Dynamique
+        base_vol = self._get_dynamic_vol(sym)
+        vol = base_vol + abs(funding) * 50.0  # funding fort = vol plus haute
 
         if spot > 0 and strike > 0:
             p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
@@ -1259,6 +1301,11 @@ class InfoEdgeStrategy(BaseStrategy):
             except Exception as e:
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
+
+            # V14.0 Anti-Stale : Appliquer le multiplicateur global AI 
+            if self.db:
+                bias = float(self.db.get_config("live_ai_sentiment_bias", 1.0) or 1.0)
+                edge_pct *= bias
 
             # --- V12.12 : SENSIBILITÉ ACCRUE & LOGS DE DÉBUG SPRINT ---
             if is_sprint:
