@@ -1077,11 +1077,11 @@ class InfoEdgeStrategy(BaseStrategy):
 
         return edge_pct, p_true, p_poly, vol_est
 
-    def _decide_side(self, market: EligibleMarket, edge_pct: float) -> str:
-        """Décision dynamique : Edge > +20% → BUY YES | Edge < -20% → BUY NO."""
-        if edge_pct >= self.MIN_EDGE_SCORE:
+    def _decide_side(self, market: EligibleMarket, edge_pct: float, min_edge: float) -> str:
+        """Décision dynamique : Edge > +min_edge → BUY YES | Edge < -min_edge → BUY NO."""
+        if edge_pct >= min_edge:
             return "buy"   # BUY YES
-        elif edge_pct <= -self.MIN_EDGE_SCORE:
+        elif edge_pct <= -min_edge:
             return "sell"  # BUY NO (short YES)
         return ""  # pas de trade
 
@@ -1109,9 +1109,20 @@ class InfoEdgeStrategy(BaseStrategy):
             if not self._is_btc_eth(market.question):
                 continue
 
+            # V10.5 5-MIN BTC SPRINT DETECTION
+            q_lower = market.question.lower()
+            is_sprint = (("5 minute" in q_lower or "5 min" in q_lower) and 
+                         ("bitcoin" in q_lower or "btc" in q_lower))
+
+            min_minutes = 1.0 if is_sprint else self.MIN_MINUTES
+            min_edge = 8.5 if is_sprint else self.MIN_EDGE_SCORE
+            min_vol = 800 if is_sprint else self.MIN_VOLUME_5M
+            max_trade = 0.06 if is_sprint else self.MAX_TRADE_PCT
+
             minutes_to_expiry = market.days_to_expiry * 1440
-            if minutes_to_expiry < self.MIN_MINUTES or minutes_to_expiry > self.MAX_MINUTES:
-                logger.debug("[V10.3] %s ignoré (%.1fmin hors [5,90])", market.question[:20], minutes_to_expiry)
+            if minutes_to_expiry < min_minutes or minutes_to_expiry > self.MAX_MINUTES:
+                if not is_sprint:
+                    logger.debug("[V10.3] %s ignoré (%.1fmin hors [%.1f,%.1f])", market.question[:20], minutes_to_expiry, min_minutes, self.MAX_MINUTES)
                 continue
 
             if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
@@ -1130,20 +1141,39 @@ class InfoEdgeStrategy(BaseStrategy):
 
             abs_edge = abs(edge_pct)
 
-            # Volume filter: > 15k$ estimated 5-min
-            if vol_5m < self.MIN_VOLUME_5M:
-                logger.debug("[V10.3] %s ignoré (vol5m=%.0f$ < 520)", market.question[:20], vol_5m)
+            # Volume filter
+            if vol_5m < min_vol:
+                logger.debug("[V10.3/V10.5] %s ignoré (vol5m=%.0f$ < %.0f)", market.question[:20], vol_5m, min_vol)
                 continue
 
-            # Edge threshold (positive or negative)
-            if abs_edge < self.MIN_EDGE_SCORE:
-                logger.debug("[V10.3] %s skip — |edge|=%.1f%% < %.1f%%", market.question[:20], abs_edge, self.MIN_EDGE_SCORE)
+            # Edge threshold
+            if abs_edge < min_edge:
+                logger.debug("[V10.3/V10.5] %s skip — |edge|=%.1f%% < %.1f%%", market.question[:20], abs_edge, min_edge)
                 continue
 
             # Dynamic side decision
-            side = self._decide_side(market, edge_pct)
+            side = self._decide_side(market, edge_pct, min_edge)
             if not side:
                 continue
+
+            # V10.5 Binance Verification for Sprint Markets
+            if is_sprint and self.binance_ws and self.binance_ws.is_connected:
+                obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
+                
+                if side == "buy":  # BUY YES (UP)
+                    if mom30s <= 0.02 or obi <= 0.18:
+                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.02) | OBI=%.2f (req>0.18)", market.question[:20], mom30s, obi)
+                        continue
+                elif side == "sell":  # BUY NO (DOWN)
+                    if mom30s >= -0.02 or obi >= -0.18:
+                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.02) | OBI=%.2f (req<-0.18)", market.question[:20], mom30s, obi)
+                        continue
+                        
+                # Validation passed
+                dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
+                logger.info("[5MIN BTC] P_true=%.2f | OBI=%+.2f | Mom30s=%+.3f%% | Edge=%+.1f%% → %s", 
+                            p_true, obi, mom30s, edge_pct, dir_label)
 
             daily_edge_scores.append(abs_edge)
 
@@ -1156,7 +1186,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 size_multiplier = 1.0
 
             base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
-            order_size = min(base_order * size_multiplier, portfolio * self.MAX_TRADE_PCT, self.MAX_ORDER_USDC)
+            order_size = min(base_order * size_multiplier, portfolio * max_trade, self.MAX_ORDER_USDC)
             if order_size < 1.0:
                 continue
 
@@ -1164,8 +1194,9 @@ class InfoEdgeStrategy(BaseStrategy):
             shares = max(5.0, order_size / bid_price)
 
             side_label = "BUY YES" if side == "buy" else "BUY NO"
-            logger.info("[V10.3] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
-                        p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
+            if not is_sprint:
+                logger.info("[V10.3] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
+                            p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
 
             signals.append(Signal(
                 token_id=market.yes_token_id,
@@ -1183,7 +1214,7 @@ class InfoEdgeStrategy(BaseStrategy):
             traded += 1
 
         avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
-        logger.info("[V10.3] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520 | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
+        logger.info("[V10.5] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
         if self.db:
             try:
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
@@ -1192,8 +1223,8 @@ class InfoEdgeStrategy(BaseStrategy):
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
-        """V10.3 ENFORCED — 100$ capital optimized | P_true log-normal | BTC/ETH 5-90min | min Edge 12.5%%."""
-        logger.info("[V10.3] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520 | Kelly tiered 1.0x/1.8x/2.8x")
+        """V10.5 ENFORCED — 100$ capital optimized + 5-MIN BTC SCALPER."""
+        logger.info("[V10.5] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520 | 5-MIN SCALPER")
         return self.analyze(balance=balance)
 
 

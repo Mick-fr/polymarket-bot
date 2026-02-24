@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import time
+import collections
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ class BinanceWSClient(threading.Thread):
         # Funding rate (polled)
         self.btc_funding: float = 0.0
         self.eth_funding: float = 0.0
+        # V10.5 Momentum & OBI
+        self.btc_obi: float = 0.0
+        self.eth_obi: float = 0.0
+        self.btc_history = collections.deque(maxlen=90)
+        self.eth_history = collections.deque(maxlen=90)
         # Metadata
         self._last_update_ts: float = 0.0
         self._connected = False
@@ -74,6 +80,31 @@ class BinanceWSClient(threading.Thread):
         sym = symbol.upper()
         with self._lock:
             return self.btc_funding if "BTC" in sym else self.eth_funding
+
+    def get_binance_obi(self, symbol: str) -> float:
+        sym = symbol.upper()
+        with self._lock:
+            return self.btc_obi if "BTC" in sym else self.eth_obi
+
+    def get_30s_momentum(self, symbol: str) -> float:
+        sym = symbol.upper()
+        with self._lock:
+            history = self.btc_history if "BTC" in sym else self.eth_history
+            if not history or len(history) < 2:
+                return 0.0
+            
+            current_ts, current_mid = history[-1]
+            target_ts = current_ts - 30.0
+            
+            oldest_mid = history[0][1]
+            for ts, mid in history:
+                if ts >= target_ts:
+                    oldest_mid = mid
+                    break
+            
+            if oldest_mid > 0:
+                return (current_mid - oldest_mid) / oldest_mid * 100.0
+            return 0.0
 
     @property
     def is_connected(self) -> bool:
@@ -134,13 +165,26 @@ class BinanceWSClient(threading.Thread):
             bid = float(data.get("b", 0))
             ask = float(data.get("a", 0))
             with self._lock:
+                now = time.time()
                 if symbol == "BTCUSDT":
                     self.btc_bid = bid
                     self.btc_ask = ask
+                    bid_qty = float(data.get("B", 0))
+                    ask_qty = float(data.get("A", 0))
+                    self.btc_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    mid = (bid + ask) / 2
+                    if not self.btc_history or now - self.btc_history[-1][0] >= 1.0:
+                        self.btc_history.append((now, mid))
                 elif symbol == "ETHUSDT":
                     self.eth_bid = bid
                     self.eth_ask = ask
-                self._last_update_ts = time.time()
+                    bid_qty = float(data.get("B", 0))
+                    ask_qty = float(data.get("A", 0))
+                    self.eth_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    mid = (bid + ask) / 2
+                    if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
+                        self.eth_history.append((now, mid))
+                self._last_update_ts = now
         except Exception:
             pass
 
@@ -165,11 +209,23 @@ class BinanceWSClient(threading.Thread):
                         bid = float(item["bidPrice"])
                         ask = float(item["askPrice"])
                         with self._lock:
+                            now = time.time()
+                            bid_qty = float(item.get("bidQty", 0))
+                            ask_qty = float(item.get("askQty", 0))
+                            obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                            mid = (bid + ask) / 2
+                            
                             if sym == "BTCUSDT":
                                 self.btc_bid, self.btc_ask = bid, ask
+                                self.btc_obi = obi
+                                if not self.btc_history or now - self.btc_history[-1][0] >= 1.0:
+                                    self.btc_history.append((now, mid))
                             elif sym == "ETHUSDT":
                                 self.eth_bid, self.eth_ask = bid, ask
-                            self._last_update_ts = time.time()
+                                self.eth_obi = obi
+                                if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
+                                    self.eth_history.append((now, mid))
+                            self._last_update_ts = now
                     self._connected = True
             except Exception as e:
                 logger.debug("[BinanceWS REST] Erreur polling: %s", e)
