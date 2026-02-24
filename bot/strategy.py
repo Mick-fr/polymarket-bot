@@ -43,7 +43,7 @@ OBI_BEARISH_THRESHOLD  = -0.20   # OBI < -0.20 → pression vendeuse (ex: -0.30)
 OBI_SKEW_FACTOR        =  3.0    # Multiplicateur OBI → ticks de skew (continu)
 MIN_PRICE              =  0.20
 MAX_PRICE              =  0.80
-MIN_SPREAD             =  0.02   # 2 ticks min — rentable apres gas (ex: 0.01)
+MIN_SPREAD             =  0.01   # 1 tick min — rentable apres gas (MODIFIÉ V11.7)
 MIN_SPREAD_HIGH_VOL    =  0.01   # 1 tick accepte si volume > HIGH_VOL_THRESHOLD
 HIGH_VOL_THRESHOLD     =  50_000.0  # Volume 24h au-dessus duquel spread 1 tick OK
 MIN_VOLUME_24H         =  10_000.0
@@ -1141,7 +1141,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 sprint_markets_count += 1
                 min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.
                 min_edge = 7.0     # Seuil assoupli pour capter le momentum
-                min_vol = 600
+                min_vol = 0        # MODIFIÉ V11.7 : Un marché neuf n'a pas de volume initial
                 max_trade = 0.06
                 logger.info("[5MIN BTC SPRINT] Détecté — reste %.1f min | Edge cible=%.1f%%", minutes_to_expiry, min_edge)
             else:
@@ -1155,8 +1155,8 @@ class InfoEdgeStrategy(BaseStrategy):
                     logger.debug("[V10.3] %s ignoré (%.1fmin hors [%.1f,%.1f])", market.question[:20], minutes_to_expiry, min_minutes, self.MAX_MINUTES)
                 continue
 
-            if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
-                logger.debug("[V10.3] %s ignoré (spread > 3%%)", market.question[:20])
+            if market.mid_price > 0 and (market.spread / market.mid_price) > 0.06:
+                logger.debug("[V10.3] %s ignoré (spread > 6%%)", market.question[:20])
                 continue
 
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
