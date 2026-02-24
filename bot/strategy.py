@@ -960,17 +960,17 @@ class InfoEdgeStrategy(BaseStrategy):
     - Maturity 5-40 min | Max 8% par trade | Expo 25% max
     """
 
-    # V10.0 paramètres
+    # V10.1 paramètres optimisés pour petit capital (~100$)
     ORDER_SIZE_PCT = 0.018
     MAX_EXPO_PCT   = 0.25
     MAX_ORDER_USDC = 12.0
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 20.0   # % strict
+    MIN_EDGE_SCORE = 13.0    # compromis qualité/quantité pour petit capital
     MAX_TRADE_PCT  = 0.08
     MIN_MINUTES    = 5.0
-    MAX_MINUTES    = 40.0
-    MIN_VOLUME_5M  = 15_000
-    IMPLIED_VOL    = 0.80   # volatilité implicite BTC/ETH court terme
+    MAX_MINUTES    = 75.0    # sweet spot élargi
+    MIN_VOLUME_5M  = 4_500   # liquide suffisant pour petit capital
+    IMPLIED_VOL    = 0.80
 
     def __init__(self, client: PolymarketClient, db=None, max_markets: int = 20,
                  max_order_size_usdc: float = 12.0, binance_ws=None):
@@ -1102,11 +1102,11 @@ class InfoEdgeStrategy(BaseStrategy):
 
             minutes_to_expiry = market.days_to_expiry * 1440
             if minutes_to_expiry < self.MIN_MINUTES or minutes_to_expiry > self.MAX_MINUTES:
-                logger.debug("[V10.0 EDGE] %s ignoré (%.1fmin hors [5,40])", market.question[:20], minutes_to_expiry)
+                logger.debug("[V10.1] %s ignoré (%.1fmin hors [5,75])", market.question[:20], minutes_to_expiry)
                 continue
 
             if market.mid_price > 0 and (market.spread / market.mid_price) > 0.03:
-                logger.debug("[V10.0 EDGE] %s ignoré (spread > 3%%)", market.question[:20])
+                logger.debug("[V10.1] %s ignoré (spread > 3%%)", market.question[:20])
                 continue
 
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
@@ -1123,12 +1123,12 @@ class InfoEdgeStrategy(BaseStrategy):
 
             # Volume filter: > 15k$ estimated 5-min
             if vol_5m < self.MIN_VOLUME_5M:
-                logger.debug("[V10.0 EDGE] %s ignoré (vol5m=%.0f$ < 15k)", market.question[:20], vol_5m)
+                logger.debug("[V10.1] %s ignoré (vol5m=%.0f$ < 4500)", market.question[:20], vol_5m)
                 continue
 
             # Edge threshold (positive or negative)
             if abs_edge < self.MIN_EDGE_SCORE:
-                logger.debug("[V10.0 EDGE] %s skip — |edge|=%.1f%% < 20%%", market.question[:20], abs_edge)
+                logger.debug("[V10.1] %s skip — |edge|=%.1f%% < %.0f%%", market.question[:20], abs_edge, self.MIN_EDGE_SCORE)
                 continue
 
             # Dynamic side decision
@@ -1155,7 +1155,7 @@ class InfoEdgeStrategy(BaseStrategy):
             shares = max(5.0, order_size / bid_price)
 
             side_label = "BUY YES" if side == "buy" else "BUY NO"
-            logger.info("[V10.0 EDGE] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
+            logger.info("[V10.1] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
                         p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
 
             signals.append(Signal(
@@ -1174,7 +1174,7 @@ class InfoEdgeStrategy(BaseStrategy):
             traded += 1
 
         avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
-        logger.info("[V10.0 EDGE] %d signal(s) | avg_edge=%.1f%% | P_true model=log-normal | 5-40min", len(signals), avg_edge)
+        logger.info("[V10.1] Edge min 13%% | Maturity 5-75min | Vol>4500 | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
         if self.db:
             try:
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
@@ -1183,8 +1183,8 @@ class InfoEdgeStrategy(BaseStrategy):
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
-        """V10.0 ENFORCED — Real pricing BTC/ETH, P_true log-normal, Kelly tiered."""
-        logger.info("[ENFORCED V10.0] Professional Info Edge — P_true log-normal | BTC/ETH 5-40min | min Edge 20%% | tiered 1.0x/1.8x/2.8x")
+        """V10.1 ENFORCED — $100 capital optimized | P_true log-normal | BTC/ETH 5-75min | min Edge 13%%."""
+        logger.info("[ENFORCED V10.1] Edge min 13%% | Maturity 5-75min | Vol>4500 | Kelly tiered 1.0x/1.8x/2.8x")
         return self.analyze(balance=balance)
 
 
