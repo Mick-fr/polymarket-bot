@@ -1240,6 +1240,40 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
+            mom30s = 0.0
+            obi = 0.0
+            side_override = None
+
+            # --- V11.15 : MOMENTUM EDGE OVERRIDE ---
+            if is_sprint and self.binance_ws and self.binance_ws.is_connected:
+                obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
+                
+                if self.db:
+                    try:
+                        self.db.set_config("live_btc_mom30s", round(mom30s, 4))
+                        self.db.set_config("live_btc_obi", round(obi, 3))
+                    except Exception as e:
+                        logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
+
+                # Force le déclenchement en créant un Edge proportionnel au mouvement
+                if mom30s > 0.012 and obi > 0.12:
+                    # Mouvement haussier fort = Edge positif artificiel (ex: 0.020 * 1000 = 20%)
+                    edge_pct = abs(mom30s) * 1000.0 
+                    # On s'assure qu'il dépasse le min_edge si la condition stricte est validée
+                    edge_pct = max(edge_pct, min_edge + 1.0)
+                    side_override = "buy" # Parie sur la HAUSSE
+                elif mom30s < -0.012 and obi < -0.12:
+                    # Mouvement baissier fort = Edge positif artificiel pour le camp "Non" / "Baisse"
+                    edge_pct = abs(mom30s) * 1000.0
+                    edge_pct = max(edge_pct, min_edge + 1.0)
+                    side_override = "sell" # Parie sur la BAISSE (Adapter selon la logique de votre bot, parfois "buy no")
+                else:
+                    # Les conditions Binance ne sont pas remplies, on ne tire pas
+                    edge_pct = 0.0
+                    side_override = ""
+            # ---------------------------------------
+
             abs_edge = abs(edge_pct)
 
             # Volume filter
@@ -1253,35 +1287,15 @@ class InfoEdgeStrategy(BaseStrategy):
                 continue
 
             # Dynamic side decision
-            side = self._decide_side(market, edge_pct, min_edge)
+            if side_override is not None:
+                side = side_override
+            else:
+                side = self._decide_side(market, edge_pct, min_edge)
+                
             if not side:
                 continue
 
-            # V10.8 Binance Verification for Sprint Markets
-            if is_sprint and self.binance_ws and self.binance_ws.is_connected:
-                obi = self.binance_ws.get_binance_obi("BTCUSDT")
-                mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
-                
-                if self.db:
-                    try:
-                        self.db.set_config("live_btc_mom30s", round(mom30s, 4))
-                        self.db.set_config("live_btc_obi", round(obi, 3))
-                    except Exception as e:
-                        logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
-                
-                logger.info("[5MIN BTC DEBUG] %s | Reste %.1fmin | Edge=%+.1f%% | Mom30s=%+.3f%% | OBI=%+.3f", market.question[:35], minutes_to_expiry, edge_pct, mom30s, obi)
-
-                if side == "buy":  # BUY YES (UP)
-                    if mom30s <= 0.012 or obi <= 0.12:
-                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.012) | OBI=%.2f (req>0.12)", market.question[:20], mom30s, obi)
-                        continue
-                elif side == "sell":  # BUY NO (DOWN)
-                    if mom30s >= -0.012 or obi >= -0.12:
-                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.012) | OBI=%.2f (req<-0.12)", market.question[:20], mom30s, obi)
-                        continue
-                        
-                # Validation passed (log pushed below with full formatting)
-                dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
+            dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
 
             if is_sprint and self.db:
                 spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
