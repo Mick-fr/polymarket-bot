@@ -1240,8 +1240,64 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V11.16 : FORÇAGE ABSOLU DU SPRINT ---
+            # --- V12 : SPREAD GUARD & DYNAMIC TAKE-PROFIT ---
             if is_sprint:
+                min_edge_target = 7.0
+                max_spread = 0.05  # Protection : 5 centimes maximum d'écart
+                tp_threshold = 0.10  # Take-Profit : +10 centimes de gain net par part
+                
+                # 1. GESTION DU TAKE-PROFIT (Si on a déjà une position)
+                has_position = False
+                position = self._trader.positions.get(market.id) if hasattr(self, '_trader') and hasattr(self._trader, 'positions') else None
+                
+                if position and abs(position.get('size', 0)) > 0:
+                    has_position = True
+                    entry_price = position.get('average_price', 0.50)
+                    current_side = position.get('side', 'buy')
+                    
+                    # Calcul simple du profit estimé (si on revendait maintenant)
+                    if current_side == 'buy' and (market.best_bid - entry_price) >= tp_threshold:
+                        signals.append(Signal(
+                            token_id=market.yes_token_id,
+                            market_id=market.market_id,
+                            market_question=market.question,
+                            side="close",
+                            order_type="limit",
+                            price=market.best_bid, 
+                            size=position.get('size', 0),
+                            confidence=1.0,
+                            reason=f"SPRINT TAKE-PROFIT (+{tp_threshold*100:.0f}¢)",
+                            mid_price=market.mid_price,
+                            spread_at_signal=market.spread
+                        ))
+                        logger.info(f"[💰 TAKE-PROFIT] Sécurisation des gains sur {market.id[:8]} ! (Achat: {entry_price:.2f} -> Vente: {market.best_bid:.2f})")
+                        continue
+                    elif current_side == 'sell' and (entry_price - market.best_ask) >= tp_threshold:
+                        signals.append(Signal(
+                            token_id=market.no_token_id,
+                            market_id=market.market_id,
+                            market_question=market.question,
+                            side="close",
+                            order_type="limit",
+                            price=market.best_ask,
+                            size=position.get('size', 0),
+                            confidence=1.0,
+                            reason=f"SPRINT TAKE-PROFIT (+{tp_threshold*100:.0f}¢)",
+                            mid_price=market.mid_price,
+                            spread_at_signal=market.spread
+                        ))
+                        logger.info(f"[💰 TAKE-PROFIT] Sécurisation des gains sur {market.id[:8]} !")
+                        continue
+                        
+                    # Si on a une position mais pas de TP atteint, on ne fait rien de plus, on attend l'expiration
+                    continue
+                    
+                # 2. SPREAD GUARD (Si on veut entrer)
+                if market.spread > max_spread:
+                    # Le spread est trop large pour être rentable
+                    continue 
+                
+                # 3. ENTRÉE SPRINT (Logique Momentum)
                 if self.binance_ws and self.binance_ws.is_connected:
                     obi = self.binance_ws.get_binance_obi("BTCUSDT")
                     mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
@@ -1252,19 +1308,17 @@ class InfoEdgeStrategy(BaseStrategy):
                             self.db.set_config("live_btc_obi", round(obi, 3))
                         except Exception as e:
                             logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
-
-                    min_edge_target = 7.0
+                            
                     signal_side = None
                     artificial_edge = 0.0
                     
                     if mom30s > 0.012 and obi > 0.12:
-                        signal_side = "buy" # Acheter "Yes" / Hausse
+                        signal_side = "buy"
                         artificial_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
                     elif mom30s < -0.012 and obi < -0.12:
-                        signal_side = "sell" # Acheter "No" / Vendre
+                        signal_side = "sell"
                         artificial_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
                         
-                    # Mise à jour de l'affichage du dashboard
                     max_edge_found = max(max_edge_found, artificial_edge)
                     
                     if signal_side:
@@ -1273,21 +1327,20 @@ class InfoEdgeStrategy(BaseStrategy):
                         order_size = min(base_order * size_multiplier, portfolio * 0.06, self.MAX_ORDER_USDC)
                         shares = max(5.0, order_size / 0.5)
 
-                        # On force la création du signal
                         signals.append(Signal(
                             token_id=market.yes_token_id,
                             market_id=market.market_id,
                             market_question=market.question,
                             side=signal_side,
                             order_type="limit",
-                            price=0.5, # Prix fictif
+                            price=market.best_ask if signal_side == "buy" else market.best_bid, 
                             size=round(shares, 2),
                             confidence=0.9,
                             reason=f"SPRINT MOMENTUM: {mom30s:.3f}% OBI: {obi:.2f}",
                             mid_price=market.mid_price,
                             spread_at_signal=market.spread
                         ))
-                        logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={mom30s:.3f}% | Edge={artificial_edge:.1f}%")
+                        logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={mom30s:.3f}% | Spread={market.spread:.2f}$")
                         if self.db:
                             spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
                             self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {mom30s:+.3f}% | Dec: <span class='text-green-400 font-bold'>{signal_side.upper()}</span>")
@@ -1296,9 +1349,9 @@ class InfoEdgeStrategy(BaseStrategy):
                             spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
                             self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly: 0.50 | Edge: 0.0% | Dec: <span class='text-slate-500'>PASS</span>")
 
-                # Important : On passe au marché suivant pour ne pas exécuter le calcul d'Edge normal
+                # On ignore le reste de l'analyse mathématique probabiliste
                 continue
-            # ---------------------------------------
+            # ------------------------------------------------
 
             abs_edge = abs(edge_pct)
 
@@ -1320,14 +1373,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
             dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
 
-            if is_sprint and self.db:
-                spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                action_text = side.upper() if side else "PASS"
-                action_html = f"<span class='text-green-400 font-bold'>{action_text}</span>" if action_text != "PASS" else "<span class='text-slate-500'>PASS</span>"
-                msg = f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly: {p_poly:.2f} | Edge: {edge_pct:+.1f}% | Dec: {action_html}"
-                self.db.add_log("INFO", "sniper_feed", msg)
-
-            daily_edge_scores.append(abs_edge)
+            # On ignore le bloc legacy is_sprint ici si jamais ça atteint cette ligne (ça ne devrait pas)
             max_edge_found = max(max_edge_found, abs_edge)
 
             # ── Kelly-inspired tiered sizing ───────────────────────────
@@ -1347,10 +1393,7 @@ class InfoEdgeStrategy(BaseStrategy):
             shares = max(5.0, order_size / bid_price)
 
             side_label = "BUY YES" if side == "buy" else "BUY NO"
-            if is_sprint:
-                # V10.6 Sprint explicit log format
-                logger.info("[5MIN BTC] P_true=%.2f | OBI=%+.2f | Mom30s=%+.3f%% | Edge=%+.1f%% → %s | sizing=%.1fx | vol5m=$%.0f",
-                            p_true, getattr(self.binance_ws, "btc_obi", 0.0), getattr(self.binance_ws, "_last_mom" if hasattr(self.binance_ws, "_last_mom") else "mom30s", mom30s if is_sprint else 0.0), edge_pct, dir_label, size_multiplier, vol_5m)
+            if min(market.days_to_expiry * 1440, 60.0) <= 5.5: pass  # Handled earlier
             else:
                 logger.info("[V10.3] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
                             p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
