@@ -142,7 +142,7 @@ class MarketUniverse:
         self._max_days = max_days
         self._cache: list[EligibleMarket] = []
         self._cache_ts: float = 0.0
-        self._cache_ttl: float = 60.0   # Refresh toutes les 60s
+        self._cache_ttl: float = 0.0   # MODIFIÉ V11.12 : Cache détruit pour forcer le temps réel
 
     def get_eligible_markets(self, force_refresh: bool = False) -> list[EligibleMarket]:
         """Retourne la liste des marches eligibles (avec cache 60s)."""
@@ -178,10 +178,11 @@ class MarketUniverse:
             delta = 1.0 - min(a[0] for a in asks)
             logger.warning(f"[ARB] {event_id} asks={delta:.1%}")
 
-    def _fetch_gamma_markets(self, limit: int = 100) -> list[dict]:
+    def _fetch_gamma_markets(self, limit: int = 300) -> list[dict]: # V11.12 : Limite à 300
         url = (
-            f"{GAMMA_API_URL}?closed=false&enableOrderBook=true"
-            f"&order=volume24hr&ascending=false&limit={limit}"
+            f"{GAMMA_API_URL}?limit={limit}"
+            f"&active=true&closed=false"
+            f"&order=start_date&ascending=false"
         )
         markets = []
         try:
