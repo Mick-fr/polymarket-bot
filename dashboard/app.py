@@ -1021,77 +1021,76 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # Top wallets — curated list of profitable wallets (Feb 2026)
-    TOP_WALLETS = [
-        {"name": "KeyTransporter",  "address": "0x94f199fb7789f1aef7fff6b758d6b375100f4c7a", "pnl_7d": 4250.0,  "pnl_30d": 18500.0, "win_rate": 72.3, "volume": 285000},
-        {"name": "Whale_Alpha",     "address": "0xd218e474776403a330142299f7796e8ba32eb5c9", "pnl_7d": 3180.0,  "pnl_30d": 14200.0, "win_rate": 68.7, "volume": 210000},
-        {"name": "SmartFlow",       "address": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf", "pnl_7d": 2950.0,  "pnl_30d": 12800.0, "win_rate": 71.1, "volume": 175000},
-        {"name": "DegenPro",        "address": "0x492442EaB586F242B53bDa933fD5dE859c8A3782", "pnl_7d": 2400.0,  "pnl_30d": 11500.0, "win_rate": 65.9, "volume": 195000},
-        {"name": "EdgeSeeker",      "address": "0x876426B52898C295848f56760dd24B55Eda2604a", "pnl_7d": 1890.0,  "pnl_30d": 9200.0,  "win_rate": 67.4, "volume": 145000},
-        {"name": "SilentWhale",     "address": "0xf705fa045201391d9632b7f3cde06a5e24453ca7", "pnl_7d": 1650.0,  "pnl_30d": 8400.0,  "win_rate": 63.8, "volume": 128000},
-    ]
-
+    # V10.7 (Demock) — Fetch de la vraie liste des wallets rentables via CopyTrader
     @app.route("/api/top-wallets")
     @login_required
     def api_top_wallets():
-        # V7.5.2 — include active copy status per wallet
-        result = []
-        for w in TOP_WALLETS:
-            wc = dict(w)
-            wc["is_active"] = db.is_copy_active(w["address"]) if db else False
-            result.append(wc)
-        return jsonify(result)
+        try:
+            from bot.copy_trader import CopyTrader
+            ct = CopyTrader(top_n=10)
+            real_wallets = ct.fetch_top_wallets()
+            
+            result = []
+            for w in real_wallets:
+                wc = dict(w)
+                # Ajout de l'état actif courant (pour l'UI)
+                wc["is_active"] = db.is_copy_active(w["address"]) if db else False
+                result.append(wc)
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"[Demock] Erreur /api/top-wallets : {e}")
+            return jsonify([{"error": str(e)}]), 500
 
     @app.route("/api/simulate-copy", methods=["POST"])
     @login_required
     def api_simulate_copy():
-        """V7.5.3 — Simulates fetching a wallet and applying intelligent copy filters."""
+        """V10.7 (Demock) — Simulates fetching a wallet and applying intelligent copy filters."""
         data = request.json or {}
         wallet_addr = data.get("address", "")
         alloc_pct = float(data.get("alloc_pct", 10)) / 100.0
-        wallet_info = next((w for w in TOP_WALLETS if w["address"] == wallet_addr), None)
-        if not wallet_info:
-            return jsonify({"error": "Wallet not found"}), 404
-        wallet_name = wallet_info.get("name", wallet_addr[:10])
+        
+        if not wallet_addr:
+            return jsonify({"error": "No wallet address provided"}), 400
+            
+        wallet_name = data.get("name", wallet_addr[:10])
 
-        import random
-        # Generate mock open positions from the target wallet
-        raw_positions = []
-        for i in range(random.randint(5, 12)):
-            ttype = random.choice(["New Trade", "New Trade", "Existing Position"])
-            pnl_pct = random.uniform(-60.0, 40.0)
-            raw_positions.append({
-                "token_id": f"copy_{wallet_addr[:8]}_{i}",
-                "side": random.choice(["buy", "sell"]),
-                "qty": round(random.uniform(2, 15) * alloc_pct * 10, 2),
-                "price": round(random.uniform(0.1, 0.9), 3),
-                "trade_type": ttype,
-                "pnl_pct": round(pnl_pct, 1)
+        try:
+            from bot.copy_trader import CopyTrader
+            ct = CopyTrader()
+            real_positions = ct.get_wallet_positions(wallet_addr)
+        except Exception as e:
+            logger.error(f"[Demock] Erreur get_wallet_positions pour {wallet_addr} : {e}")
+            return jsonify({"error": str(e)}), 500
+
+        # Filtrer et formater les vraies positions
+        proposed = []
+        for pos in real_positions:
+            qty = float(pos.get("quantity", 0))
+            if qty <= 0:
+                continue
+                
+            side = pos.get("side", "buy").lower()
+            price = float(pos.get("entry_price", 0.5))
+            
+            proposed.append({
+                "token_id": pos.get("token_id"),
+                "side": side,
+                "qty": round(qty * alloc_pct, 2),
+                "price": round(price, 3),
+                "trade_type": "Copied Tracker",
+                "pnl_pct": 0.0, # Cannot know unrealized PnL without current CLOB mid
+                "raw_qty": qty
             })
 
-        proposed = []
-        ignored_loss = 0
-        ignored_old = 0
-        for pos in raw_positions:
-            if pos["trade_type"] == "Existing Position":
-                ignored_old += 1
-                continue
-            if pos["pnl_pct"] < -30.0:
-                ignored_loss += 1
-                continue
-            # Max 1 pos per market simplification: we assume our mock tokens are unique markets
-            proposed.append(pos)
-
-        risk_pct = round(random.uniform(5.0, alloc_pct * 100 * 0.8), 1)
+        risk_pct = round(alloc_pct * 100, 1)
 
         return jsonify({
             "status": "ok",
             "wallet": wallet_name,
             "summary": {
-                "total_found": len(raw_positions),
+                "total_found": len(real_positions),
                 "to_copy": len(proposed),
-                "ignored_loss": ignored_loss,
-                "ignored_old": ignored_old,
+                "ignored_empty": len(real_positions) - len(proposed),
                 "risk_est_pct": risk_pct
             },
             "proposed_trades": proposed
@@ -1100,16 +1099,16 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/api/copy-wallet", methods=["POST"])
     @login_required
     def api_copy_wallet():
-        """V7.5.3 — Executes the copy based on simulation results."""
+        """V10.7 (Demock) — Executes the copy based on simulation results."""
         data = request.json or {}
         wallet_addr = data.get("address", "")
         alloc_pct = float(data.get("alloc_pct", 10)) / 100.0
         trades_to_copy = data.get("trades", [])
         
-        wallet_info = next((w for w in TOP_WALLETS if w["address"] == wallet_addr), None)
-        if not wallet_info:
-            return jsonify({"error": "Wallet not found"}), 404
-        wallet_name = wallet_info.get("name", wallet_addr[:10])
+        if not wallet_addr:
+            return jsonify({"error": "No wallet address provided"}), 400
+            
+        wallet_name = data.get("name", wallet_addr[:10])
 
         for t in trades_to_copy:
             if db:
