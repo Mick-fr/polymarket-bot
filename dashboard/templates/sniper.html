@@ -36,6 +36,20 @@
     </div>
 </div>
 
+<!-- V11.6 Badges Marchés et Edge -->
+<div class="flex justify-center space-x-6 mb-8">
+    <div
+        class="flex items-center text-sm font-bold text-slate-300 bg-slate-800/80 px-5 py-2.5 rounded-xl border border-slate-700 shadow-md">
+        <span class="mr-2 text-sky-400">🔍</span> Cibles Sprint Actives : <span id="markets-val"
+            class="ml-2 font-mono text-sky-300">0</span>
+    </div>
+    <div
+        class="flex items-center text-sm font-bold text-slate-300 bg-slate-800/80 px-5 py-2.5 rounded-xl border border-slate-700 shadow-md">
+        <span class="mr-2 text-purple-400">⚡</span> Max Edge Détecté : <span id="edge-val"
+            class="ml-2 font-mono text-purple-300">0.0%</span>
+    </div>
+</div>
+
 <div class="flex justify-center">
     <div
         class="flex items-center text-sm font-medium text-slate-400 bg-cardbg px-6 py-3 rounded-full border border-slate-700 shadow-lg cursor-default">
@@ -122,6 +136,10 @@
                 let obiVal = data.obi;
                 obiEl.innerText = (obiVal > 0 ? '+' : '') + obiVal.toFixed(2);
                 updateColors(obiEl, obiVal, 0.12);
+
+                // Update Markets & Edge (V11.6)
+                document.getElementById('markets-val').innerText = data.found_markets;
+                document.getElementById('edge-val').innerText = data.max_edge.toFixed(1) + '%';
 
                 // Update Time
                 document.getElementById('last-update').innerText = new Date().toLocaleTimeString('fr-FR');

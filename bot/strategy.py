@@ -1119,6 +1119,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 pass
 
         daily_edge_scores: list[float] = []
+        max_edge_found = 0.0
+        sprint_markets_count = 0
 
         traded = 0
         for market in markets:
@@ -1136,6 +1138,7 @@ class InfoEdgeStrategy(BaseStrategy):
             is_sprint = is_btc and (minutes_to_expiry <= 5.5)
             
             if is_sprint:
+                sprint_markets_count += 1
                 min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.
                 min_edge = 7.0     # Seuil assoupli pour capter le momentum
                 min_vol = 600
@@ -1217,6 +1220,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 self.db.add_log("INFO", "sniper_feed", msg)
 
             daily_edge_scores.append(abs_edge)
+            max_edge_found = max(max_edge_found, abs_edge)
 
             # ── Kelly-inspired tiered sizing ───────────────────────────
             if abs_edge >= 35.0:
@@ -1265,6 +1269,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
             except Exception:
                 pass
+            self.db.set_config("live_found_markets", sprint_markets_count)
+            self.db.set_config("live_max_edge", round(max_edge_found, 1))
 
         # --- V11.5 : Heartbeat pour le Live Scan Feed ---
         if self.db and len(signals) == 0:
