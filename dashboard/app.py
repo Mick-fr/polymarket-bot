@@ -35,7 +35,30 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/")
     @login_required
     def index():
-        """Dashboard principal."""
+        """Nouvelle page d'accueil : Sniper Ops Center"""
+        try:
+            hwm = db.get_high_water_mark() if hasattr(db, 'get_high_water_mark') else 0.0
+            mom = float(db.get_config("live_btc_mom30s", 0) or 0)
+            obi = float(db.get_config("live_btc_obi", 0) or 0)
+        except:
+            hwm = mom = obi = 0.0
+        return render_template("sniper.html", hwm=hwm, momentum=mom, obi=obi)
+
+    @app.route("/api/sniper-radar")
+    @login_required
+    def api_sniper_radar():
+        """API pour le rafraîchissement temps réel du radar Sniper"""
+        try:
+            mom = float(db.get_config("live_btc_mom30s", 0) or 0)
+            obi = float(db.get_config("live_btc_obi", 0) or 0)
+            return jsonify({"momentum_30s": mom, "obi": obi, "status": "live"})
+        except:
+            return jsonify({"momentum_30s": 0, "obi": 0, "status": "error"})
+
+    @app.route("/market-making")
+    @login_required
+    def market_making_page():
+        """Acienne page d'accueil - Dashboard principal."""
         from datetime import datetime, timezone, timedelta
         
         positions = db.get_all_positions() if db else []
@@ -66,7 +89,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         hwm_pct = ((portfolio_val - hwm) / hwm * 100) if hwm > 0 else 0
 
         return render_template(
-            "index.html",
+            "market_making.html",
             portfolio_val=portfolio_val,
             cash=cash,
             hwm=hwm,

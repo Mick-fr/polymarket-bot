@@ -1169,6 +1169,13 @@ class InfoEdgeStrategy(BaseStrategy):
                 obi = self.binance_ws.get_binance_obi("BTCUSDT")
                 mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
                 
+                if self.db:
+                    try:
+                        self.db.set_config("live_btc_mom30s", round(mom30s, 4))
+                        self.db.set_config("live_btc_obi", round(obi, 3))
+                    except Exception as e:
+                        logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
+                
                 logger.info("[5MIN BTC DEBUG] %s | Reste %.1fmin | Edge=%+.1f%% | Mom30s=%+.3f%% | OBI=%+.3f", market.question[:35], minutes_to_expiry, edge_pct, mom30s, obi)
 
                 if side == "buy":  # BUY YES (UP)
