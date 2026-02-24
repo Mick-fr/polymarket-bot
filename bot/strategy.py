@@ -1240,38 +1240,64 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            mom30s = 0.0
-            obi = 0.0
-            side_override = None
+            # --- V11.16 : FORÇAGE ABSOLU DU SPRINT ---
+            if is_sprint:
+                if self.binance_ws and self.binance_ws.is_connected:
+                    obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                    mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
+                    
+                    if self.db:
+                        try:
+                            self.db.set_config("live_btc_mom30s", round(mom30s, 4))
+                            self.db.set_config("live_btc_obi", round(obi, 3))
+                        except Exception as e:
+                            logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
 
-            # --- V11.15 : MOMENTUM EDGE OVERRIDE ---
-            if is_sprint and self.binance_ws and self.binance_ws.is_connected:
-                obi = self.binance_ws.get_binance_obi("BTCUSDT")
-                mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
-                
-                if self.db:
-                    try:
-                        self.db.set_config("live_btc_mom30s", round(mom30s, 4))
-                        self.db.set_config("live_btc_obi", round(obi, 3))
-                    except Exception as e:
-                        logger.debug("[Dashboard] Erreur set sniper live data: %s", e)
+                    min_edge_target = 7.0
+                    signal_side = None
+                    artificial_edge = 0.0
+                    
+                    if mom30s > 0.012 and obi > 0.12:
+                        signal_side = "buy" # Acheter "Yes" / Hausse
+                        artificial_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
+                    elif mom30s < -0.012 and obi < -0.12:
+                        signal_side = "sell" # Acheter "No" / Vendre
+                        artificial_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
+                        
+                    # Mise à jour de l'affichage du dashboard
+                    max_edge_found = max(max_edge_found, artificial_edge)
+                    
+                    if signal_side:
+                        base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
+                        size_multiplier = 2.8 if artificial_edge >= 35.0 else (1.8 if artificial_edge >= 25.0 else 1.0)
+                        order_size = min(base_order * size_multiplier, portfolio * 0.06, self.MAX_ORDER_USDC)
+                        shares = max(5.0, order_size / 0.5)
 
-                # Force le déclenchement en créant un Edge proportionnel au mouvement
-                if mom30s > 0.012 and obi > 0.12:
-                    # Mouvement haussier fort = Edge positif artificiel (ex: 0.020 * 1000 = 20%)
-                    edge_pct = abs(mom30s) * 1000.0 
-                    # On s'assure qu'il dépasse le min_edge si la condition stricte est validée
-                    edge_pct = max(edge_pct, min_edge + 1.0)
-                    side_override = "buy" # Parie sur la HAUSSE
-                elif mom30s < -0.012 and obi < -0.12:
-                    # Mouvement baissier fort = Edge positif artificiel pour le camp "Non" / "Baisse"
-                    edge_pct = abs(mom30s) * 1000.0
-                    edge_pct = max(edge_pct, min_edge + 1.0)
-                    side_override = "sell" # Parie sur la BAISSE (Adapter selon la logique de votre bot, parfois "buy no")
-                else:
-                    # Les conditions Binance ne sont pas remplies, on ne tire pas
-                    edge_pct = 0.0
-                    side_override = ""
+                        # On force la création du signal
+                        signals.append(Signal(
+                            token_id=market.yes_token_id,
+                            market_id=market.market_id,
+                            market_question=market.question,
+                            side=signal_side,
+                            order_type="limit",
+                            price=0.5, # Prix fictif
+                            size=round(shares, 2),
+                            confidence=0.9,
+                            reason=f"SPRINT MOMENTUM: {mom30s:.3f}% OBI: {obi:.2f}",
+                            mid_price=market.mid_price,
+                            spread_at_signal=market.spread
+                        ))
+                        logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={mom30s:.3f}% | Edge={artificial_edge:.1f}%")
+                        if self.db:
+                            spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                            self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {mom30s:+.3f}% | Dec: <span class='text-green-400 font-bold'>{signal_side.upper()}</span>")
+                    else:
+                        if self.db:
+                            spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                            self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly: 0.50 | Edge: 0.0% | Dec: <span class='text-slate-500'>PASS</span>")
+
+                # Important : On passe au marché suivant pour ne pas exécuter le calcul d'Edge normal
+                continue
             # ---------------------------------------
 
             abs_edge = abs(edge_pct)
@@ -1287,10 +1313,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 continue
 
             # Dynamic side decision
-            if side_override is not None:
-                side = side_override
-            else:
-                side = self._decide_side(market, edge_pct, min_edge)
+            side = self._decide_side(market, edge_pct, min_edge)
                 
             if not side:
                 continue
