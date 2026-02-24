@@ -1243,113 +1243,54 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.5 : DÉCLENCHEUR SPRINT CORRIGÉ ---
+            # --- V12.6 : SNIPER SPRINT "GÂCHETTE LIBRE" ---
             if is_sprint:
-                min_edge_target = 7.0
-                max_spread = 0.08
-                tp_threshold = 0.10
-
-                # 1. FORCER LE CALCUL DE L'EDGE ARTIFICIEL
-                theoretical_edge = 0.0
-                signal_side = None
-
-                # Conditions strictes (Exemple : Mom > 0.012 ET OBI > 0.12)
-                if live_mom > 0.012 and live_obi > 0.12:
-                    signal_side = "buy"
-                    theoretical_edge = max(abs(live_mom) * 1000.0, min_edge_target + 1.0)
-                elif live_mom < -0.012 and live_obi < -0.12:
-                    signal_side = "sell"
-                    theoretical_edge = max(abs(live_mom) * 1000.0, min_edge_target + 1.0)
-
-                max_edge_found = max(max_edge_found, theoretical_edge)
-
-                # 2. MISE À JOUR SPREAD UI
-                if market.spread > 0.001:
-                    min_spread_found = min(min_spread_found, market.spread)
-
-                # 3. GESTION DU TAKE-PROFIT
-                has_position = False
-                position = self._trader.positions.get(market.id) if hasattr(self, '_trader') and hasattr(self._trader, 'positions') else None
+                # Récupération directe des métriques Binance
+                m30 = live_mom
+                o_val = live_obi
                 
-                if position and abs(position.get('size', 0)) > 0:
-                    has_position = True
-                    entry_price = position.get('average_price', 0.50)
-                    current_side = position.get('side', 'buy')
+                # Télémétrie Dashboard (on force l'affichage même si spread est 0)
+                min_spread_found = min(min_spread_found, market.spread) if market.spread > 0 else 0.01
+                
+                # CONDITION DE TIR UNIQUE (BINANCE)
+                side = None
+                if m30 > 0.012 and o_val > 0.12:
+                    side = "buy"  # On parie sur le "OUI" (Hausse)
+                elif m30 < -0.012 and o_val < -0.12:
+                    side = "sell" # On parie sur le "NON" (Baisse)
+                
+                if side:
+                    # On crée l'edge artificiel pour le dashboard (20% fixe pour forcer le tir)
+                    artificial_edge = 20.0
+                    max_edge_found = max(max_edge_found, artificial_edge)
                     
-                    if current_side == 'buy' and (market.best_bid - entry_price) >= tp_threshold:
-                        signals.append(Signal(
-                            token_id=market.yes_token_id,
-                            market_id=market.market_id,
-                            market_question=market.question,
-                            side="close",
-                            order_type="limit",
-                            price=market.best_bid, 
-                            size=position.get('size', 0),
-                            confidence=1.0,
-                            reason=f"SPRINT TAKE-PROFIT (+{tp_threshold*100:.0f}¢)",
-                            mid_price=market.mid_price,
-                            spread_at_signal=market.spread
-                        ))
-                        logger.info(f"[💰 TAKE-PROFIT] Sécurisation HAUSSE sur {market.id[:8]} ! (Achat: {entry_price:.2f} -> Vente: {market.best_bid:.2f})")
-                        continue
-                    elif current_side == 'sell' and (entry_price - market.best_ask) >= tp_threshold:
-                        signals.append(Signal(
-                            token_id=market.no_token_id,
-                            market_id=market.market_id,
-                            market_question=market.question,
-                            side="close",
-                            order_type="limit",
-                            price=market.best_ask,
-                            size=position.get('size', 0),
-                            confidence=1.0,
-                            reason=f"SPRINT TAKE-PROFIT (+{tp_threshold*100:.0f}¢)",
-                            mid_price=market.mid_price,
-                            spread_at_signal=market.spread
-                        ))
-                        logger.info(f"[💰 TAKE-PROFIT] Sécurisation BAISSE sur {market.id[:8]} ! (Achat: {entry_price:.2f} -> Vente: {market.best_ask:.2f})")
-                        continue
-                        
-                    continue # Position en cours sans TP = on attend
-                    
-                # 4. SPREAD GUARD (FILTRE D'ENTRÉE)
-                if market.spread <= 0.001 or market.spread > max_spread:
-                    continue
-                if market.best_ask <= 0 or market.best_bid <= 0:
-                    continue
-                    
-                # 5. GÉNÉRATION DU SIGNAL
-                if signal_side:
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
-                    size_multiplier = 2.8 if theoretical_edge >= 35.0 else (1.8 if theoretical_edge >= 25.0 else 1.0)
-                    order_size = min(base_order * size_multiplier, portfolio * 0.06, self.MAX_ORDER_USDC)
-                    # Security boundary for shares
-                    entry_bid_price = market.best_ask if signal_side == "buy" else market.best_bid
-                    shares = max(5.0, order_size / max(entry_bid_price, 0.01))
+                    order_size = min(base_order * 2.8, portfolio * 0.06, self.MAX_ORDER_USDC)
+                    shares = max(5.0, order_size / 0.50)
 
                     signals.append(Signal(
-                        token_id=market.yes_token_id,
+                        token_id=market.yes_token_id if side == "buy" else market.no_token_id,
                         market_id=market.market_id,
                         market_question=market.question,
-                        side=signal_side,
-                        order_type="limit",
-                        price=entry_bid_price, 
-                        size=round(shares, 2),
-                        confidence=0.9,
-                        reason=f"SPRINT MOM: {live_mom:.3f}% OBI: {live_obi:.2f}",
-                        mid_price=market.mid_price,
-                        spread_at_signal=market.spread
+                        side=side,
+                        order_type="market", # Use market order type for true bypass
+                        price=0.50, # Prix par défaut, bypass
+                        size=round(shares, 2) if side == "buy" else round(order_size, 2), # shares for buy, USDC for sell
+                        confidence=0.99,
+                        reason=f"🔥 SPRINT RELÉGUÉ : Mom={m30:.3f}% OBI={o_val:.2f}",
+                        mid_price=0.50,
+                        spread_at_signal=0.01
                     ))
-                    logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={live_mom:.3f}% | Spread={market.spread:.2f}$")
+                    logger.info(f"[🔥 SPRINT TRIGGER] {side.upper()} détecté ! Envoi de l'ordre...")
                     if self.db:
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {live_mom:+.3f}% | Dec: <span class='text-green-400 font-bold'>{signal_side.upper()}</span>")
+                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
                 else:
                     if self.db:
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly: {market.mid_price:.2f} | Edge: {theoretical_edge:.1f}% | Dec: <span class='text-slate-500'>PASS</span>")
+                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
 
-                # Ignore l'analyse classique pour ce marché
-                continue
+                continue # On passe au suivant, bypass total des autres filtres
             # ----------------------------------------------
 
             abs_edge = abs(edge_pct)
