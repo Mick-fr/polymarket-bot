@@ -374,6 +374,10 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             logger.info("[DASHBOARD] Bot toggled ON by user")
             db.add_log("INFO", "dashboard", "Bot toggled ON")
             import os; os.system("docker compose restart bot &")
+            
+            if request.headers.get("HX-Request"):
+                return '<button hx-post="/api/toggle-bot" hx-target="#bot-status-container" class="w-full bg-red-500/20 text-red-500 border border-red-500 hover:bg-red-500/30 font-bold py-3 px-4 rounded transition-colors">🛑 Mettre en Pause</button>'
+                
             return jsonify({"status": "ok", "active": True, "kill_switch": False})
         else:
             # Kill
@@ -382,6 +386,10 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             db.set_config("kill_switch_reason", "Manuel (dashboard)")
             logger.warning("[DASHBOARD] Bot toggled OFF by user")
             db.add_log("WARNING", "dashboard", "Bot toggled OFF")
+            
+            if request.headers.get("HX-Request"):
+                return '<button hx-post="/api/toggle-bot" hx-target="#bot-status-container" class="w-full bg-green-500/20 text-green-500 border border-green-500 hover:bg-green-500/30 font-bold py-3 px-4 rounded transition-colors">▶️ Relancer le Bot</button>'
+                
             return jsonify({"status": "ok", "active": False, "kill_switch": True})
 
     # 2026 V7.3.8 DROPDOWN AGGRESSIVITÉ INSTANT APPLY + OVERRIDE CONSTANTES DB
@@ -431,9 +439,9 @@ def create_app(config: AppConfig, db: Database) -> Flask:
 
         if not orders:
             return """
-            <table>
-                <thead><tr><th colspan="7" style="text-align:center; color:var(--text-dim)">Aucun ordre pour le moment</th></tr></thead>
-            </table>
+            <div class="p-8 text-center text-slate-500">
+                Aucun ordre pour le moment
+            </div>
             """
 
         rows = ""
@@ -452,31 +460,33 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             error_attr = f' title="{o["error"]}"' if o.get("error") else ""
 
             rows += f"""
-            <tr{error_attr}>
-                <td>{ts}</td>
-                <td>{o['side'].upper()}</td>
-                <td>{o['order_type']}</td>
-                <td>{price_str}</td>
-                <td>{o['size']:.2f}</td>
-                <td>${o['amount_usdc']:.2f}</td>
-                <td><span class="badge {badge_cls}">{status}</span></td>
+            <tr class="border-b border-slate-700 hover:bg-slate-800/50 transition-colors"{error_attr}>
+                <td class="px-4 py-3">{ts}</td>
+                <td class="px-4 py-3">{o['side'].upper()}</td>
+                <td class="px-4 py-3">{o['order_type']}</td>
+                <td class="px-4 py-3">{price_str}</td>
+                <td class="px-4 py-3">{o['size']:.2f}</td>
+                <td class="px-4 py-3">${o['amount_usdc']:.2f}</td>
+                <td class="px-4 py-3"><span class="badge {badge_cls}">{status}</span></td>
+                <td class="px-4 py-3 truncate max-w-xs">{o.get('question', '')[:60]}</td>
             </tr>
             """
 
         return f"""
-        <table>
-            <thead>
+        <table class="w-full text-sm text-left text-slate-300">
+            <thead class="text-xs text-slate-400 uppercase bg-slate-800/50">
                 <tr>
-                    <th>Date</th>
-                    <th>Side</th>
-                    <th>Type</th>
-                    <th>Prix</th>
-                    <th>Taille</th>
-                    <th>USDC</th>
-                    <th>Status</th>
+                    <th class="px-4 py-3 rounded-tl-lg">Date</th>
+                    <th class="px-4 py-3">Side</th>
+                    <th class="px-4 py-3">Type</th>
+                    <th class="px-4 py-3">Prix</th>
+                    <th class="px-4 py-3">Taille</th>
+                    <th class="px-4 py-3">USDC</th>
+                    <th class="px-4 py-3">Status</th>
+                    <th class="px-4 py-3 rounded-tr-lg">Question</th>
                 </tr>
             </thead>
-            <tbody>{rows}</tbody>
+            <tbody class="divide-y divide-slate-700">{rows}</tbody>
         </table>
         """
 
