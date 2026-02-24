@@ -1164,16 +1164,18 @@ class InfoEdgeStrategy(BaseStrategy):
 
         markets = self._universe.get_eligible_markets()
         
-        # --- V11.5 : Mise à jour continue du Radar Binance ---
-        if self.binance_ws and self.binance_ws.is_connected and self.db:
+        # Récupération sécurisée des données Binance
+        live_mom = 0.0
+        live_obi = 0.0
+        if self.binance_ws and self.binance_ws.is_connected:
             try:
-                global_obi = self.binance_ws.get_binance_obi("BTCUSDT")
-                global_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
-                self.db.set_config("live_btc_mom30s", round(global_mom, 4))
-                self.db.set_config("live_btc_obi", round(global_obi, 3))
+                live_obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                live_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
+                if self.db:
+                    self.db.set_config("live_btc_mom30s", round(live_mom, 4))
+                    self.db.set_config("live_btc_obi", round(live_obi, 3))
             except Exception as e:
                 logger.debug("[Radar] Erreur update Binance globale: %s", e)
-        # -------------------------------------------------------
 
         if not markets:
             # --- V11.5 : Heartbeat pour le Live Scan Feed (when no markets) ---
@@ -1241,38 +1243,31 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.4 : LOGIQUE SPRINT & DASHBOARD FIX ---
+            # --- V12.5 : DÉCLENCHEUR SPRINT CORRIGÉ ---
             if is_sprint:
                 min_edge_target = 7.0
                 max_spread = 0.08
                 tp_threshold = 0.10
-                
-                obi = 0.0
-                mom30s = 0.0
-                if self.binance_ws and self.binance_ws.is_connected:
-                    obi = self.binance_ws.get_binance_obi("BTCUSDT")
-                    mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
-                    if self.db:
-                        try:
-                            self.db.set_config("live_btc_mom30s", round(mom30s, 4))
-                            self.db.set_config("live_btc_obi", round(obi, 3))
-                        except Exception:
-                            pass
 
-                # === 1. MISE À JOUR DASHBOARD (TOUJOURS EXÉCUTÉE) ===
+                # 1. FORCER LE CALCUL DE L'EDGE ARTIFICIEL
+                theoretical_edge = 0.0
+                signal_side = None
+
+                # Conditions strictes (Exemple : Mom > 0.012 ET OBI > 0.12)
+                if live_mom > 0.012 and live_obi > 0.12:
+                    signal_side = "buy"
+                    theoretical_edge = max(abs(live_mom) * 1000.0, min_edge_target + 1.0)
+                elif live_mom < -0.012 and live_obi < -0.12:
+                    signal_side = "sell"
+                    theoretical_edge = max(abs(live_mom) * 1000.0, min_edge_target + 1.0)
+
+                max_edge_found = max(max_edge_found, theoretical_edge)
+
+                # 2. MISE À JOUR SPREAD UI
                 if market.spread > 0.001:
                     min_spread_found = min(min_spread_found, market.spread)
-                    
-                theoretical_edge = 0.0
-                if mom30s > 0.012 and obi > 0.12:
-                    theoretical_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
-                elif mom30s < -0.012 and obi < -0.12:
-                    theoretical_edge = max(abs(mom30s) * 1000.0, min_edge_target + 1.0)
-                
-                max_edge_found = max(max_edge_found, theoretical_edge)
-                # ====================================================
 
-                # === 2. GESTION DU TAKE-PROFIT ===
+                # 3. GESTION DU TAKE-PROFIT
                 has_position = False
                 position = self._trader.positions.get(market.id) if hasattr(self, '_trader') and hasattr(self._trader, 'positions') else None
                 
@@ -1316,19 +1311,13 @@ class InfoEdgeStrategy(BaseStrategy):
                         
                     continue # Position en cours sans TP = on attend
                     
-                # === 3. SPREAD GUARD (FILTRE D'ENTRÉE) ===
+                # 4. SPREAD GUARD (FILTRE D'ENTRÉE)
                 if market.spread <= 0.001 or market.spread > max_spread:
                     continue
                 if market.best_ask <= 0 or market.best_bid <= 0:
                     continue
                     
-                # === 4. DÉCLENCHEMENT DU TIR ===
-                signal_side = None
-                if mom30s > 0.012 and obi > 0.12:
-                    signal_side = "buy"
-                elif mom30s < -0.012 and obi < -0.12:
-                    signal_side = "sell"
-                    
+                # 5. GÉNÉRATION DU SIGNAL
                 if signal_side:
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
                     size_multiplier = 2.8 if theoretical_edge >= 35.0 else (1.8 if theoretical_edge >= 25.0 else 1.0)
@@ -1346,14 +1335,14 @@ class InfoEdgeStrategy(BaseStrategy):
                         price=entry_bid_price, 
                         size=round(shares, 2),
                         confidence=0.9,
-                        reason=f"SPRINT MOMENTUM: {mom30s:.3f}% OBI: {obi:.2f}",
+                        reason=f"SPRINT MOM: {live_mom:.3f}% OBI: {live_obi:.2f}",
                         mid_price=market.mid_price,
                         spread_at_signal=market.spread
                     ))
-                    logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={mom30s:.3f}% | Spread={market.spread:.2f}$")
+                    logger.info(f"[🔥 SPRINT TRIGGER] {signal_side.upper()} | Mom={live_mom:.3f}% | Spread={market.spread:.2f}$")
                     if self.db:
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {mom30s:+.3f}% | Dec: <span class='text-green-400 font-bold'>{signal_side.upper()}</span>")
+                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {live_mom:+.3f}% | Dec: <span class='text-green-400 font-bold'>{signal_side.upper()}</span>")
                 else:
                     if self.db:
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
