@@ -378,20 +378,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         level = db.get_aggressivity_level() if db else "Balanced"
         return jsonify({"level": level, "params": LEVEL_PARAMS.get(level, LEVEL_PARAMS["Balanced"])})
 
-    # 2026 V7.3.10 DASHBOARD LIVE VALUES SYNC
-    @app.route("/api/current-config", methods=["GET"])
-    @login_required
-    def api_current_config():
-        """Retourne toutes les valeurs de config live depuis la DB."""
-        level = db.get_aggressivity_level() if db else "Balanced"
-        return jsonify({
-            "aggressivity_level":      level,
-            "order_size_pct":          db.get_config("order_size_pct",          0.03)  if db else 0.03,
-            "max_net_exposure_pct":    db.get_config("max_net_exposure_pct",    0.20)  if db else 0.20,
-            "inventory_skew_threshold":db.get_config("inventory_skew_threshold",0.60)  if db else 0.60,
-            "sizing_mult":             db.get_config("sizing_mult",              1.00)  if db else 1.00,
-            "max_order_usd":           db.get_config("max_order_usd",           15.0)  if db else 15.0,
-        })
+
 
     @app.route("/api/orders")
     @login_required
