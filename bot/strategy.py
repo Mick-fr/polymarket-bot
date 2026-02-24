@@ -1245,22 +1245,24 @@ class InfoEdgeStrategy(BaseStrategy):
 
             # --- V12.6 : SNIPER SPRINT "GÂCHETTE LIBRE" ---
             if is_sprint:
-                # Récupération directe des métriques Binance
-                m30 = live_mom
-                o_val = live_obi
+                # 1. Récupération directe Binance (via l'attribut du client)
+                metrics = self.binance_client.get_metrics() if hasattr(self, 'binance_client') else {}
+                m30 = metrics.get('momentum_30s', 0.0)
+                o_val = metrics.get('obi', 0.0)
                 
-                # Télémétrie Dashboard (on force l'affichage même si spread est 0)
-                min_spread_found = min(min_spread_found, market.spread) if market.spread > 0 else 0.01
+                # 2. Télémétrie Dashboard (on force l'affichage pour debug)
+                # On simule un spread de 0.01 si Gamma renvoie 0 pour ne pas bloquer l'UI
+                min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
                 
-                # CONDITION DE TIR UNIQUE (BINANCE)
+                # 3. CONDITION DE TIR UNIQUE (BINANCE)
                 side = None
                 if m30 > 0.012 and o_val > 0.12:
-                    side = "buy"  # On parie sur le "OUI" (Hausse)
+                    side = "buy"  # Pari HAUSSE (Oui)
                 elif m30 < -0.012 and o_val < -0.12:
-                    side = "sell" # On parie sur le "NON" (Baisse)
+                    side = "sell" # Pari BAISSE (Non)
                 
                 if side:
-                    # On crée l'edge artificiel pour le dashboard (20% fixe pour forcer le tir)
+                    # On force un Edge à 20% pour que le trader.py valide l'ordre
                     artificial_edge = 20.0
                     max_edge_found = max(max_edge_found, artificial_edge)
                     
@@ -1273,24 +1275,25 @@ class InfoEdgeStrategy(BaseStrategy):
                         market_id=market.market_id,
                         market_question=market.question,
                         side=side,
-                        order_type="market", # Use market order type for true bypass
-                        price=0.50, # Prix par défaut, bypass
-                        size=round(shares, 2) if side == "buy" else round(order_size, 2), # shares for buy, USDC for sell
+                        order_type="market",
+                        price=0.50, # Sera ajusté par l'exécuteur au prix du marché
+                        size=round(shares, 2) if side == "buy" else round(order_size, 2),
                         confidence=0.99,
-                        reason=f"🔥 SPRINT RELÉGUÉ : Mom={m30:.3f}% OBI={o_val:.2f}",
+                        reason=f"🔥 SPRINT: Mom={m30:.3f}% OBI={o_val:.2f}",
                         mid_price=0.50,
                         spread_at_signal=0.01
                     ))
-                    logger.info(f"[🔥 SPRINT TRIGGER] {side.upper()} détecté ! Envoi de l'ordre...")
+                    logger.info(f"[🔥 SPRINT TRIGGER] {side.upper()} détecté ! Envoi de l'ordre au marché...")
                     if self.db:
-                        spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                        spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
                 else:
                     if self.db:
-                        spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                        spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
 
-                continue # On passe au suivant, bypass total des autres filtres
+                # Bypass total du reste de la fonction pour ce marché
+                continue 
             # ----------------------------------------------
 
             abs_edge = abs(edge_pct)
