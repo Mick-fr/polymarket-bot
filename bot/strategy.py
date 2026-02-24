@@ -1088,8 +1088,27 @@ class InfoEdgeStrategy(BaseStrategy):
     def analyze(self, balance: float = 0.0) -> list[Signal]:
         """V10.0: Real pricing BTC/ETH 5-40min, P_true log-normal, Edge >= 20%, Kelly tiered."""
         signals: list[Signal] = []
+        if not self._universe.get_eligible_markets():
+            pass # We still want to do the global update even if no markets
+
         markets = self._universe.get_eligible_markets()
+        
+        # --- V11.5 : Mise à jour continue du Radar Binance ---
+        if self.binance_ws and self.binance_ws.is_connected and self.db:
+            try:
+                global_obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                global_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
+                self.db.set_config("live_btc_mom30s", round(global_mom, 4))
+                self.db.set_config("live_btc_obi", round(global_obi, 3))
+            except Exception as e:
+                logger.debug("[Radar] Erreur update Binance globale: %s", e)
+        # -------------------------------------------------------
+
         if not markets:
+            # --- V11.5 : Heartbeat pour le Live Scan Feed (when no markets) ---
+            if self.db:
+                spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
             return signals
 
         portfolio = balance
@@ -1246,6 +1265,15 @@ class InfoEdgeStrategy(BaseStrategy):
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
             except Exception:
                 pass
+
+        # --- V11.5 : Heartbeat pour le Live Scan Feed ---
+        if self.db and len(signals) == 0:
+            # Compter si on a vu des marchés sprint ce cycle
+            sprint_count = sum(1 for m in markets if ("btc" in m.question.lower() or "bitcoin" in m.question.lower()) and (m.days_to_expiry * 1440 <= 5.5))
+            if sprint_count == 0:
+                spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
+
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
