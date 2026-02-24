@@ -115,20 +115,7 @@ class OBIResult:
 
     regime:   str            # 'bullish' | 'bearish' | 'neutral'
 
-
-def get_current_sprint_slugs():
-    """Calcule les slugs exacts des marchés 5-Min BTC en cours et à venir."""
-    current_ts = int(time.time())
-    remainder = current_ts % 300
-    # Prochaine expiration (le marché en cours)
-    current_expiry = current_ts + (300 - remainder)
-    # Expiration suivante (le marché qui vient d'apparaître pour le cycle d'après)
-    next_expiry = current_expiry + 300
-
-    return [
-        f"btc-updown-5m-{current_expiry}",
-        f"btc-updown-5m-{next_expiry}"
-    ]
+    regime:   str            # 'bullish' | 'bearish' | 'neutral'
 
 # ─── Universe Selection ──────────────────────────────────────────────────────
 
@@ -178,11 +165,10 @@ class MarketUniverse:
             delta = 1.0 - min(a[0] for a in asks)
             logger.warning(f"[ARB] {event_id} asks={delta:.1%}")
 
-    def _fetch_gamma_markets(self, limit: int = 300) -> list[dict]: # V11.12 : Limite à 300
+    def _fetch_gamma_markets(self, limit: int = 500) -> list[dict]: # V11.13 : Limite à 500
         url = (
             f"{GAMMA_API_URL}?limit={limit}"
             f"&active=true&closed=false"
-            f"&order=start_date&ascending=false"
         )
         markets = []
         try:
@@ -193,27 +179,6 @@ class MarketUniverse:
         except Exception as e:
             logger.error("[Universe] Erreur Gamma API: %s", e)
             
-        # --- V11.11 CIBLAGE LASER SPRINTS ---
-        sprint_slugs = get_current_sprint_slugs()
-        sprint_markets = []
-        for slug in sprint_slugs:
-            try:
-                # Essayer de fetch le marché exact par son slug
-                res = requests.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data and len(data) > 0:
-                        # Ajouter les marchés de cet événement à notre liste globale
-                        event_markets = data[0].get("markets", [])
-                        sprint_markets.extend(event_markets)
-            except Exception as e:
-                logger.debug("[Universe] Sniper fetch erreur %s: %s", slug, e)
-        
-        # Ajoute les sprint_markets récupérés explicitement à la liste des 'markets' globaux
-        if sprint_markets:
-            markets.extend(sprint_markets)
-        # ------------------------------------
-        
         return markets
 
     def _evaluate(self, m: dict) -> Optional[EligibleMarket]:
