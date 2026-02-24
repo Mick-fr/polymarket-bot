@@ -116,6 +116,32 @@ class OBIResult:
     regime:   str            # 'bullish' | 'bearish' | 'neutral'
 
     regime:   str            # 'bullish' | 'bearish' | 'neutral'
+def fetch_sprint_targets():
+    """Fetches the specific 5-Min BTC markets directly by slug."""
+    current_ts = int(time.time())
+    remainder = current_ts % 300
+    current_expiry = current_ts + (300 - remainder)
+    next_expiry = current_expiry + 300
+    slugs = [
+        f"btc-updown-5m-{current_expiry}",
+        f"btc-updown-5m-{next_expiry}"
+    ]
+    sprint_markets = []
+    for slug in slugs:
+        try:
+            url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if data and len(data) > 0:
+                    markets = data[0].get("markets", [])
+                    # Ensure we flag these as explicitly targeted so they bypass filters later
+                    for m in markets:
+                        m['_is_direct_target'] = True
+                    sprint_markets.extend(markets)
+        except Exception as e:
+            pass
+    return sprint_markets
 
 # ─── Universe Selection ──────────────────────────────────────────────────────
 
@@ -179,10 +205,31 @@ class MarketUniverse:
         except Exception as e:
             logger.error("[Universe] Erreur Gamma API: %s", e)
             
+        # --- V11.14: INJECT DIRECT TARGETS ---
+        sprint_targets = fetch_sprint_targets()
+        if sprint_targets:
+            markets.extend(sprint_targets)
+        # ---------------------------------------
+
         return markets
 
     def _evaluate(self, m: dict) -> Optional[EligibleMarket]:
         """Applique tous les filtres sur un marche brut. Retourne None si rejete."""
+        if m.get('_is_direct_target'):
+            return EligibleMarket(
+                market_id=str(m.get("id") or m.get("conditionId") or ""),
+                question=m.get("question", ""),
+                yes_token_id=json.loads(m.get("clobTokenIds", "[]"))[0] if isinstance(m.get("clobTokenIds"), str) else (m.get("clobTokenIds", [])[0] if m.get("clobTokenIds") else ""),
+                no_token_id=json.loads(m.get("clobTokenIds", "[]"))[1] if isinstance(m.get("clobTokenIds"), str) else (m.get("clobTokenIds", [])[1] if len(m.get("clobTokenIds", []))>1 else ""),
+                mid_price=0.5, # Valeurs par défaut qui seront mises à jour en V10.0 / V11.0
+                best_bid=0.0,
+                best_ask=1.0,
+                spread=1.0,
+                volume_24h=0.0,
+                end_date_ts=time.time() + 300, 
+                days_to_expiry=300/86400.0,
+            )
+
         question = m.get("question", "")
 
         # ── Parse clobTokenIds ──
