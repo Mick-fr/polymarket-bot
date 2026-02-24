@@ -1115,8 +1115,8 @@ class InfoEdgeStrategy(BaseStrategy):
                          ("bitcoin" in q_lower or "btc" in q_lower))
 
             min_minutes = 1.0 if is_sprint else self.MIN_MINUTES
-            min_edge = 8.5 if is_sprint else self.MIN_EDGE_SCORE
-            min_vol = 800 if is_sprint else self.MIN_VOLUME_5M
+            min_edge = 8.0 if is_sprint else self.MIN_EDGE_SCORE     # V10.6 : 8.0 au lieu de 8.5
+            min_vol = 600 if is_sprint else self.MIN_VOLUME_5M       # V10.6 : 600 au lieu de 800
             max_trade = 0.06 if is_sprint else self.MAX_TRADE_PCT
 
             minutes_to_expiry = market.days_to_expiry * 1440
@@ -1162,18 +1162,16 @@ class InfoEdgeStrategy(BaseStrategy):
                 mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
                 
                 if side == "buy":  # BUY YES (UP)
-                    if mom30s <= 0.02 or obi <= 0.18:
-                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.02) | OBI=%.2f (req>0.18)", market.question[:20], mom30s, obi)
+                    if mom30s <= 0.015 or obi <= 0.15:
+                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.015) | OBI=%.2f (req>0.15)", market.question[:20], mom30s, obi)
                         continue
                 elif side == "sell":  # BUY NO (DOWN)
-                    if mom30s >= -0.02 or obi >= -0.18:
-                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.02) | OBI=%.2f (req<-0.18)", market.question[:20], mom30s, obi)
+                    if mom30s >= -0.015 or obi >= -0.15:
+                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.015) | OBI=%.2f (req<-0.15)", market.question[:20], mom30s, obi)
                         continue
                         
-                # Validation passed
+                # Validation passed (log pushed below with full formatting)
                 dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
-                logger.info("[5MIN BTC] P_true=%.2f | OBI=%+.2f | Mom30s=%+.3f%% | Edge=%+.1f%% → %s", 
-                            p_true, obi, mom30s, edge_pct, dir_label)
 
             daily_edge_scores.append(abs_edge)
 
@@ -1194,7 +1192,11 @@ class InfoEdgeStrategy(BaseStrategy):
             shares = max(5.0, order_size / bid_price)
 
             side_label = "BUY YES" if side == "buy" else "BUY NO"
-            if not is_sprint:
+            if is_sprint:
+                # V10.6 Sprint explicit log format
+                logger.info("[5MIN BTC] P_true=%.2f | OBI=%+.2f | Mom30s=%+.3f%% | Edge=%+.1f%% → %s | sizing=%.1fx | vol5m=$%.0f",
+                            p_true, getattr(self.binance_ws, "btc_obi", 0.0), getattr(self.binance_ws, "_last_mom" if hasattr(self.binance_ws, "_last_mom") else "mom30s", mom30s if is_sprint else 0.0), edge_pct, dir_label, size_multiplier, vol_5m)
+            else:
                 logger.info("[V10.3] P_true=%.2f | P_poly=%.2f | Edge=%+.1f%% → %s | sizing=%.1fx | $%.2f | vol5m=$%.0f",
                             p_true, p_poly, edge_pct, side_label, size_multiplier, order_size, vol_5m)
 
@@ -1214,7 +1216,7 @@ class InfoEdgeStrategy(BaseStrategy):
             traded += 1
 
         avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
-        logger.info("[V10.5] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
+        logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
         if self.db:
             try:
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
@@ -1223,8 +1225,8 @@ class InfoEdgeStrategy(BaseStrategy):
         return signals
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
-        """V10.5 ENFORCED — 100$ capital optimized + 5-MIN BTC SCALPER."""
-        logger.info("[V10.5] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520 | 5-MIN SCALPER")
+        """V10.6 ENFORCED — 105$ capital optimized + 5-MIN BTC SCALPER (Mom>0.015%)."""
+        logger.info("[V10.6] Info Edge Only optimisé 105$ | 5-MIN SCALPER (Mom>0.015%) | Edge 12.5%/8.0%")
         return self.analyze(balance=balance)
 
 
