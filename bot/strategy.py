@@ -1256,23 +1256,30 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.11 : SIGNAL FORMATÉ ---
+            # --- V12.12 : SENSIBILITÉ ACCRUE & LOGS DE DÉBUG SPRINT ---
             if is_sprint:
-                # Mise à jour télémétrie avant tout filtre
-                current_spread = market.spread if market.spread > 0 else 0.01
-                min_spread_found = min(min_spread_found, current_spread)
+                # --- V12.12 : SENSIBILITÉ & LOGS ---
+                tmom = 0.010
+                tobi = 0.05
+                
+                # Vérification des conditions
+                mom_ok_up = m30 > tmom
+                mom_ok_down = m30 < -tmom
+                obi_ok_up = o_val > tobi
+                obi_ok_down = o_val < -tobi
+                
+                # Log si on est proche (pour débugger en live)
+                if abs(m30) > (tmom * 0.8) or abs(o_val) > (tobi * 0.8):
+                    print(f"👀 [SCAN] {market.id[:6]} | Mom: {m30:.4f} (OK:{mom_ok_up or mom_ok_down}) | OBI: {o_val:.2f} (OK:{obi_ok_up or obi_ok_down})")
                 
                 side = None
-                # Condition plus permissive : On privilégie le Momentum
-                if m30 > 0.012 and o_val > 0.05: # OBI baissé à 0.05 pour plus de réactivité
-                    side = "buy"  # Acheter le OUI
-                elif m30 < -0.012 and o_val < -0.05:
-                    side = "sell" # Acheter le NON (Attention: vérifier si votre bot utilise 'sell' ou 'buy_no')
+                if mom_ok_up and obi_ok_up:
+                    side = "buy"
+                elif mom_ok_down and obi_ok_down:
+                    side = "sell"
                 
                 if side:
-                    # Log de diagnostic immédiat
-                    print(f"🎯 [STRAT] VALIDATION SIGNAL SPRINT: {side.upper()} sur {market.id[:6]}")
-                    
+                    print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.id[:6]}")
                     max_edge_found = max(max_edge_found, 30.0)
                     
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
@@ -1283,14 +1290,14 @@ class InfoEdgeStrategy(BaseStrategy):
                         token_id=token_yes if side == "buy" else token_no,
                         market_id=market.id,
                         market_question=market.question,
-                        side="buy", # Sur Polymarket on "achète" toujours un résultat (Oui ou Non)
+                        side="buy",
                         order_type="market",
-                        price=0.99, # On accepte de payer jusqu'à 0.99 (ordre au marché)
+                        price=0.99, # Ordre quasi au marché
                         size=round(shares, 2) if side == "buy" else round(order_size, 2),
                         confidence=0.99,
-                        reason=f"MOMENTUM SPRINT: {m30:.4f}",
+                        reason=f"V12.12 FIRE: M={m30:.4f} O={o_val:.2f}",
                         mid_price=0.50,
-                        spread_at_signal=current_spread,
+                        spread_at_signal=0.01,
                     ))
                     
                     if self.db:
@@ -1301,6 +1308,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
                 
+                min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
                 continue # Bypass complet
             # ----------------------------------------
 
