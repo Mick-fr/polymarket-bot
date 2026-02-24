@@ -75,6 +75,46 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         except:
             return jsonify({"momentum_30s": 0, "obi": 0, "status": "error"})
 
+    @app.route("/api/sniper-feed")
+    @login_required
+    def api_sniper_feed():
+        """Retourne les 50 dernières lignes de scan du bot."""
+        logs = db.get_recent_logs(limit=300)
+        feed = [l for l in logs if l["source"] == "sniper_feed"][:50]
+        html = ""
+        for f in feed:
+            time_str = f["timestamp"][11:19]
+            html += f"<div class='text-xs py-1 border-b border-slate-800/50'><span class='text-slate-500'>[{time_str}]</span> {f['message']}</div>"
+        return html or "<div class='text-slate-500 text-sm'>En attente du prochain scan (4s)...</div>"
+
+    @app.route("/api/sniper-positions")
+    @login_required
+    def api_sniper_positions():
+        """Tableau des positions ouvertes pour le dashboard Sniper."""
+        positions = db.get_all_positions()
+        html = ""
+        for p in positions:
+            qty = float(p.get("quantity", 0))
+            if qty > 0.01:
+                avg = float(p.get("avg_price", 0))
+                mid = float(p.get("current_mid") or avg)
+                pnl = (mid - avg) * qty
+                color = "text-green-400" if pnl >= 0 else "text-red-400"
+                html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'><td class='py-2 px-3 truncate max-w-[150px]' title='{p.get('question', '')}'>{p.get('question', '')[:30]}...</td><td class='py-2 px-3'>{qty:.2f}</td><td class='py-2 px-3'>${avg:.3f}</td><td class='py-2 px-3'>${mid:.3f}</td><td class='py-2 px-3 font-mono {color}'>${pnl:+.2f}</td></tr>"
+        return html or "<tr><td colspan='5' class='py-4 text-center text-slate-500'>Aucune position en cours</td></tr>"
+
+    @app.route("/api/sniper-history")
+    @login_required
+    def api_sniper_history():
+        """Historique des 10 derniers trades fermés."""
+        trades = db.get_closed_trades(limit=10)
+        html = ""
+        for t in trades:
+            pnl = float(t.get("pnl_usdc", 0))
+            color = "text-green-400" if pnl >= 0 else "text-red-400"
+            html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'><td class='py-2 px-3 text-slate-500'>{t.get('close_timestamp', '')[11:16]}</td><td class='py-2 px-3 truncate max-w-[150px]' title='{t.get('question', '')}'>{t.get('question', '')[:30]}...</td><td class='py-2 px-3'>{t.get('open_size', 0):.2f}</td><td class='py-2 px-3 font-mono {color}'>${pnl:+.2f}</td></tr>"
+        return html or "<tr><td colspan='4' class='py-4 text-center text-slate-500'>Aucun trade fermé récent</td></tr>"
+
     @app.route("/market-making")
     @login_required
     def market_making_page():

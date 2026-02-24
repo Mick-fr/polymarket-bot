@@ -1190,6 +1190,13 @@ class InfoEdgeStrategy(BaseStrategy):
                 # Validation passed (log pushed below with full formatting)
                 dir_label = "BUY UP" if side == "buy" else "BUY DOWN"
 
+            if is_sprint and self.db:
+                spot_price = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                action_text = side.upper() if side else "PASS"
+                action_html = f"<span class='text-green-400 font-bold'>{action_text}</span>" if action_text != "PASS" else "<span class='text-slate-500'>PASS</span>"
+                msg = f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly: {p_poly:.2f} | Edge: {edge_pct:+.1f}% | Dec: {action_html}"
+                self.db.add_log("INFO", "sniper_feed", msg)
+
             daily_edge_scores.append(abs_edge)
 
             # ── Kelly-inspired tiered sizing ───────────────────────────

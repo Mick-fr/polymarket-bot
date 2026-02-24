@@ -46,6 +46,58 @@
     </div>
 </div>
 
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-6 max-w-[1200px] mx-auto mt-8 pb-10">
+    <div class="xl:col-span-2 space-y-6">
+        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+            <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex items-center"><span
+                    class="mr-2">🎯</span> POSITIONS OUVERTES</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="text-xs text-slate-500 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="py-2 px-3">Marché</th>
+                            <th class="py-2 px-3">Taille</th>
+                            <th class="py-2 px-3">Entrée</th>
+                            <th class="py-2 px-3">Actuel</th>
+                            <th class="py-2 px-3">PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody hx-get="/api/sniper-positions" hx-trigger="load, every 4s"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+            <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex items-center"><span
+                    class="mr-2">📜</span> HISTORIQUE (10 DERNIERS)</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="text-xs text-slate-500 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="py-2 px-3">Heure</th>
+                            <th class="py-2 px-3">Marché</th>
+                            <th class="py-2 px-3">Taille</th>
+                            <th class="py-2 px-3">PnL Net</th>
+                        </tr>
+                    </thead>
+                    <tbody hx-get="/api/sniper-history" hx-trigger="load, every 8s"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg flex flex-col h-[500px]">
+        <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex justify-between items-center">
+            <span><span class="mr-2">📡</span> LIVE SCAN FEED</span>
+            <span class="text-green-500 text-xs animate-pulse">● Live</span>
+        </h3>
+        <div class="flex-1 overflow-y-auto font-mono text-sm space-y-1 bg-slate-900/50 p-3 rounded-lg border border-slate-800"
+            hx-get="/api/sniper-feed" hx-trigger="load, every 4s">
+        </div>
+    </div>
+</div>
+
+
 <script>
     function updateColors(el, val, threshold) {
         el.classList.remove('text-green-400', 'text-red-400', 'text-slate-100');
