@@ -47,7 +47,12 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/overview")
     @login_required
     def overview_page():
-        return render_template("overview.html")
+        """Page de contrôle général et gestion du bot."""
+        balance = db.get_latest_balance() or 0.0
+        strategy_mode = db.get_config_str("strategy_mode", "Info Edge Only")
+        bot_active = db.get_config("bot_active", "true") != "false"
+        ks = db.get_kill_switch()
+        return render_template("overview.html", balance=balance, strategy_mode=strategy_mode, bot_active=bot_active, ks=ks)
 
     @app.route("/mm")
     @login_required
