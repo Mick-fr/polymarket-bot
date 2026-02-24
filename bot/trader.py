@@ -27,7 +27,7 @@ logger = logging.getLogger("bot.trader")
 # Intervalle de polling en secondes — Set B : 8s (ex: 5s)
 # Trade-off gas vs latency : a 5s avec 5 marches = ~78$/j de gas.
 # A 8s = ~49$/j. Le cancel conditionnel (Tweak 1) reduit encore de ~60%.
-OBI_POLL_INTERVAL = 8
+OBI_POLL_INTERVAL = 4
 
 
 class Trader:

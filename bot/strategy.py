@@ -1109,17 +1109,25 @@ class InfoEdgeStrategy(BaseStrategy):
             if not self._is_btc_eth(market.question):
                 continue
 
-            # V10.5 5-MIN BTC SPRINT DETECTION
-            q_lower = market.question.lower()
-            is_sprint = (("5 minute" in q_lower or "5 min" in q_lower) and 
-                         ("bitcoin" in q_lower or "btc" in q_lower))
-
-            min_minutes = 1.0 if is_sprint else self.MIN_MINUTES
-            min_edge = 8.0 if is_sprint else self.MIN_EDGE_SCORE     # V10.6 : 8.0 au lieu de 8.5
-            min_vol = 600 if is_sprint else self.MIN_VOLUME_5M       # V10.6 : 600 au lieu de 800
-            max_trade = 0.06 if is_sprint else self.MAX_TRADE_PCT
-
             minutes_to_expiry = market.days_to_expiry * 1440
+            q_lower = market.question.lower()
+            is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
+            
+            # Sprint = BTC + expire dans moins de 5.5 minutes
+            is_sprint = is_btc and (minutes_to_expiry <= 5.5)
+            
+            if is_sprint:
+                min_minutes = 1.0      # VITAL : Garder la fenêtre ouverte dans les 2 dernières minutes !
+                min_edge = 8.0         # Légèrement plus permissif
+                min_vol = 600
+                max_trade = 0.06
+                logger.info("[5MIN BTC SPRINT] Détecté — reste %.1f min | Edge cible=%.1f%%", minutes_to_expiry, min_edge)
+            else:
+                min_minutes = self.MIN_MINUTES
+                min_edge = self.MIN_EDGE_SCORE
+                min_vol = self.MIN_VOLUME_5M
+                max_trade = self.MAX_TRADE_PCT
+
             if minutes_to_expiry < min_minutes or minutes_to_expiry > self.MAX_MINUTES:
                 if not is_sprint:
                     logger.debug("[V10.3] %s ignoré (%.1fmin hors [%.1f,%.1f])", market.question[:20], minutes_to_expiry, min_minutes, self.MAX_MINUTES)
