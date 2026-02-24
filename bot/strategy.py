@@ -1117,8 +1117,8 @@ class InfoEdgeStrategy(BaseStrategy):
             is_sprint = is_btc and (minutes_to_expiry <= 5.5)
             
             if is_sprint:
-                min_minutes = 1.0      # VITAL : Garder la fenêtre ouverte dans les 2 dernières minutes !
-                min_edge = 8.0         # Légèrement plus permissif
+                min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.
+                min_edge = 7.0     # Seuil assoupli pour capter le momentum
                 min_vol = 600
                 max_trade = 0.06
                 logger.info("[5MIN BTC SPRINT] Détecté — reste %.1f min | Edge cible=%.1f%%", minutes_to_expiry, min_edge)
@@ -1164,18 +1164,20 @@ class InfoEdgeStrategy(BaseStrategy):
             if not side:
                 continue
 
-            # V10.5 Binance Verification for Sprint Markets
+            # V10.8 Binance Verification for Sprint Markets
             if is_sprint and self.binance_ws and self.binance_ws.is_connected:
                 obi = self.binance_ws.get_binance_obi("BTCUSDT")
                 mom30s = self.binance_ws.get_30s_momentum("BTCUSDT")
                 
+                logger.info("[5MIN BTC DEBUG] %s | Reste %.1fmin | Edge=%+.1f%% | Mom30s=%+.3f%% | OBI=%+.3f", market.question[:35], minutes_to_expiry, edge_pct, mom30s, obi)
+
                 if side == "buy":  # BUY YES (UP)
-                    if mom30s <= 0.015 or obi <= 0.15:
-                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.015) | OBI=%.2f (req>0.15)", market.question[:20], mom30s, obi)
+                    if mom30s <= 0.012 or obi <= 0.12:
+                        logger.debug("[5MIN BTC] %s skip BUY YES — Mom30s=%.3f%% (req>0.012) | OBI=%.2f (req>0.12)", market.question[:20], mom30s, obi)
                         continue
                 elif side == "sell":  # BUY NO (DOWN)
-                    if mom30s >= -0.015 or obi >= -0.15:
-                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.015) | OBI=%.2f (req<-0.15)", market.question[:20], mom30s, obi)
+                    if mom30s >= -0.012 or obi >= -0.12:
+                        logger.debug("[5MIN BTC] %s skip BUY NO  — Mom30s=%.3f%% (req<-0.012) | OBI=%.2f (req<-0.12)", market.question[:20], mom30s, obi)
                         continue
                         
                 # Validation passed (log pushed below with full formatting)
