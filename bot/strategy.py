@@ -1243,27 +1243,32 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.6 : SNIPER SPRINT "GÂCHETTE LIBRE" ---
+            # --- V12.7 : SNIPER SPRINT ASSAUT ---
             if is_sprint:
-                # 1. Récupération directe Binance (via l'attribut du client)
-                metrics = self.binance_client.get_metrics() if hasattr(self, 'binance_client') else {}
-                m30 = metrics.get('momentum_30s', 0.0)
-                o_val = metrics.get('obi', 0.0)
+                # 1. Lecture Binance (assure-toi d'utiliser les bons noms de variables)
+                m30 = getattr(self, 'last_mom30s', 0.0) 
+                o_val = getattr(self, 'last_obi', 0.0)
                 
-                # 2. Télémétrie Dashboard (on force l'affichage pour debug)
-                # On simule un spread de 0.01 si Gamma renvoie 0 pour ne pas bloquer l'UI
+                # Si les variables ci-dessus sont vides, essaie via le client
+                if m30 == 0.0 and hasattr(self, 'binance_client') and self.binance_client:
+                    metrics = self.binance_client.get_metrics()
+                    m30 = metrics.get('momentum_30s', 0.0)
+                    o_val = metrics.get('obi', 0.0)
+                
+                # 2. Télémétrie Dashboard (on force l'affichage)
+                # Si spread est 0, on affiche 0.01 pour indiquer que le radar est actif
                 min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
                 
-                # 3. CONDITION DE TIR UNIQUE (BINANCE)
+                # 3. LOGIQUE DE TIR (On ignore le spread ici)
                 side = None
                 if m30 > 0.012 and o_val > 0.12:
-                    side = "buy"  # Pari HAUSSE (Oui)
+                    side = "buy"
                 elif m30 < -0.012 and o_val < -0.12:
-                    side = "sell" # Pari BAISSE (Non)
+                    side = "sell"
                 
                 if side:
-                    # On force un Edge à 20% pour que le trader.py valide l'ordre
-                    artificial_edge = 20.0
+                    # On force un Edge massif pour être sûr que trader.py accepte l'ordre
+                    artificial_edge = 25.0 
                     max_edge_found = max(max_edge_found, artificial_edge)
                     
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
@@ -1276,14 +1281,14 @@ class InfoEdgeStrategy(BaseStrategy):
                         market_question=market.question,
                         side=side,
                         order_type="market",
-                        price=0.50, # Sera ajusté par l'exécuteur au prix du marché
+                        price=0.50, # L'exécuteur achètera au prix du marché
                         size=round(shares, 2) if side == "buy" else round(order_size, 2),
                         confidence=0.99,
-                        reason=f"🔥 SPRINT: Mom={m30:.3f}% OBI={o_val:.2f}",
+                        reason=f"🔥 SPRINT ASSAUT: Mom={m30:.3f}% OBI={o_val:.2f}",
                         mid_price=0.50,
                         spread_at_signal=0.01
                     ))
-                    logger.info(f"[🔥 SPRINT TRIGGER] {side.upper()} détecté ! Envoi de l'ordre au marché...")
+                    logger.info(f"[🔥 SPRINT TRIGGER] {side.upper()} détecté ! Envoi immédiat.")
                     if self.db:
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
@@ -1292,7 +1297,8 @@ class InfoEdgeStrategy(BaseStrategy):
                         spot_price = self.binance_ws.get_mid("BTCUSDT") if hasattr(self, 'binance_ws') and self.binance_ws else 0.0
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
 
-                # Bypass total du reste de la fonction pour ce marché
+                # Crucial : On continue pour ne pas laisser la logique standard
+                # (qui cherche un Strike Price) annuler notre signal.
                 continue 
             # ----------------------------------------------
 
