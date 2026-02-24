@@ -1210,6 +1210,10 @@ class InfoEdgeStrategy(BaseStrategy):
             if traded >= self.max_markets:
                 break
 
+            # Extraction des IDs de jetons (souvent requis par le trader)
+            token_yes = market.tokens[0] if hasattr(market, 'tokens') and len(market.tokens) > 0 else market.yes_token_id
+            token_no = market.tokens[1] if hasattr(market, 'tokens') and len(market.tokens) > 1 else market.no_token_id
+
             if not self._is_btc_eth(market.question):
                 continue
 
@@ -1252,21 +1256,23 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
                 continue
 
-            # --- V12.10 : SNIPER SPRINT DB SYNC ---
+            # --- V12.11 : SIGNAL FORMATÉ ---
             if is_sprint:
                 # Mise à jour télémétrie avant tout filtre
-                # On force l'affichage du spread réel (ou 0.01 si Gamma bug)
                 current_spread = market.spread if market.spread > 0 else 0.01
                 min_spread_found = min(min_spread_found, current_spread)
                 
-                # LOGIQUE DE TIR
                 side = None
-                if m30 > 0.012 and o_val > 0.12:
-                    side = "buy"
-                elif m30 < -0.012 and o_val < -0.12:
-                    side = "sell"
+                # Condition plus permissive : On privilégie le Momentum
+                if m30 > 0.012 and o_val > 0.05: # OBI baissé à 0.05 pour plus de réactivité
+                    side = "buy"  # Acheter le OUI
+                elif m30 < -0.012 and o_val < -0.05:
+                    side = "sell" # Acheter le NON (Attention: vérifier si votre bot utilise 'sell' ou 'buy_no')
                 
                 if side:
+                    # Log de diagnostic immédiat
+                    print(f"🎯 [STRAT] VALIDATION SIGNAL SPRINT: {side.upper()} sur {market.id[:6]}")
+                    
                     max_edge_found = max(max_edge_found, 30.0)
                     
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
@@ -1274,20 +1280,19 @@ class InfoEdgeStrategy(BaseStrategy):
                     shares = max(5.0, order_size / 0.50)
 
                     signals.append(Signal(
-                        token_id=market.yes_token_id if side == "buy" else market.no_token_id,
-                        market_id=market.market_id,
+                        token_id=token_yes if side == "buy" else token_no,
+                        market_id=market.id,
                         market_question=market.question,
-                        side=side,
+                        side="buy", # Sur Polymarket on "achète" toujours un résultat (Oui ou Non)
                         order_type="market",
-                        price=0.50,
+                        price=0.99, # On accepte de payer jusqu'à 0.99 (ordre au marché)
                         size=round(shares, 2) if side == "buy" else round(order_size, 2),
                         confidence=0.99,
-                        reason=f"M={m30:.3f}% O={o_val:.2f}",
+                        reason=f"MOMENTUM SPRINT: {m30:.4f}",
                         mid_price=0.50,
-                        spread_at_signal=current_spread
+                        spread_at_signal=current_spread,
                     ))
-                    # Utilisation du logger global 'logger' au lieu de 'self.logger'
-                    print(f"🚨 [FIRE] SPRINT DETECTÉ: {side.upper()}")
+                    
                     if self.db:
                         spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
