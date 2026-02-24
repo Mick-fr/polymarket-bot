@@ -1188,6 +1188,16 @@ class InfoEdgeStrategy(BaseStrategy):
         # Volume estimé 5-min proxy via volume_24h Polymarket
         vol_est = getattr(market, 'volume_24h', 0) / 288.0  # 24h / 288 = 5min
 
+        if hasattr(self, 'db') and self.db:
+            try:
+                self.db.set_config("live_dynamic_iv", round(base_vol, 4))
+                self.db.set_config("live_funding_rate", round(funding, 6))
+                self.db.set_config("live_sprint_edge", round(edge_pct, 2))
+                self.db.set_config("live_sprint_ptrue", round(p_true * 100, 2))
+                self.db.set_config("live_sprint_ppoly", round(p_poly * 100, 2))
+            except Exception:
+                pass
+
         return edge_pct, p_true, p_poly, vol_est
 
     def _decide_side(self, market: EligibleMarket, edge_pct: float, min_edge: float) -> str:

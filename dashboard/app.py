@@ -125,6 +125,75 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'><td class='py-2 px-3 text-slate-500'>{t.get('close_timestamp', '')[11:16]}</td><td class='py-2 px-3 truncate max-w-[150px]' title='{t.get('question', '')}'>{t.get('question', '')[:30]}...</td><td class='py-2 px-3'>{t.get('open_size', 0):.2f}</td><td class='py-2 px-3 font-mono {color}'>${pnl:+.2f}</td></tr>"
         return html or "<tr><td colspan='4' class='py-4 text-center text-slate-500'>Aucun trade fermé récent</td></tr>"
 
+    @app.route("/api/v14/brain")
+    @login_required
+    def api_v14_brain():
+        """V14: Retourne les métriques live du marché et de l'alpha."""
+        try:
+            return jsonify({
+                "btc_spot": float(db.get_config("live_btc_spot", 0) or 0),
+                "momentum": float(db.get_config("live_btc_mom30s", 0) or 0),
+                "obi": float(db.get_config("live_btc_obi", 0) or 0),
+                "iv": float(db.get_config("live_dynamic_iv", 0) or 0),
+                "funding": float(db.get_config("live_funding_rate", 0) or 0),
+                "sprint_edge": float(db.get_config("live_sprint_edge", 0) or 0),
+                "p_true": float(db.get_config("live_sprint_ptrue", 0) or 0),
+                "p_poly": float(db.get_config("live_sprint_ppoly", 0) or 0),
+                "ai_bias": float(db.get_config("live_ai_sentiment_bias", 1.0) or 1.0)
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/v14/execution")
+    @login_required
+    def api_v14_execution():
+        """V14: Retourne les métriques de latence et de slippage."""
+        try:
+            import json
+            lat_str = db.get_config("live_execution_latency", "[]")
+            latencies = json.loads(lat_str if lat_str else "[]")
+            slippage_count = int(db.get_config("slippage_protect_events", "0") or "0")
+            return jsonify({
+                "latency": latencies,
+                "slippage_protect_count": slippage_count,
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/v14/positions")
+    @login_required
+    def api_v14_positions():
+        """V14: Retourne les positions pures JSON avec Trailing Stop data."""
+        try:
+            import json
+            positions = db.get_all_positions()
+            ts_str = db.get_config("trailing_stops", "{}")
+            trailing_data = json.loads(ts_str if ts_str else "{}")
+            
+            enrich_pos = []
+            for p in positions:
+                qty = float(p.get("quantity", 0))
+                if qty > 0.01:
+                    tid = p.get("token_id", "")
+                    avg = float(p.get("avg_price", 0))
+                    mid = float(p.get("current_mid") or avg)
+                    pnl = (mid - avg) / avg if avg > 0 else 0
+                    ts_info = trailing_data.get(tid, {})
+                    
+                    enrich_pos.append({
+                        "token_id": tid,
+                        "question": p.get("question", ""),
+                        "quantity": qty,
+                        "avg_price": avg,
+                        "current_mid": mid,
+                        "pnl_pct": pnl,
+                        "max_pnl": ts_info.get("max_pnl", 0.0),
+                        "trailing_sl": ts_info.get("trailing_sl", None)
+                    })
+            return jsonify(enrich_pos)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/market-making")
     @login_required
     def market_making_page():

@@ -30,6 +30,7 @@ Exemption de liquidation :
   Les vérifications maintenues : taille max, solde suffisant (SELL ne coûte rien).
 """
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -63,8 +64,9 @@ class TrailingStopManager:
         self.db = db
         self._position_max_pnl: dict[str, float] = {}
 
-    def update_and_check(self, positions: list[dict], current_vol: float) -> list[dict]:
+        import json
         to_close = []
+        status_data = {}
         for p in positions:
             token_id = p.get("token_id", "")
             qty = p.get("quantity", 0.0)
@@ -84,6 +86,7 @@ class TrailingStopManager:
                 max_pnl = pnl_pct
                 self._position_max_pnl[token_id] = max_pnl
                 
+            trailing_sl = None
             # Logique Trailing Stop (déclenche après +2% ROI)
             if max_pnl >= 0.02:
                 # Si vol = 0.50 (calme), gap = 1%. Si vol = 1.00 (agité), gap = 2%
@@ -100,6 +103,18 @@ class TrailingStopManager:
                         "reason": f"Trailing SL (Max: +{max_pnl*100:.1f}%, Gap: {vol_gap*100:.1f}%, Chute à {pnl_pct*100:.1f}%)"
                     })
                     self._position_max_pnl.pop(token_id, None)
+                    continue
+                    
+            status_data[token_id] = {
+                "max_pnl": max_pnl,
+                "trailing_sl": trailing_sl
+            }
+            
+        try:
+            if hasattr(self, 'db') and self.db:
+                self.db.set_config("trailing_stops", json.dumps(status_data))
+        except Exception:
+            pass
                     
         return to_close
 

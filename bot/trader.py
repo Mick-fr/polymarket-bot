@@ -1493,6 +1493,14 @@ class Trader:
             result = func(self, *args, **kwargs)
             if result and tick_start > 0:
                 diff_ms = (time.time() - tick_start) * 1000.0
+                if hasattr(self, 'db'):
+                    try:
+                        import json
+                        latencies = json.loads(self.db.get_config("live_execution_latency", "[]") or "[]")
+                        latencies.append(round(diff_ms, 1))
+                        self.db.set_config("live_execution_latency", json.dumps(latencies[-5:]))
+                    except Exception:
+                        pass
                 if diff_ms > 200.0:
                     sig = args[0] if args else None
                     tok = sig.token_id[:8] if sig else "?"
@@ -1672,6 +1680,12 @@ class Trader:
                                 if slippage > 0.015: # > 1.5%
                                     logger.warning("[SLIPPAGE_PROTECT] Cancel %s: Slippage %.2f%% > 1.5%% (Avg: %.4f, Best: %.4f)", signal.token_id[:8], slippage*100, avg_fill, best_p)
                                     self.db.add_log("WARNING", "risk", f"SLIPPAGE_PROTECT {slippage*100:.1f}%")
+                                    if hasattr(self, 'db'):
+                                        try:
+                                            count = int(self.db.get_config("slippage_protect_events", "0") or "0")
+                                            self.db.set_config("slippage_protect_events", str(count + 1))
+                                        except Exception:
+                                            pass
                                     return False
                                     
                 resp = self._call_with_timeout(

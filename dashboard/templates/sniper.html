@@ -1,162 +1,337 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="mb-8 flex justify-between items-end">
-    <div>
-        <h1 class="text-3xl font-bold mb-2">Sniper Ops Center</h1>
-        <p class="text-slate-400">Surveillance temps réel du momentum BTC et de l'Order Book Imbalance.</p>
-    </div>
-    <div class="text-right">
-        <div class="text-sm text-slate-400 uppercase tracking-widest mb-1">High Water Mark</div>
-        <div class="text-2xl font-mono text-sky-300">{{ "%.2f"|format(hwm) }} USDC</div>
-    </div>
-</div>
+<style>
+    body {
+        background-color: #050505 !important;
+        color: #cbd5e1 !important;
+    }
 
-<div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10 w-full max-w-4xl mx-auto">
-    <!-- Momentum Card -->
-    <div
-        class="bg-cardbg rounded-2xl p-8 border border-slate-700 shadow-xl flex flex-col items-center justify-center text-center transition-transform hover:scale-[1.02]">
-        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Binance Momentum (30s)</h3>
-        <div id="mom-val"
-            class="text-6xl font-black font-mono tracking-tighter transition-colors duration-300 text-slate-100">0.000%
+    .panel-dark {
+        background-color: #0A0A0C;
+        border: 1px solid #1f1f22;
+        border-radius: 0.5rem;
+    }
+
+    .neon-text-emerald {
+        color: #34d399;
+        text-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+    }
+
+    .neon-text-sky {
+        color: #38bdf8;
+        text-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+    }
+
+    .neon-text-purple {
+        color: #a855f7;
+        text-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+    }
+
+    .neon-text-red {
+        color: #f87171;
+        text-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
+    }
+
+    .font-terminal {
+        font-family: 'Courier New', Courier, monospace;
+    }
+</style>
+
+<!-- A. Header : The Global P&L Tracker -->
+<div class="panel-dark p-4 flex flex-col md:flex-row justify-between items-center mb-4 shadow-lg">
+    <div class="flex items-center space-x-4">
+        <div>
+            <h1 class="text-xl font-bold tracking-widest text-white">SNIPER COMMAND CENTER</h1>
+            <p class="text-xs text-slate-500 font-terminal uppercase">V14 Execution Engine</p>
         </div>
-        <div class="mt-6 text-sm text-slate-500 bg-slate-800/50 py-1.5 px-4 rounded-full border border-slate-700">Seuil
-            de tir : ±0.012%</div>
-    </div>
-
-    <!-- OBI Card -->
-    <div
-        class="bg-cardbg rounded-2xl p-8 border border-slate-700 shadow-xl flex flex-col items-center justify-center text-center transition-transform hover:scale-[1.02]">
-        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Binance Order Book (OBI)</h3>
-        <div id="obi-val"
-            class="text-6xl font-black font-mono tracking-tighter transition-colors duration-300 text-slate-100">0.00
+        <div id="status-badge"
+            class="ml-4 px-3 py-1 rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-xs font-bold uppercase tracking-wider animate-pulse flex items-center">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span> V14 EVENT-DRIVEN ACTIVE
         </div>
-        <div class="mt-6 text-sm text-slate-500 bg-slate-800/50 py-1.5 px-4 rounded-full border border-slate-700">Seuil
-            de tir : ±0.12</div>
     </div>
-</div>
-
-<!-- V11.6 Badges Marchés et Edge -->
-<div class="flex justify-center space-x-6 mb-8">
-    <div
-        class="flex items-center text-sm font-bold text-slate-300 bg-slate-800/80 px-5 py-2.5 rounded-xl border border-slate-700 shadow-md">
-        <span class="mr-2 text-sky-400">🔍</span> Cibles Sprint Actives : <span id="markets-val"
-            class="ml-2 font-mono text-sky-300">0</span>
-    </div>
-    <div
-        class="flex items-center text-sm font-bold text-slate-300 bg-slate-800/80 px-5 py-2.5 rounded-xl border border-slate-700 shadow-md">
-        <span class="mr-2 text-purple-400">⚡</span> Max Edge Détecté : <span id="edge-val"
-            class="ml-2 font-mono text-purple-300">0.0%</span>
-    </div>
-    <div
-        class="flex items-center text-sm font-bold text-slate-300 bg-slate-800/80 px-5 py-2.5 rounded-xl border border-slate-700 shadow-md">
-        <span class="mr-2 text-rose-400">📉</span> Spread Min : <span id="radar-min-spread"
-            class="ml-2 font-mono text-rose-300">0.00</span>$
-    </div>
-</div>
-
-<div class="flex justify-center">
-    <div
-        class="flex items-center text-sm font-medium text-slate-400 bg-cardbg px-6 py-3 rounded-full border border-slate-700 shadow-lg cursor-default">
-        <div class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse mr-3 shadow-[0_0_8px_rgba(34,197,94,0.6)]">
+    <div class="flex items-center space-x-8 mt-4 md:mt-0 font-terminal">
+        <div class="text-right">
+            <div class="text-xs text-slate-500 uppercase tracking-widest">High Water Mark</div>
+            <div class="text-lg text-slate-300" id="hwm-val">{{ "%.2f"|format(hwm) }} USDC</div>
         </div>
-        Connecté au flux Binance WS &nbsp;&nbsp;|&nbsp;&nbsp; Mise à jour : <span id="last-update"
-            class="ml-2 font-mono text-slate-300">...</span>
+        <div class="text-right">
+            <div class="text-xs text-slate-500 uppercase tracking-widest">Drawdown</div>
+            <div class="text-lg text-slate-400" id="drawdown-val">0.0%</div>
+        </div>
     </div>
 </div>
 
-<div class="grid grid-cols-1 xl:grid-cols-3 gap-6 max-w-[1200px] mx-auto mt-8 pb-10">
-    <div class="xl:col-span-2 space-y-6">
-        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-            <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex items-center"><span
-                    class="mr-2">🎯</span> POSITIONS OUVERTES</h3>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm text-left">
-                    <thead class="text-xs text-slate-500 uppercase bg-slate-900/50">
-                        <tr>
-                            <th class="py-2 px-3">Marché</th>
-                            <th class="py-2 px-3">Taille</th>
-                            <th class="py-2 px-3">Entrée</th>
-                            <th class="py-2 px-3">Actuel</th>
-                            <th class="py-2 px-3">PnL</th>
-                        </tr>
-                    </thead>
-                    <tbody hx-get="/api/sniper-positions" hx-trigger="load, every 4s"></tbody>
-                </table>
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+    <!-- B. Zone Gauche : The Brain Pulse (Indicateurs Quantitatifs) -->
+    <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
+        <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                Brain Pulse</h2>
+
+            <div class="mb-4">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-slate-400 uppercase">Momentum (30s)</span>
+                    <span id="mom-val" class="font-terminal neon-text-sky">0.00%</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-1.5">
+                    <div id="mom-bar" class="bg-sky-400 h-1.5 rounded-full" style="width: 50%"></div>
+                </div>
+                <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.012%</div>
+            </div>
+
+            <div class="mb-4">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-slate-400 uppercase">Binance OBI</span>
+                    <span id="obi-val" class="font-terminal neon-text-emerald">0.00</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-1.5">
+                    <div id="obi-bar" class="bg-emerald-400 h-1.5 rounded-full" style="width: 50%"></div>
+                </div>
+                <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.12</div>
+            </div>
+
+            <div class="mb-4 mt-2 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Dynamic IV (V14)</div>
+                <div id="iv-val" class="text-xl font-terminal neon-text-purple">0.00</div>
+                <div class="text-xs text-slate-500 mt-1">Impacts Options Pricing Model</div>
+            </div>
+
+            <div class="p-3 bg-slate-900/50 border border-slate-800 rounded">
+                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Funding Drift (V14)</div>
+                <div id="funding-val" class="text-xl font-terminal neon-text-sky">0.00%</div>
+                <div class="text-xs text-slate-500 mt-1">Directional Bias (Derivatives)</div>
+            </div>
+
+            <div class="mt-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">AI Global Bias (Grok)</div>
+                <div id="ai-bias-val" class="text-xl font-terminal text-yellow-400">x1.00</div>
+                <div class="text-xs text-slate-500 mt-1">Multiplies Alpha Edge</div>
             </div>
         </div>
+    </div>
 
-        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-            <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex items-center"><span
-                    class="mr-2">📜</span> HISTORIQUE (10 DERNIERS)</h3>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm text-left">
-                    <thead class="text-xs text-slate-500 uppercase bg-slate-900/50">
-                        <tr>
-                            <th class="py-2 px-3">Heure</th>
-                            <th class="py-2 px-3">Marché</th>
-                            <th class="py-2 px-3">Taille</th>
-                            <th class="py-2 px-3">PnL Net</th>
-                        </tr>
-                    </thead>
-                    <tbody hx-get="/api/sniper-history" hx-trigger="load, every 8s"></tbody>
-                </table>
+    <!-- C. Zone Centrale : Target Acquisition & Scan Feed -->
+    <div class="col-span-1 lg:col-span-6 flex flex-col gap-4">
+        <div class="panel-dark p-4 flex flex-col flex-grow shadow-lg relative overflow-hidden">
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                Target Acquisition</h2>
+
+            <!-- Target Locked Panel -->
+            <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative">
+                <div class="absolute top-2 right-2 flex space-x-1">
+                    <div id="target-led" class="w-2 h-2 rounded-full bg-slate-600"></div>
+                </div>
+                <div class="text-xs text-slate-400 uppercase tracking-widest mb-2">Live Sprint Edge Score</div>
+                <div class="flex items-end space-x-3 mb-2">
+                    <div id="edge-val" class="text-3xl font-terminal text-slate-300">0.00%</div>
+                    <div id="locked-badge"
+                        class="hidden mb-1 px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 text-[0.65rem] font-bold uppercase rounded">
+                        TARGET LOCKED</div>
+                </div>
+
+                <div class="w-full bg-slate-800 rounded-full h-2 mb-3">
+                    <div id="edge-bar" class="bg-slate-500 h-2 rounded-full transition-all duration-300"
+                        style="width: 0%"></div>
+                </div>
+
+                <div class="flex justify-between items-center text-xs font-terminal text-slate-500">
+                    <div><span class="text-slate-400">P_true (Log-Normal):</span> <span id="ptrue-val"
+                            class="text-purple-400">0.00</span></div>
+                    <div>vs</div>
+                    <div><span class="text-slate-400">P_poly (Market):</span> <span id="ppoly-val"
+                            class="text-sky-400">0.00</span></div>
+                </div>
+            </div>
+
+            <!-- Live Scan Feed -->
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Live Scan Feed</h2>
+            <div class="flex-grow bg-[#09090b] border border-slate-800 rounded p-3 overflow-y-auto font-terminal text-[0.7rem] text-slate-400 h-64"
+                id="scan-feed" hx-get="/api/sniper-feed" hx-trigger="every 1s">
+                <div class="text-slate-600">Initializing radar stream...</div>
             </div>
         </div>
     </div>
 
-    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg flex flex-col h-[500px]">
-        <h3 class="text-slate-400 font-bold mb-4 tracking-wider text-sm flex justify-between items-center">
-            <span><span class="mr-2">📡</span> LIVE SCAN FEED</span>
-            <span class="text-green-500 text-xs animate-pulse">● Live</span>
-        </h3>
-        <div class="flex-1 overflow-y-auto font-mono text-sm space-y-1 bg-slate-900/50 p-3 rounded-lg border border-slate-800"
-            hx-get="/api/sniper-feed" hx-trigger="load, every 4s">
+    <!-- D. Zone Droite : Execution & Risk Manager -->
+    <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
+        <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                Execution & Risk</h2>
+
+            <!-- Latency Sparkline Placeholder -->
+            <div class="mb-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                <div class="flex justify-between items-center mb-2">
+                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">WS-to-Trade Latency</div>
+                    <div id="latency-val" class="text-xs font-terminal neon-text-emerald">0ms</div>
+                </div>
+                <div class="flex space-x-1 items-end h-8" id="latency-bars">
+                    <!-- JS populated sparkline -->
+                </div>
+            </div>
+
+            <!-- Health & Slippage -->
+            <div class="mb-6 p-3 bg-slate-900/50 border border-slate-800 rounded flex justify-between items-center">
+                <div>
+                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Slippage Blocks (>1.5%)</div>
+                    <div class="text-xs text-slate-400">L2 Safety Checks</div>
+                </div>
+                <div id="slippage-val" class="text-lg font-terminal text-orange-400">0</div>
+            </div>
+
+            <!-- Trailing Stops Table -->
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Active Trailing Stops</h2>
+            <div class="overflow-y-auto flex-grow max-h-48 mb-4">
+                <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
+                    <thead class="text-slate-500 border-b border-slate-800 sticky top-0 bg-[#0A0A0C]">
+                        <tr>
+                            <th class="py-1 font-normal">Token</th>
+                            <th class="py-1 font-normal text-right">Max ROI</th>
+                            <th class="py-1 font-normal text-right">Target SL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trailing-stops-body">
+                        <tr>
+                            <td colspan="3" class="py-2 text-center text-slate-600">No active positions</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="mt-auto grid grid-cols-2 gap-2">
+                <button onclick="confirmReset()"
+                    class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs uppercase tracking-widest transition-colors">Reset
+                    HWM</button>
+                <button onclick="confirmKillSwitch()"
+                    class="py-2 px-3 bg-red-900/40 hover:bg-red-800 hover:text-white border border-red-700/50 text-red-400 rounded text-xs uppercase tracking-widest transition-all">Force
+                    Exit</button>
+            </div>
         </div>
     </div>
 </div>
-
 
 <script>
-    function updateColors(el, val, threshold) {
-        el.classList.remove('text-green-400', 'text-red-400', 'text-slate-100');
-        if (val >= threshold) el.classList.add('text-green-400');
-        else if (val <= -threshold) el.classList.add('text-red-400');
-        else el.classList.add('text-slate-100');
+    // JS Controller for Sniper Command Center
+
+    function confirmKillSwitch() {
+        if (confirm("🚨 WARNING: KILL SWITCH ENGAGED 🚨\n\nThis will instantly market sell ALL open positions. Are you sure?")) {
+            // Need to implement backend route or reuse existing
+            alert("Kill Switch Signal Sent (Mock)");
+        }
     }
 
-    function fetchRadar() {
-        fetch('/api/sniper-radar')
-            .then(response => response.json())
-            .then(data => {
-                const momEl = document.getElementById('mom-val');
-                const obiEl = document.getElementById('obi-val');
-
-                // Update Momentum
-                let momVal = data.momentum_30s;
-                momEl.innerText = (momVal > 0 ? '+' : '') + momVal.toFixed(3) + '%';
-                updateColors(momEl, momVal, 0.012);
-
-                // Update OBI
-                let obiVal = data.obi;
-                obiEl.innerText = (obiVal > 0 ? '+' : '') + obiVal.toFixed(2);
-                updateColors(obiEl, obiVal, 0.12);
-
-                // Update Markets & Edge & Spread (V11.6 & V12.2)
-                document.getElementById('markets-val').innerText = data.found_markets;
-                document.getElementById('edge-val').innerText = data.max_edge.toFixed(1) + '%';
-                if (document.getElementById('radar-min-spread')) {
-                    document.getElementById('radar-min-spread').innerText = data.min_spread.toFixed(2);
-                }
-
-                // Update Time
-                document.getElementById('last-update').innerText = new Date().toLocaleTimeString('fr-FR');
-            })
-            .catch(err => console.error("Radar Error:", err));
+    function confirmReset() {
+        if (confirm("Reset High Water Mark to current portfolio value?")) {
+            alert("Reset Sent (Mock)");
+        }
     }
 
-    // Rafraîchissement toutes les 2 secondes
-    setInterval(fetchRadar, 2000);
-    fetchRadar(); // Appel initial
+    // Polling Logic
+    async function updateBrainPulse() {
+        try {
+            const res = await fetch('/api/v14/brain');
+            const data = await res.json();
+
+            // Update Gauges
+            document.getElementById('mom-val').innerText = (data.momentum > 0 ? '+' : '') + data.momentum.toFixed(3) + '%';
+            document.getElementById('obi-val').innerText = data.obi.toFixed(2);
+            document.getElementById('iv-val').innerText = data.iv.toFixed(3);
+            document.getElementById('funding-val').innerText = data.funding.toFixed(4) + '%';
+            document.getElementById('ai-bias-val').innerText = 'x' + data.ai_bias.toFixed(2);
+
+            // Bar calculations (visual flavor)
+            let momPct = 50 + (data.momentum * 1000); // Ex: 0.012 -> 50 + 12 = 62%
+            document.getElementById('mom-bar').style.width = Math.min(100, Math.max(0, momPct)) + '%';
+            document.getElementById('mom-bar').className = data.momentum > 0 ? "bg-emerald-400 h-1.5 rounded-full" : "bg-red-400 h-1.5 rounded-full";
+
+            let obiPct = 50 + (data.obi * 100);
+            document.getElementById('obi-bar').style.width = Math.min(100, Math.max(0, obiPct)) + '%';
+            document.getElementById('obi-bar').className = data.obi > 0.1 ? "bg-emerald-400 h-1.5 rounded-full" : (data.obi < -0.1 ? "bg-red-400 h-1.5 rounded-full" : "bg-sky-400 h-1.5 rounded-full");
+
+            // Update Target Acquisition
+            const edge = data.sprint_edge;
+            document.getElementById('edge-val').innerText = (edge > 0 ? '+' : '') + edge.toFixed(2) + '%';
+            document.getElementById('ptrue-val').innerText = (data.p_true).toFixed(3);
+            document.getElementById('ppoly-val').innerText = (data.p_poly).toFixed(3);
+
+            const edgeBar = document.getElementById('edge-bar');
+            const lockedBadge = document.getElementById('locked-badge');
+            const led = document.getElementById('target-led');
+
+            let absEdge = Math.abs(edge);
+            edgeBar.style.width = Math.min(100, absEdge * 4) + '%'; // 25% edge = 100% width
+
+            if (absEdge > 12.5) {
+                edgeBar.className = "bg-emerald-400 h-2 rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]";
+                lockedBadge.classList.remove('hidden');
+                document.getElementById('edge-val').className = "text-3xl font-terminal neon-text-emerald";
+                led.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
+            } else {
+                edgeBar.className = "bg-sky-500 h-2 rounded-full transition-all duration-300";
+                lockedBadge.classList.add('hidden');
+                document.getElementById('edge-val').className = "text-3xl font-terminal text-slate-300";
+                led.className = "w-2 h-2 rounded-full bg-slate-600";
+            }
+
+        } catch (e) { console.error("Error fetching brain pulse", e); }
+    }
+
+    async function updateExecutionAndRisk() {
+        try {
+            // Latency & Health
+            const resExec = await fetch('/api/v14/execution');
+            const execData = await resExec.json();
+
+            let lats = execData.latency || [];
+            if (lats.length > 0) {
+                const latest = lats[lats.length - 1];
+                document.getElementById('latency-val').innerText = latest.toFixed(0) + 'ms';
+                document.getElementById('latency-val').className = latest > 200 ? "text-xs font-terminal text-red-400" : "text-xs font-terminal neon-text-emerald";
+            }
+
+            const sparkline = document.getElementById('latency-bars');
+            sparkline.innerHTML = '';
+            lats.forEach(l => {
+                let h = Math.min(100, (l / 300) * 100);
+                let color = l > 200 ? 'bg-red-500' : 'bg-emerald-500';
+                sparkline.innerHTML += `<div class="w-full ${color} rounded-t opacity-80" style="height: ${h}%"></div>`;
+            });
+
+            document.getElementById('slippage-val').innerText = execData.slippage_protect_count || 0;
+
+            // Positions & Trailing Stops
+            const resPos = await fetch('/api/v14/positions');
+            const posData = await resPos.json();
+
+            const tbody = document.getElementById('trailing-stops-body');
+            if (posData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="py-2 text-center text-slate-600">No active positions</td></tr>';
+            } else {
+                tbody.innerHTML = '';
+                posData.forEach(p => {
+                    let maxPnl = p.max_pnl * 100;
+                    let trailSl = p.trailing_sl !== null ? (p.trailing_sl * 100).toFixed(1) + '%' : 'Wait/2%';
+                    tbody.innerHTML += `
+                        <tr class="border-b border-slate-800/80 hover:bg-slate-800/30">
+                            <td class="py-1 truncate max-w-[100px]" title="${p.question}">${p.question.substring(0, 20)}</td>
+                            <td class="py-1 text-right text-emerald-400">+${maxPnl.toFixed(1)}%</td>
+                            <td class="py-1 text-right text-orange-400">${trailSl}</td>
+                        </tr>
+                    `;
+                });
+            }
+
+        } catch (e) { console.error("Error fetching execution stats", e); }
+    }
+
+    setInterval(updateBrainPulse, 1000);
+    setInterval(updateExecutionAndRisk, 3000);
+
+    // Initial fetch
+    updateBrainPulse();
+    updateExecutionAndRisk();
+
 </script>
 {% endblock %}
