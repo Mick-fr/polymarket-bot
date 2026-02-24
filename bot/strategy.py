@@ -1156,8 +1156,8 @@ class InfoEdgeStrategy(BaseStrategy):
             return "sell"  # BUY NO (short YES)
         return ""  # pas de trade
 
-    def analyze(self, balance: float = 0.0) -> list[Signal]:
-        """V10.0: Real pricing BTC/ETH 5-40min, P_true log-normal, Edge >= 20%, Kelly tiered."""
+    def analyze(self, balance: float = 0.0, target_market_ids: list[str] = None) -> list[Signal]:
+        """V13.0: Event-Driven Sniper Architecture. Allows targeted rapid-fire."""
         signals: list[Signal] = []
         if not self._universe.get_eligible_markets():
             pass # We still want to do the global update even if no markets
@@ -1207,6 +1207,10 @@ class InfoEdgeStrategy(BaseStrategy):
 
         traded = 0
         for market in markets:
+            # V13 Rapid-Fire Targeting: Skip immediately if not in target list
+            if target_market_ids is not None and market.id not in target_market_ids:
+                continue
+
             if traded >= self.max_markets:
                 break
 
@@ -1268,8 +1272,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 obi_ok_up = o_val > tobi
                 obi_ok_down = o_val < -tobi
                 
-                # Log si on est proche (pour débugger en live)
-                if abs(m30) > (tmom * 0.8) or abs(o_val) > (tobi * 0.8):
+                # V13 Optimization: Prevent console output spam during rapid-fire unless critical
+                if not target_market_ids and (abs(m30) > (tmom * 0.8) or abs(o_val) > (tobi * 0.8)):
                     print(f"👀 [SCAN] {market.id[:6]} | Mom: {m30:.4f} (OK:{mom_ok_up or mom_ok_down}) | OBI: {o_val:.2f} (OK:{obi_ok_up or obi_ok_down})")
                 
                 side = None
@@ -1295,16 +1299,17 @@ class InfoEdgeStrategy(BaseStrategy):
                         price=0.99, # Ordre quasi au marché
                         size=round(shares, 2) if side == "buy" else round(order_size, 2),
                         confidence=0.99,
-                        reason=f"V12.12 FIRE: M={m30:.4f} O={o_val:.2f}",
+                        reason=f"V13 FIRE: M={m30:.4f} O={o_val:.2f}",
                         mid_price=0.50,
                         spread_at_signal=0.01,
                     ))
                     
-                    if self.db:
+                    # V13 Optimization: Only log to DB if we are not in rapid-fire mode to save MS
+                    if self.db and not target_market_ids:
                         spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
                 else:
-                    if self.db:
+                    if self.db and not target_market_ids:
                         spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
                 

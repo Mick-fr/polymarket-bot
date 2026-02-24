@@ -145,9 +145,10 @@ class Trader:
 
         # V10.0 BINANCE WS CLIENT (daemon thread)
         from bot.binance_ws import BinanceWSClient
-        self.binance_ws = BinanceWSClient()
+        # V13 Event-Driven Callback Hook
+        self.binance_ws = BinanceWSClient(on_tick_callback=self._on_price_tick)
         self.binance_ws.start()
-        logger.info("[V10.0] BinanceWSClient démarré (bookTicker BTC/ETH + funding rate)")
+        logger.info("[V13.0] BinanceWSClient démarré en Event-Driven (bookTicker BTC/ETH + callback direct)")
 
         # V10.0 INFO EDGE STRATEGY (avec Binance WS)
         from bot.strategy import InfoEdgeStrategy
@@ -184,12 +185,16 @@ class Trader:
             except Exception as e:
                 logger.warning("[WS] Impossible de démarrer le WebSocket: %s", e)
 
+        self._last_signal_ts = {} # V13 Rate Limiter par token
+        
         self._running = True
+        logger.info("[V13.0] Basculement en mode Event-Driven Sniper. En attente de signaux WS...")
+        
         while self._running:
             try:
-                self._cycle()
+                self._maintenance_loop()
                 self._consecutive_errors = 0
-                time.sleep(OBI_POLL_INTERVAL)
+                time.sleep(60.0) # V13: Chronjob toutes les 60s
 
             except KeyboardInterrupt:
                 logger.info("Arrêt demandé par l'utilisateur (Ctrl+C)")
@@ -342,242 +347,123 @@ class Trader:
         self.db.add_log("CRITICAL", "trader", "Échec de connexion – arrêt du bot")
         sys.exit(1)
 
-    def _cycle(self):
-        """Un cycle complet de la boucle de trading."""
-        logger.info("[Cycle] ── Début du cycle ──────────────────────────────")
-
-        # 2026 ULTIMATE FINAL
-        if hasattr(self.pm_client, "ws_client") and hasattr(self.pm_client.ws_client, "log_status"):
-            self.pm_client.ws_client.log_status()
-
-        # 1. Kill switch + bot_active — V7.5.1 enhanced status logging
+    def _on_price_tick(self, symbol: str, mid: float):
+        """V13.0: Déclenché asynchronement depuis BinanceWSClient à chaque tick de prix BTC/ETH."""
+        if symbol != "BTCUSDT":
+            return
+            
+        # Kill switch check
         kill_switch = self.db.get_kill_switch()
         bot_active = self.db.get_config("bot_active", "true") != "false"
-        logger.info("[Status] Bot active = %s | kill_switch = %s", bot_active, kill_switch)
-
         if kill_switch or not bot_active:
-            logger.info("[Cycle] Bot en pause — aucun trade exécuté (kill=%s, active=%s)", kill_switch, bot_active)
-            if not getattr(self, "_kill_switch_alerted", False):
-                send_alert("⚠️ KILL SWITCH ACTIVÉ — Le bot est en pause.")
-                self._kill_switch_alerted = True
             return
-        self._kill_switch_alerted = False
-
-        # 2026 V7.3.6 AGGRESSIVITÉ LIVE — rechargement dynamique chaque cycle + flag instantané
-        import os as _os
-        _flag_path = "/tmp/reload_aggressivity.flag"
-        _force_reload = False
-        if _os.path.exists(_flag_path):
-            try:
-                _os.remove(_flag_path)
-                _force_reload = True
-                logger.info("[V7.3.6] Reload flag detected — forcing aggressivity reload")
-            except Exception:
-                pass
-        self.risk.reload_aggressivity()
-        if self.strategy:
-            self.strategy.reload_sizing()
-
-        # 2026 V7.5 POSITION MERGING — auto-merge every cycle
-        try:
-            merge_result = self.db.merge_positions()
-            if merge_result["merged"] > 0 or merge_result["cleaned"] > 0:
-                logger.info("[PositionMerge] Merged=%d, Cleaned=%d", merge_result["merged"], merge_result["cleaned"])
-        except Exception as e:
-            logger.warning("[PositionMerge] Error: %s", e)
-
-        # 2. Connectivité API — is_alive() avec timeout implicite de la lib
-        logger.info("[Cycle] Étape 2: vérification connectivité API")
-        if not self.pm_client.is_alive():
-            logger.warning("API Polymarket injoignable, tentative de reconnexion...")
-            self.db.add_log("WARNING", "trader", "API injoignable – reconnexion")
-            self._connect()
-        logger.info("[Cycle] Étape 2: API OK")
-
-        # V8.2 ENFORCEMENT: relire strategy_mode AU DÉBUT de chaque cycle
+            
         strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
-        if strategy_mode == "Info Edge Only":
-            logger.info("[ENFORCED] Info Edge Only actif — universe limité BTC/ETH 5-60min")
-            self.db.set_config("info_edge_only", "true")
-        else:
-            self.db.set_config("info_edge_only", "false")
-        
-        # 2026 V6.5 ULTRA-CHIRURGICAL
-        try:
-            active_markets = getattr(self.pm_client.ws_client, "active_markets", [])
-            logger.info(f"[WS] Subscribed to {len(active_markets)} active markets")
-        except Exception:
-            pass
-
-        # 3. Solde brut initial (avant cancel) — sert à calculer la valeur portfolio
-        logger.info("[Cycle] Étape 3: lecture solde brut CLOB")
+        if strategy_mode != "Info Edge Only":
+            return # Le mode sniper event-driven n'est actif que sur Info Edge Only
+            
+        if not self.info_edge_strategy:
+            return
+            
+        # Identifier les marchés Sprint (BTC 5min)
+        eligible = self.info_edge_strategy._universe.get_eligible_markets()
+        sprint_ids = []
+        for m in eligible:
+            minutes_to_expiry = m.days_to_expiry * 1440
+            q_lower = m.question.lower()
+            is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
+            if is_btc and minutes_to_expiry <= 5.5:
+                sprint_ids.append(m.id)
+                
+        if not sprint_ids:
+            return
+            
+        # Fire Analyze spécifiquement sur ces assets
         balance_raw = self._fetch_balance()
         if balance_raw is None:
             balance_raw = self.db.get_latest_balance() or 0.0
-        logger.info("[Cycle] Étape 3: solde brut = %.4f USDC", balance_raw)
+        balance = self._fetch_available_balance(balance_raw)
+        
+        # Le signal génère lui-même les appels base DB minimalistes (V12.12 opti)
+        signals = self.info_edge_strategy.analyze(balance=balance, target_market_ids=sprint_ids)
+        
+        if not signals:
+            return
+            
+        portfolio_value = self._compute_portfolio_value(balance_raw)
+        
+        # Exécution immédiate
+        residual_balance = balance
+        for sig in signals:
+            # RATE LIMITER: 1 tir toutes les 2.0 secondes maximum par jeton pour éviter le spam 429
+            now = time.time()
+            if now - self._last_signal_ts.get(sig.token_id, 0.0) < 2.0:
+                continue
+                
+            self._last_signal_ts[sig.token_id] = now
+                
+            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=[])
+            if approved:
+                if sig.side == "buy" and sig.price:
+                    residual_balance = max(0.0, residual_balance - sig.size * sig.price)
+                elif sig.side == "buy" and sig.order_type == "market":
+                    residual_balance = max(0.0, residual_balance - sig.size)
 
-        # 3b. Valeur totale du portfolio (USDC + inventaire valorisé au marché)
-        # → utilisée pour le High Water Mark et le circuit breaker.
-        # Étape 3b-bis : rafraîchit les mids de marché pour les positions hors
-        # univers OBI ce cycle (tokens non analysés par strategy.py).
-        # Limité par cache TTL=60s pour éviter le rate-limit Polymarket.
-        logger.info("[Cycle] Étape 3b: rafraîchissement mids inventaire")
-        self._refresh_inventory_mids()  # NEW: met à jour current_mid en DB avant calcul
 
-        # Calcul portfolio avec current_mid prioritaire (fallback avg_price si absent)
-        logger.info("[Cycle] Étape 3b: calcul valeur portfolio")
+    def _maintenance_loop(self):
+        """V13.0: Tâche de fond lente pour la revalorisation et les allowances (60s)."""
+        logger.info("[Maintenance] ── Exécution chronjob 60s ────────────────")
+
+        # 1. Connectivité API
+        if not self.pm_client.is_alive():
+            logger.warning("API Polymarket injoignable, reconnexion...")
+            self._connect()
+
+        # 2. Rechargements configs
+        import os as _os
+        _flag_path = "/tmp/reload_aggressivity.flag"
+        if _os.path.exists(_flag_path):
+            try:
+                _os.remove(_flag_path)
+                self.risk.reload_aggressivity()
+                if self.strategy:
+                    self.strategy.reload_sizing()
+            except Exception:
+                pass
+
+        try:
+            self.db.merge_positions()
+        except Exception:
+            pass
+
+        # 3. Calculs portefeuilles et HWM
+        balance_raw = self._fetch_balance()
+        if balance_raw is None:
+            balance_raw = self.db.get_latest_balance() or 0.0
+
+        self._refresh_inventory_mids()
         portfolio_value = self._compute_portfolio_value(balance_raw)
         self.risk.update_high_water_mark(portfolio_value)
-        # Breakdown inventaire détaillé : qty, avg_price, current_mid, val_mid par position
         self._log_inventory_breakdown(balance_raw, portfolio_value)
-        logger.info(
-            "[Cycle] Étape 3b: portfolio=%.4f USDC (USDC=%.4f + inventaire=%.4f) | HWM=%.4f",
-            portfolio_value, balance_raw, portfolio_value - balance_raw,
-            self.db.get_high_water_mark(),
-        )
-
-        # 4. Cancel+replace : annuler les BUY ouverts AVANT de lire le solde disponible.
-        # Cela libère les fonds verrouillés côté CLOB, permettant une lecture exacte.
-        # (seulement en mode réel — en paper trading il n'y a pas d'ordres dans le carnet)
-        logger.info("[Cycle] Étape 4: cancel+replace (mode réel)")
-        if not self.config.bot.paper_trading:
-            self._cancel_open_orders()
-        logger.info("[Cycle] Étape 4: cancel+replace terminé")
-
-        # 5. Solde disponible (après cancel → fonds BUY libérés dans le CLOB)
-        # En cas d'échec du re-fetch, on soustrait le capital estimé verrouillé.
-        logger.info("[Cycle] Étape 5: lecture solde disponible post-cancel")
+        
         balance = self._fetch_available_balance(balance_raw)
         self.db.record_balance(balance)
-        logger.info(
-            "[Cycle] Étape 5: solde dispo=%.4f USDC | portfolio=%.4f USDC | HWM=%.4f USDC",
-            balance, portfolio_value, self.db.get_high_water_mark(),
-        )
 
-        # 5b. Sizing adaptatif : si cash très bas, élargir temporairement max_exposure_pct
-        # pour permettre au moins 1 BUY ou 1 SELL sans blocage immédiat.
-        # N'est PAS persisté en config — actif uniquement pour ce cycle.
-        effective_max_expo = self._get_effective_max_exposure(balance)
-
-        # 5c. Liquidation partielle auto si cash très bas et inventaire >> cash.
-        # Déclenché ici (après cancel+replace) pour éviter les doubles SELL.
+        # 4. Safe Mode et Liquidations partiels
         if not self.config.bot.paper_trading:
             self._maybe_liquidate_partial(balance, portfolio_value)
-            
-            # V7.8 SAFE MODE: Auto-close positions copiées à -40% PnL
             try:
                 self.risk.check_auto_close_copied(self.pm_client, self.db.get_all_positions())
             except Exception as e_ac:
                 logger.error("[SAFE MODE] Erreur check_auto_close_copied: %s", e_ac)
 
-        # 6. Stratégie OBI / Info Edge → signaux
-        # V8.2 ENFORCEMENT STRICT — strategy_mode déjà lu en haut de cycle
-        logger.info("[Cycle] Étape 6: analyse [mode=%s] (max_expo=%.0f%%)", strategy_mode, effective_max_expo * 100)
-        try:
-            signals = []
-
-            if strategy_mode == "Info Edge Only":
-                # ────── V10.2 ENFORCED : InfoEdgeStrategy SEULE, zéro OBI ──────
-                logger.info("[V10.3] Info Edge Only optimisé 100$ | Edge min 12.5%% | Maturity 5-90min | Vol>520")
-                if not hasattr(self, "info_edge_strategy") or self.info_edge_strategy is None:
-                    from bot.strategy import InfoEdgeStrategy
-                    self.info_edge_strategy = InfoEdgeStrategy(
-                        client=self.pm_client, db=self.db,
-                        max_markets=20, max_order_size_usdc=self.config.bot.max_order_size,
-                        binance_ws=getattr(self, "binance_ws", None)
-                    )
-                    logger.info("[V10.2] InfoEdgeStrategy instancié en urgence (fallback startup)")
-                signals = self.info_edge_strategy.info_edge_signals_only(balance=balance)
-            else:
-                # ────── Modes MM : OBI classique + Info Edge complément ──────
-                self.strategy._apply_live_aggressivity()
-                signals = self.strategy.analyze(balance=balance)
-                if hasattr(self, "info_edge_strategy"):
-                    signals.extend(self.info_edge_strategy.analyze(balance=balance))
-        except Exception as _e6:
-            logger.error("[Cycle] Erreur analyse OBI/InfoEdge: %s — signals=[]. Cycle continue.", _e6)
-            self.db.add_log("ERROR", "trader", f"Erreur OBI/InfoEdge analyze: {_e6}")
-            signals = []
-        logger.info("[Cycle] Étape 6: %d signal(s) généré(s) [mode=%s]", len(signals), strategy_mode)
-
-        # 7. CTF Inverse Spread Arb — désactivé en Info Edge Only
-        if strategy_mode == "Info Edge Only":
-            logger.info("[Cycle] Étape 7: CTF arb SKIP (Info Edge Only)")
-        else:
-            logger.info("[Cycle] Étape 7: CTF arb check")
-            eligible_markets = self.strategy.get_eligible_markets() if self.strategy else []
-            self._check_ctf_arb(balance, eligible_markets)
-
-        # 2026 V7.0 SCALING: Auto-rebalance
-        self._check_auto_rebalance(portfolio_value)
-
-        # 8. Exécution avec gestion de l'inventaire post-fill
-        # residual_balance suit le solde consommé au fil des ordres du cycle :
-        # chaque BUY approuvé déduit son coût pour que le check de réserve
-        # du signal suivant reflète le solde réel restant (et non le solde initial).
-        logger.info("[Cycle] Étape 8: exécution %d signal(s)", len(signals))
-        cycle_executed = 0
-        cycle_rejected = 0
-        residual_balance = balance
-        # 2026 TOP BOT UPGRADE BATCH — regroup limit orders for batching
-        batch_orders = []
-        for sig in signals:
-            approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=batch_orders)
-            if approved:
-                cycle_executed += 1
-                # Déduire le coût estimé pour les BUY (SELL ne consomme pas de cash)
-                if sig.side == "buy" and sig.price:
-                    residual_balance = max(0.0, residual_balance - sig.size * sig.price)
-                elif sig.side == "buy" and sig.order_type == "market":
-                    residual_balance = max(0.0, residual_balance - sig.size)
-            else:
-                cycle_rejected += 1
-
-        # 2026 V6.5 ULTRA-CHIRURGICAL
-        if len(signals) >= 2:
-            logger.info(f"[BATCH] {len(signals)} ordres envoyés en 1 call")
-            
-        if len(batch_orders) >= 2 and not self.config.bot.paper_trading:
-            try:
-                resps = self._call_with_timeout(
-                    lambda: self.pm_client.place_orders_batch(batch_orders),
-                    timeout=15.0,
-                    label="place_orders_batch",
-                )
-            except Exception as be:
-                logger.warning("[Batch] Erreur batch: %s — fallback individuel.", be)
-
-        # 9. Snapshot de stratégie pour analytics
-        logger.info("[Cycle] Étape 9: snapshot analytics")
-        try:
-            from bot.strategy import (OBI_BULLISH_THRESHOLD, OBI_SKEW_FACTOR,
-                                       MIN_SPREAD, ORDER_SIZE_PCT)
-            positions = self.db.get_all_positions()
-            net_exposure = sum(p.get("quantity", 0) * (p.get("avg_price", 0) or 0)
-                               for p in positions)
-            self.db.record_strategy_snapshot(
-                obi_threshold=OBI_BULLISH_THRESHOLD,
-                skew_factor=OBI_SKEW_FACTOR,
-                min_spread=MIN_SPREAD,
-                order_size_pct=ORDER_SIZE_PCT,
-                balance_usdc=balance,
-                total_positions=len(positions),
-                net_exposure_usdc=net_exposure,
-                markets_scanned=len(eligible_markets),
-                signals_generated=len(signals),
-                signals_executed=cycle_executed,
-                signals_rejected=cycle_rejected,
-            )
-        except Exception as se:
-            logger.debug("[Analytics] Erreur snapshot: %s", se)
-
-        # 10. Purge DB périodique (tous les _DB_PURGE_INTERVAL_CYCLES cycles)
+        # 5. Purge DB
         self._cycles_since_purge += 1
         if self._cycles_since_purge >= self._DB_PURGE_INTERVAL_CYCLES:
             self._run_db_purge()
             self._cycles_since_purge = 0
-
-        logger.info("[Cycle] ── Cycle terminé. Prochain dans %ds. ──────────", OBI_POLL_INTERVAL)
+            
+        logger.info("[Maintenance] ── Fin chronjob ──────────────────────────")
 
     def _run_db_purge(self, days: int = 30):
         """Lance la purge des données anciennes de la DB de manière non-bloquante.

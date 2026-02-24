@@ -41,8 +41,9 @@ class BinanceWSClient(threading.Thread):
     FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
     FUNDING_POLL_SEC = 120  # polling interval pour funding rate
 
-    def __init__(self):
+    def __init__(self, on_tick_callback: Optional[callable] = None):
         super().__init__(daemon=True, name="BinanceWS")
+        self.on_tick_callback = on_tick_callback
         # Prix spot live
         self.btc_bid: float = 0.0
         self.btc_ask: float = 0.0
@@ -185,6 +186,12 @@ class BinanceWSClient(threading.Thread):
                     if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
                         self.eth_history.append((now, mid))
                 self._last_update_ts = now
+            
+            # V13 Callback Asynchrone : Push Data Upstream Immediately
+            if self.on_tick_callback and symbol in ["BTCUSDT", "ETHUSDT"]:
+                mid_signal = self.btc_bid + self.btc_ask / 2 if symbol == "BTCUSDT" else self.eth_bid + self.eth_ask / 2
+                threading.Thread(target=self.on_tick_callback, args=(symbol, mid_signal), daemon=True).start()
+
         except Exception:
             pass
 
@@ -226,6 +233,11 @@ class BinanceWSClient(threading.Thread):
                                 if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
                                     self.eth_history.append((now, mid))
                             self._last_update_ts = now
+
+                        # V13 Callback Asynchrone (Fallback)
+                        if self.on_tick_callback and sym in ["BTCUSDT", "ETHUSDT"]:
+                            threading.Thread(target=self.on_tick_callback, args=(sym, mid), daemon=True).start()
+                            
                     self._connected = True
             except Exception as e:
                 logger.debug("[BinanceWS REST] Erreur polling: %s", e)
