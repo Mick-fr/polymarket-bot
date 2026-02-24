@@ -192,6 +192,24 @@ class MarketUniverse:
         yes_token = clob_ids[0]
         no_token  = clob_ids[1]
 
+        # --- V11.8 BYPASS POUR LES SPRINTS ---
+        # Si c'est un marché Bitcoin qui expire dans moins de 60 minutes, on force son passage.
+        is_btc_sprint_candidate = False
+        try:
+            q_lower = question.lower()
+            if "btc" in q_lower or "bitcoin" in q_lower:
+                end_str = m.get("endDate") or m.get("end_date_iso") or ""
+                if end_str:
+                    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    mins_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 60.0
+                    if 0 < mins_left <= 60.0:
+                        is_btc_sprint_candidate = True
+        except Exception:
+            pass
+        # -------------------------------------
+
         # ── Prix (mid) ──
         try:
             best_bid = float(m.get("bestBid") or 0)
@@ -199,13 +217,13 @@ class MarketUniverse:
         except (TypeError, ValueError):
             return None
 
-        if best_ask <= best_bid or best_ask == 0:
+        if (best_ask <= best_bid or best_ask == 0) and not is_btc_sprint_candidate:
             return None
 
         mid = (best_bid + best_ask) / 2.0
         spread = best_ask - best_bid
 
-        if not (MIN_PRICE <= mid <= MAX_PRICE):
+        if not (MIN_PRICE <= mid <= MAX_PRICE) and not is_btc_sprint_candidate:
             logger.debug("[Universe] '%s' rejete: mid=%.3f hors [%.2f, %.2f]",
                          question[:40], mid, MIN_PRICE, MAX_PRICE)
             return None
@@ -216,7 +234,7 @@ class MarketUniverse:
         except (TypeError, ValueError):
             vol = 0.0
 
-        if vol < MIN_VOLUME_24H:
+        if vol < MIN_VOLUME_24H and not is_btc_sprint_candidate:
             logger.debug("[Universe] '%s' rejete: volume24h=%.0f < %.0f",
                          question[:40], vol, MIN_VOLUME_24H)
             return None
@@ -225,7 +243,7 @@ class MarketUniverse:
         # Marches tres liquides (>50k vol) : spread 1 tick OK
         # Marches standards : spread 2 ticks minimum
         min_spread = MIN_SPREAD_HIGH_VOL if vol >= HIGH_VOL_THRESHOLD else MIN_SPREAD
-        if spread < min_spread:
+        if spread < min_spread and not is_btc_sprint_candidate:
             logger.debug("[Universe] '%s' rejete: spread=%.4f < %.2f (vol=%.0f)",
                          question[:40], spread, min_spread, vol)
             return None
