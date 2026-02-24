@@ -1191,6 +1191,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
         daily_edge_scores: list[float] = []
         max_edge_found = 0.0
+        min_spread_found = 999.0
         sprint_markets_count = 0
 
         traded = 0
@@ -1242,8 +1243,9 @@ class InfoEdgeStrategy(BaseStrategy):
 
             # --- V12 : SPREAD GUARD & DYNAMIC TAKE-PROFIT ---
             if is_sprint:
+                min_spread_found = min(min_spread_found, market.spread)
                 min_edge_target = 7.0
-                max_spread = 0.05  # Protection : 5 centimes maximum d'écart
+                max_spread = 0.08  # Protection : 8 centimes maximum d'écart (V12.2)
                 tp_threshold = 0.10  # Take-Profit : +10 centimes de gain net par part
                 
                 # 1. GESTION DU TAKE-PROFIT (Si on a déjà une position)
@@ -1422,6 +1424,10 @@ class InfoEdgeStrategy(BaseStrategy):
                 pass
             self.db.set_config("live_found_markets", sprint_markets_count)
             self.db.set_config("live_max_edge", round(max_edge_found, 1))
+            
+            # Nouveau : Sauvegarde du spread (si aucun marché, on met 0)
+            final_spread = round(min_spread_found, 3) if min_spread_found != 999.0 else 0.0
+            self.db.set_config("live_min_spread", final_spread)
 
         # --- V11.5 : Heartbeat pour le Live Scan Feed ---
         if self.db and len(signals) == 0:

@@ -73,15 +73,17 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             obi = float(db.get_config("live_btc_obi", 0) or 0)
             found = int(db.get_config("live_found_markets", 0) or 0)
             edge = float(db.get_config("live_max_edge", 0) or 0)
+            spread = float(db.get_config("live_min_spread", 0) or 0)
             return jsonify({
                 "momentum_30s": mom, 
                 "obi": obi, 
                 "found_markets": found, 
                 "max_edge": edge,
+                "min_spread": spread,
                 "status": "live"
             })
         except:
-            return jsonify({"momentum_30s": 0, "obi": 0, "found_markets": 0, "max_edge": 0, "status": "error"})
+            return jsonify({"momentum_30s": 0, "obi": 0, "found_markets": 0, "max_edge": 0, "min_spread": 0, "status": "error"})
 
     @app.route("/api/sniper-feed")
     @login_required
