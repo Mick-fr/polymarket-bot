@@ -48,6 +48,40 @@ class CopyTrader:
         except Exception as e:
             logger.warning("[CopyTrading] Erreur fetch Goldsky: %s", e)
 
+    def fetch_top_wallets(self) -> list[dict]:
+        """Retourne les Top Wallets pour le dashboard."""
+        self.update_top_wallets()
+        
+        # Structure de données attendue par le dashboard
+        # En production, ces données viendraient de la query GraphQL
+        import random
+        wallets = []
+        for i, addr in enumerate(self.top_wallets):
+            wallets.append({
+                "name": f"Wallet_Copy_{i+1}",
+                "address": addr,
+                "pnl_7d": round(random.uniform(500, 5000), 1),
+                "pnl_30d": round(random.uniform(2000, 20000), 1),
+                "win_rate": round(random.uniform(55.0, 85.0), 1),
+                "volume": int(random.uniform(50000, 500000))
+            })
+        # Tri descendant par PnL
+        return sorted(wallets, key=lambda x: x["pnl_30d"], reverse=True)
+
+    def get_wallet_positions(self, wallet_addr: str) -> list[dict]:
+        """Simule la récupération des positions ouvertes pour une adresse."""
+        import random
+        positions = []
+        # On génère quelques positions factices
+        for i in range(random.randint(2, 8)):
+            positions.append({
+                "token_id": f"0x_mock_token_{random.randint(1000, 9999)}",
+                "side": random.choice(["buy", "sell"]),
+                "quantity": round(random.uniform(10, 500), 2),
+                "entry_price": round(random.uniform(0.1, 0.9), 3)
+            })
+        return positions
+
     def get_market_direction(self, market_id: str) -> dict:
         """
         Retourne les specs du signal des Top Wallets
