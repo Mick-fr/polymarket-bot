@@ -1,144 +1,84 @@
-<!DOCTYPE html>
-<html lang="fr">
+{% extends "base.html" %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sniper Ops Center - Polymarket</title>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #0f172a;
-            color: #f8fafc;
-            margin: 0;
-            padding: 20px;
-        }
-
-        .navbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 20px;
-            background: #1e293b;
-            border-radius: 8px;
-            margin-bottom: 30px;
-        }
-
-        .navbar a {
-            color: #38bdf8;
-            text-decoration: none;
-            font-weight: 600;
-            margin-left: 15px;
-        }
-
-        .radar-container {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            max-width: 800px;
-            margin: auto;
-        }
-
-        .card {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 30px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-        }
-
-        .card h3 {
-            margin: 0 0 10px 0;
-            color: #94a3b8;
-            font-size: 1.1rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .value {
-            font-size: 3.5rem;
-            font-weight: bold;
-            font-family: 'Courier New', Courier, monospace;
-        }
-
-        .positive {
-            color: #22c55e;
-        }
-
-        /* Vert */
-        .negative {
-            color: #ef4444;
-        }
-
-        /* Rouge */
-        .neutral {
-            color: #f8fafc;
-        }
-
-        .status-bar {
-            text-align: center;
-            margin-top: 40px;
-            color: #94a3b8;
-            font-size: 0.9rem;
-        }
-    </style>
-</head>
-
-<body>
-    <div class="navbar">
-        <div>
-            <strong style="font-size: 1.2rem;">🎯 SNIPER OPS CENTER</strong>
-            <span style="margin-left: 10px; font-size: 0.8rem; color: #94a3b8;">HWM: {{ "%.2f"|format(hwm) }}
-                USDC</span>
-        </div>
-        <div>
-            <a href="/market-making">📊 Market Making</a>
-            <a href="/copy-trading">🐋 Copy-Trading</a>
-            <a href="/logout">Logout</a>
-        </div>
+{% block content %}
+<div class="mb-8 flex justify-between items-end">
+    <div>
+        <h1 class="text-3xl font-bold mb-2">Sniper Ops Center</h1>
+        <p class="text-slate-400">Surveillance temps réel du momentum BTC et de l'Order Book Imbalance.</p>
     </div>
-    <div class="radar-container">
-        <div class="card">
-            <h3>Binance Momentum (30s)</h3>
-            <div id="mom-val" class="value neutral">0.000%</div>
-            <div style="font-size: 0.8rem; color: #64748b; margin-top: 10px;">Seuil tir : ±0.012%</div>
-        </div>
-        <div class="card">
-            <h3>Binance Order Book (OBI)</h3>
-            <div id="obi-val" class="value neutral">0.00</div>
-            <div style="font-size: 0.8rem; color: #64748b; margin-top: 10px;">Seuil tir : ±0.12</div>
-        </div>
+    <div class="text-right">
+        <div class="text-sm text-slate-400 uppercase tracking-widest mb-1">High Water Mark</div>
+        <div class="text-2xl font-mono text-sky-300">{{ "%.2f"|format(hwm) }} USDC</div>
     </div>
-    <div class="status-bar">
-        Connecté au flux Binance WS <span style="color:#22c55e;">●</span> | Mise à jour : <span
-            id="last-update">...</span>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10 w-full max-w-4xl mx-auto">
+    <!-- Momentum Card -->
+    <div
+        class="bg-cardbg rounded-2xl p-8 border border-slate-700 shadow-xl flex flex-col items-center justify-center text-center transition-transform hover:scale-[1.02]">
+        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Binance Momentum (30s)</h3>
+        <div id="mom-val"
+            class="text-6xl font-black font-mono tracking-tighter transition-colors duration-300 text-slate-100">0.000%
+        </div>
+        <div class="mt-6 text-sm text-slate-500 bg-slate-800/50 py-1.5 px-4 rounded-full border border-slate-700">Seuil
+            de tir : ±0.012%</div>
     </div>
-    <script>
-        function fetchRadar() {
-            fetch('/api/sniper-radar')
-                .then(response => response.json())
-                .then(data => {
-                    const momEl = document.getElementById('mom-val');
-                    const obiEl = document.getElementById('obi-val');
 
-                    // Update Momentum
-                    let momText = (data.momentum_30s > 0 ? '+' : '') + data.momentum_30s.toFixed(3) + '%';
-                    momEl.innerText = momText;
-                    momEl.className = 'value ' + (data.momentum_30s >= 0.012 ? 'positive' : (data.momentum_30s <= -0.012 ? 'negative' : 'neutral'));
-                    // Update OBI
-                    let obiText = (data.obi > 0 ? '+' : '') + data.obi.toFixed(2);
-                    obiEl.innerText = obiText;
-                    obiEl.className = 'value ' + (data.obi >= 0.12 ? 'positive' : (data.obi <= -0.12 ? 'negative' : 'neutral'));
-                    // Update Time
-                    document.getElementById('last-update').innerText = new Date().toLocaleTimeString();
-                })
-                .catch(err => console.error("Radar Error:", err));
-        }
-        // Rafraîchissement toutes les 2 secondes
-        setInterval(fetchRadar, 2000);
-        fetchRadar(); // Appel initial
-    </script>
-</body>
+    <!-- OBI Card -->
+    <div
+        class="bg-cardbg rounded-2xl p-8 border border-slate-700 shadow-xl flex flex-col items-center justify-center text-center transition-transform hover:scale-[1.02]">
+        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Binance Order Book (OBI)</h3>
+        <div id="obi-val"
+            class="text-6xl font-black font-mono tracking-tighter transition-colors duration-300 text-slate-100">0.00
+        </div>
+        <div class="mt-6 text-sm text-slate-500 bg-slate-800/50 py-1.5 px-4 rounded-full border border-slate-700">Seuil
+            de tir : ±0.12</div>
+    </div>
+</div>
 
-</html>
+<div class="flex justify-center">
+    <div
+        class="flex items-center text-sm font-medium text-slate-400 bg-cardbg px-6 py-3 rounded-full border border-slate-700 shadow-lg cursor-default">
+        <div class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse mr-3 shadow-[0_0_8px_rgba(34,197,94,0.6)]">
+        </div>
+        Connecté au flux Binance WS &nbsp;&nbsp;|&nbsp;&nbsp; Mise à jour : <span id="last-update"
+            class="ml-2 font-mono text-slate-300">...</span>
+    </div>
+</div>
+
+<script>
+    function updateColors(el, val, threshold) {
+        el.classList.remove('text-green-400', 'text-red-400', 'text-slate-100');
+        if (val >= threshold) el.classList.add('text-green-400');
+        else if (val <= -threshold) el.classList.add('text-red-400');
+        else el.classList.add('text-slate-100');
+    }
+
+    function fetchRadar() {
+        fetch('/api/sniper-radar')
+            .then(response => response.json())
+            .then(data => {
+                const momEl = document.getElementById('mom-val');
+                const obiEl = document.getElementById('obi-val');
+
+                // Update Momentum
+                let momVal = data.momentum_30s;
+                momEl.innerText = (momVal > 0 ? '+' : '') + momVal.toFixed(3) + '%';
+                updateColors(momEl, momVal, 0.012);
+
+                // Update OBI
+                let obiVal = data.obi;
+                obiEl.innerText = (obiVal > 0 ? '+' : '') + obiVal.toFixed(2);
+                updateColors(obiEl, obiVal, 0.12);
+
+                // Update Time
+                document.getElementById('last-update').innerText = new Date().toLocaleTimeString('fr-FR');
+            })
+            .catch(err => console.error("Radar Error:", err));
+    }
+
+    // Rafraîchissement toutes les 2 secondes
+    setInterval(fetchRadar, 2000);
+    fetchRadar(); // Appel initial
+</script>
+{% endblock %}

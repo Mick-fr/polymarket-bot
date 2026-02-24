@@ -44,6 +44,21 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             hwm = mom = obi = 0.0
         return render_template("sniper.html", hwm=hwm, momentum=mom, obi=obi)
 
+    @app.route("/overview")
+    @login_required
+    def overview_page():
+        return render_template("overview.html")
+
+    @app.route("/mm")
+    @login_required
+    def mm_page():
+        return render_template("mm.html")
+
+    @app.route("/copy")
+    @login_required
+    def copy_page():
+        return render_template("copy.html")
+
     @app.route("/api/sniper-radar")
     @login_required
     def api_sniper_radar():
