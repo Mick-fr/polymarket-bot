@@ -461,6 +461,15 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # Par défaut, on désactive info_edge_only car il a pu être forcé manuellement (fallback)
         if strategy_mode == "Info Edge Only":
             self.db.set_config("info_edge_only", "true")
+            # V10.3 FIX: initialiser les attributs pour éviter AttributeError sur le log suivant
+            if not hasattr(self, "order_size_pct"):
+                self.order_size_pct = ORDER_SIZE_PCT
+            if not hasattr(self, "max_exposure_pct"):
+                self.max_exposure_pct = 0.12
+            if not hasattr(self, "inv_skew_threshold"):
+                self.inv_skew_threshold = INVENTORY_SKEW_THRESHOLD
+            if not hasattr(self, "sizing_mult"):
+                self.sizing_mult = 1.0
         else:
             self.db.set_config("info_edge_only", "false")
             if preset:
