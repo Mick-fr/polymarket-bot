@@ -59,6 +59,10 @@ class Trader:
         self._consecutive_errors = 0
         # Compteur de cycles depuis la dernière purge DB
         self._cycles_since_purge: int = 0
+        
+        # V15 Throttling Caches
+        self.cached_balance: float = 0.0
+        self.active_targets: list[str] = []
         # Cache timestamps pour _refresh_inventory_mids().
         # {token_id: timestamp_dernière_tentative} — distinct selon le résultat :
         #   - 200 OK  → TTL _INVENTORY_MID_TTL_OK_S  (60s)
@@ -74,7 +78,10 @@ class Trader:
         # ce qui survit aux redémarrages. Plus de set en mémoire.
 
     def start(self):
-        """Démarre la boucle de trading."""
+        """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
+        # V15 Log Silencing
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        
         logger.info("=" * 60)
         logger.info("DÉMARRAGE DU BOT POLYMARKET — OBI Market Making")
         logger.info("=" * 60)
@@ -366,24 +373,14 @@ class Trader:
         if not self.info_edge_strategy:
             return
             
-        # Identifier les marchés Sprint (BTC 5min)
-        eligible = self.info_edge_strategy._universe.get_eligible_markets()
-        sprint_ids = []
-        for m in eligible:
-            minutes_to_expiry = m.days_to_expiry * 1440
-            q_lower = m.question.lower()
-            is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
-            if is_btc and minutes_to_expiry <= 5.5:
-                sprint_ids.append(m.market_id)
+        # V15 Static Targets: Fetch from cache populated by _maintenance_loop
+        sprint_ids = self.active_targets
                 
         if not sprint_ids:
             return
             
-        # Fire Analyze spécifiquement sur ces assets
-        balance_raw = self._fetch_balance()
-        if balance_raw is None:
-            balance_raw = self.db.get_latest_balance() or 0.0
-        balance = self._fetch_available_balance(balance_raw)
+        # V15 Balance Throttling: Use cached balance instead of API calls
+        balance = self.cached_balance
         
         # Le signal génère lui-même les appels base DB minimalistes (V12.12 opti)
         signals = self.info_edge_strategy.analyze(balance=balance, target_market_ids=sprint_ids)
@@ -406,9 +403,12 @@ class Trader:
             approved = self._execute_signal(sig, residual_balance, portfolio_value=portfolio_value, collect_batch=[], tick_start_ts=tick_start_ts)
             if approved:
                 if sig.side == "buy" and sig.price:
-                    residual_balance = max(0.0, residual_balance - sig.size * sig.price)
+                    order_cost = sig.size * sig.price
+                    residual_balance = max(0.0, residual_balance - order_cost)
+                    self.cached_balance = max(0.0, self.cached_balance - order_cost) # V15: Subtract locally
                 elif sig.side == "buy" and sig.order_type == "market":
                     residual_balance = max(0.0, residual_balance - sig.size)
+                    self.cached_balance = max(0.0, self.cached_balance - sig.size) # V15: Subtract locally
 
 
     def _maintenance_loop(self):
@@ -448,7 +448,20 @@ class Trader:
         self._log_inventory_breakdown(balance_raw, portfolio_value)
         
         balance = self._fetch_available_balance(balance_raw)
+        self.cached_balance = balance # V15 cache update
         self.db.record_balance(balance)
+        
+        # V15 Static Target Population
+        if self.info_edge_strategy:
+            eligible = self.info_edge_strategy._universe.get_eligible_markets()
+            sprint_ids = []
+            for m in eligible:
+                minutes_to_expiry = m.days_to_expiry * 1440
+                q_lower = m.question.lower()
+                is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
+                if is_btc and minutes_to_expiry <= 5.5:
+                    sprint_ids.append(m.market_id)
+            self.active_targets = sprint_ids
 
         # 4.a V14.0 Anti-Stale AI Sentiment isolation
         try:

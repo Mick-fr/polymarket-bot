@@ -155,7 +155,7 @@ class MarketUniverse:
         self._max_days = max_days
         self._cache: list[EligibleMarket] = []
         self._cache_ts: float = 0.0
-        self._cache_ttl: float = 0.0   # MODIFIÉ V11.12 : Cache détruit pour forcer le temps réel
+        self._cache_ttl: float = 60.0   # MODIFIÉ V15: Restauration du cache (rate-limit protection)
 
     def get_eligible_markets(self, force_refresh: bool = False) -> list[EligibleMarket]:
         """Retourne la liste des marches eligibles (avec cache 60s)."""
@@ -173,7 +173,7 @@ class MarketUniverse:
             if result is not None:
                 eligible.append(result)
 
-        logger.info(
+        logger.debug(
             "[Universe] %d marches bruts -> %d eligibles (filtres: prix, spread>=%.2f/%.2f, vol>=%.0f, mat<=%dj)",
             len(raw), len(eligible), MIN_SPREAD_HIGH_VOL, MIN_SPREAD, MIN_VOLUME_24H, MAX_DAYS_TO_EXPIRY,
         )
