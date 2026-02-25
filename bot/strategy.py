@@ -253,8 +253,8 @@ class MarketUniverse:
         is_btc_sprint_candidate = False
         try:
             q_lower = question.lower()
-            if "btc" in q_lower or "bitcoin" in q_lower:
-                end_str = m.get("endDate") or m.get("end_date_iso") or ""
+            if "btc" in q_lower or "bitcoin" in q_lower or "eth" in q_lower or "ethereum" in q_lower:
+                end_str = m.get("endDate") or m.get("expiration") or m.get("end_date_iso") or ""
                 if end_str:
                     end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
                     if end_dt.tzinfo is None:
@@ -1050,9 +1050,9 @@ class InfoEdgeStrategy(BaseStrategy):
     SIZING_MULT    = 1.0
     MIN_EDGE_SCORE = 4.5     # V16.0 — lowered from 6.5 for institutional realism
     MAX_TRADE_PCT  = 0.08
-    MIN_MINUTES    = 5.0
+    MIN_MINUTES    = 0.0
     MAX_MINUTES    = 90.0    # sweet spot optimal
-    MIN_VOLUME_5M  = 520     # ~150k$ volume 24h
+    MIN_VOLUME_5M  = 100     # V17.2: Relaxed volume for sprints
     IMPLIED_VOL    = 0.80
 
     def __init__(self, client: PolymarketClient, db=None, max_markets: int = 8,
