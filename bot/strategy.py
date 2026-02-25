@@ -1313,6 +1313,16 @@ class InfoEdgeStrategy(BaseStrategy):
                 if hasattr(self, '_last_funding'):
                     self.db.set_config("live_funding_rate", round(self._last_funding, 6))
 
+                # V15.5 Visual Checklist
+                import json
+                checklist = {
+                    "mom_ok": bool(abs(m30) > 0.012),
+                    "obi_ok": bool(abs(o_val) > 0.12),
+                    "edge_ok": bool(abs(edge_pct) > 12.5),
+                    "iv_ready": bool(getattr(self, '_last_iv', 0) > 0)
+                }
+                self.db.set_config("live_checklist", json.dumps(checklist))
+
             if is_sprint:
                 sprint_markets_count += 1
                 min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.

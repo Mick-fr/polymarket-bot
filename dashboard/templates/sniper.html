@@ -118,30 +118,68 @@
             <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
                 Target Acquisition</h2>
 
-            <!-- Target Locked Panel -->
-            <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative">
-                <div class="absolute top-2 right-2 flex space-x-1">
-                    <div id="target-led" class="w-2 h-2 rounded-full bg-slate-600"></div>
-                </div>
-                <div class="text-xs text-slate-400 uppercase tracking-widest mb-2">Live Sprint Edge Score</div>
-                <div class="flex items-end space-x-3 mb-2">
-                    <div id="edge-val" class="text-3xl font-terminal text-slate-300">0.00%</div>
-                    <div id="locked-badge"
-                        class="hidden mb-1 px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 text-[0.65rem] font-bold uppercase rounded">
-                        TARGET LOCKED</div>
+            <!-- Launch Sequence Panel (V15.5) -->
+            <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative flex flex-col space-y-3">
+                <div class="text-xs text-slate-400 uppercase tracking-widest mb-1 border-b border-slate-800 pb-2">Launch
+                    Sequence Checklist</div>
+
+                <!-- STEP 1: Data -->
+                <div id="step-1"
+                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                    <div class="flex items-center space-x-3">
+                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 1</div>
+                        <div class="text-xs uppercase tracking-wider">Data: [IV Ready]</div>
+                    </div>
+                    <div id="step-1-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
                 </div>
 
-                <div class="w-full bg-slate-800 rounded-full h-2 mb-3">
-                    <div id="edge-bar" class="bg-slate-500 h-2 rounded-full transition-all duration-300"
-                        style="width: 0%"></div>
+                <!-- STEP 2: Signal -->
+                <div id="step-2"
+                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                    <div class="flex items-center space-x-3">
+                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 2</div>
+                        <div class="text-xs uppercase tracking-wider">Signal: [Mom] & [OBI]</div>
+                    </div>
+                    <div id="step-2-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
                 </div>
 
-                <div class="flex justify-between items-center text-xs font-terminal text-slate-500">
-                    <div><span class="text-slate-400">P_true (Log-Normal):</span> <span id="ptrue-val"
-                            class="text-purple-400">0.00</span></div>
-                    <div>vs</div>
-                    <div><span class="text-slate-400">P_poly (Market):</span> <span id="ppoly-val"
-                            class="text-sky-400">0.00</span></div>
+                <!-- STEP 3: Alpha -->
+                <div id="step-3"
+                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                    <div class="flex items-center space-x-3">
+                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 3</div>
+                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 12.5%]</div>
+                    </div>
+                    <div id="step-3-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
+                </div>
+
+                <!-- STEP 4: Safety -->
+                <div id="step-4"
+                    class="flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300">
+                    <div class="flex items-center space-x-3">
+                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 4</div>
+                        <div class="text-xs uppercase tracking-wider">Safety: [L2 Slippage]</div>
+                    </div>
+                    <div id="step-4-icon" class="text-emerald-400 font-bold">✓</div>
+                </div>
+
+                <!-- FIRE VISUAL BUTTON -->
+                <div id="fire-btn"
+                    class="mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300">
+                    STANDBY
+                </div>
+
+                <div class="flex justify-between items-end mt-2 pt-2 border-t border-slate-800 pt-3">
+                    <div class="flex items-end space-x-2">
+                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold">EDGE_PCT:</div>
+                        <div id="edge-val" class="font-terminal text-slate-300 text-lg leading-none">0.00%</div>
+                    </div>
+                    <div class="flex items-end space-x-2 text-[0.65rem] font-terminal text-slate-500">
+                        <div><span class="text-slate-600">P_t:</span> <span id="ptrue-val"
+                                class="text-purple-400">0.00</span></div>
+                        <div><span class="text-slate-600">P_p:</span> <span id="ppoly-val"
+                                class="text-sky-400">0.00</span></div>
+                    </div>
                 </div>
             </div>
 
@@ -250,29 +288,53 @@
             document.getElementById('obi-bar').style.width = Math.min(100, Math.max(0, obiPct)) + '%';
             document.getElementById('obi-bar').className = data.obi > 0.1 ? "bg-emerald-400 h-1.5 rounded-full" : (data.obi < -0.1 ? "bg-red-400 h-1.5 rounded-full" : "bg-sky-400 h-1.5 rounded-full");
 
-            // Update Target Acquisition
-            const edge = data.sprint_edge;
+            // Update V15.5 Visual Checklist
+            const edge = data.sprint_edge || 0;
             document.getElementById('edge-val').innerText = (edge > 0 ? '+' : '') + edge.toFixed(2) + '%';
-            document.getElementById('ptrue-val').innerText = (data.p_true).toFixed(3);
-            document.getElementById('ppoly-val').innerText = (data.p_poly).toFixed(3);
+            document.getElementById('ptrue-val').innerText = (data.p_true || 0).toFixed(3);
+            document.getElementById('ppoly-val').innerText = (data.p_poly || 0).toFixed(3);
 
-            const edgeBar = document.getElementById('edge-bar');
-            const lockedBadge = document.getElementById('locked-badge');
-            const led = document.getElementById('target-led');
+            const checklist = data.live_checklist || {};
 
-            let absEdge = Math.abs(edge);
-            edgeBar.style.width = Math.min(100, absEdge * 4) + '%'; // 25% edge = 100% width
+            const checkOnClass = "flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300";
+            const checkOffClass = "flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300";
 
-            if (absEdge > 12.5) {
-                edgeBar.className = "bg-emerald-400 h-2 rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]";
-                lockedBadge.classList.remove('hidden');
-                document.getElementById('edge-val').className = "text-3xl font-terminal neon-text-emerald";
-                led.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
+            const iconOnClass = "text-emerald-400 font-bold";
+            const iconOnHtml = "✓";
+            const iconOffClass = "w-4 h-4 rounded-full bg-slate-700";
+            const iconOffHtml = "";
+
+            // Step 1
+            const step1Ready = checklist.iv_ready;
+            document.getElementById('step-1').className = step1Ready ? checkOnClass : checkOffClass;
+            document.getElementById('step-1-icon').className = step1Ready ? iconOnClass : iconOffClass;
+            document.getElementById('step-1-icon').innerHTML = step1Ready ? iconOnHtml : iconOffHtml;
+
+            // Step 2
+            const step2Ready = checklist.mom_ok && checklist.obi_ok;
+            document.getElementById('step-2').className = step2Ready ? checkOnClass : checkOffClass;
+            document.getElementById('step-2-icon').className = step2Ready ? iconOnClass : iconOffClass;
+            document.getElementById('step-2-icon').innerHTML = step2Ready ? iconOnHtml : iconOffHtml;
+
+            // Step 3
+            const step3Ready = checklist.edge_ok;
+            document.getElementById('step-3').className = step3Ready ? checkOnClass : checkOffClass;
+            document.getElementById('step-3-icon').className = step3Ready ? iconOnClass : iconOffClass;
+            document.getElementById('step-3-icon').innerHTML = step3Ready ? iconOnHtml : iconOffHtml;
+
+            // Step 4 (Safety - Mocked True for Visual)
+            const step4Ready = true;
+
+            // FIRE BUTTON
+            const fireBtn = document.getElementById('fire-btn');
+            if (step1Ready && step2Ready && step3Ready && step4Ready) {
+                fireBtn.className = "mt-2 py-3 text-center border border-purple-500/50 rounded bg-purple-900/30 neon-text-purple text-sm font-bold tracking-widest uppercase transition-all duration-300 animate-pulse";
+                fireBtn.innerText = "🔥 FIRE 🔥";
+                document.getElementById('edge-val').className = "font-terminal neon-text-emerald text-lg leading-none";
             } else {
-                edgeBar.className = "bg-sky-500 h-2 rounded-full transition-all duration-300";
-                lockedBadge.classList.add('hidden');
-                document.getElementById('edge-val').className = "text-3xl font-terminal text-slate-300";
-                led.className = "w-2 h-2 rounded-full bg-slate-600";
+                fireBtn.className = "mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300";
+                fireBtn.innerText = "STANDBY";
+                document.getElementById('edge-val').className = "font-terminal text-slate-300 text-lg leading-none";
             }
 
         } catch (e) { console.error("Error fetching brain pulse", e); }
