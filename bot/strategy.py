@@ -122,10 +122,13 @@ def fetch_sprint_targets():
     remainder = current_ts % 300
     current_expiry = current_ts + (300 - remainder)
     next_expiry = current_expiry + 300
+    last_expiry = current_expiry - 300
     slugs = [
+        f"btc-updown-5m-{last_expiry}",
         f"btc-updown-5m-{current_expiry}",
         f"btc-updown-5m-{next_expiry}"
     ]
+    logger.debug("[V15.1 Sprints] Polling Sprint Targets: %s", slugs)
     sprint_markets = []
     for slug in slugs:
         try:
@@ -1121,8 +1124,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 elif symbol == "ETH" and self.binance_ws.eth_history:
                     history = list(self.binance_ws.eth_history)
         
-        if len(history) < 10:
-            return self.IMPLIED_VOL
+        if len(history) < 10 or (history[-1][0] - history[0][0]) < 30.0:
+            return 0.80
             
         returns = []
         for i in range(1, len(history)):
@@ -1132,7 +1135,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 returns.append(math.log(p1 / p0))
                 
         if not returns:
-            return self.IMPLIED_VOL
+            return 0.80
             
         mean_ret = sum(returns) / len(returns)
         var = sum((r - mean_ret)**2 for r in returns) / len(returns)
@@ -1281,6 +1284,23 @@ class InfoEdgeStrategy(BaseStrategy):
             # Sprint = BTC + expire dans moins de 5.5 minutes
             is_sprint = is_btc and (minutes_to_expiry <= 5.5)
             
+            # ── V15.1 Real Edge Score computed for EVERY sprint tick ────
+            edge_pct, p_true, p_poly, vol_5m = 0.0, 0.0, 0.0, 0.0
+            try:
+                edge_pct, p_true, p_poly, vol_5m = self._calculate_edge_score(market)
+                if self.db:
+                    bias = float(self.db.get_config("live_ai_sentiment_bias", 1.0) or 1.0)
+                    edge_pct *= bias
+            except Exception as e:
+                logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
+                if not is_sprint:
+                    continue
+
+            if is_sprint and self.db:
+                self.db.set_config("live_sprint_edge", round(edge_pct, 2))
+                self.db.set_config("live_sprint_ptrue", round(p_true, 3))
+                self.db.set_config("live_sprint_ppoly", round(p_poly, 3))
+
             if is_sprint:
                 sprint_markets_count += 1
                 min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.
@@ -1304,18 +1324,6 @@ class InfoEdgeStrategy(BaseStrategy):
 
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
-
-            # ── V10.0 Real Edge Score (P_true log-normal vs P_poly) ────
-            try:
-                edge_pct, p_true, p_poly, vol_5m = self._calculate_edge_score(market)
-            except Exception as e:
-                logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
-                continue
-
-            # V14.0 Anti-Stale : Appliquer le multiplicateur global AI 
-            if self.db:
-                bias = float(self.db.get_config("live_ai_sentiment_bias", 1.0) or 1.0)
-                edge_pct *= bias
 
             # --- V12.12 : SENSIBILITÉ ACCRUE & LOGS DE DÉBUG SPRINT ---
             if is_sprint:
