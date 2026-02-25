@@ -1313,15 +1313,43 @@ class InfoEdgeStrategy(BaseStrategy):
                 if hasattr(self, '_last_funding'):
                     self.db.set_config("live_funding_rate", round(self._last_funding, 6))
 
-                # V15.5 Visual Checklist
+                # V15.5 Visual Checklist & V15.7 Near Miss
                 import json
+                mom_ok = bool(abs(m30) > 0.012)
+                obi_ok = bool(abs(o_val) > 0.12)
+                edge_ok = bool(abs(edge_pct) > 12.5)
+                iv_ready = bool(getattr(self, '_last_iv', 0) > 0)
+                
                 checklist = {
-                    "mom_ok": bool(abs(m30) > 0.012),
-                    "obi_ok": bool(abs(o_val) > 0.12),
-                    "edge_ok": bool(abs(edge_pct) > 12.5),
-                    "iv_ready": bool(getattr(self, '_last_iv', 0) > 0)
+                    "mom_ok": mom_ok,
+                    "obi_ok": obi_ok,
+                    "edge_ok": edge_ok,
+                    "iv_ready": iv_ready
                 }
                 self.db.set_config("live_checklist", json.dumps(checklist))
+
+                # V15.7 Near Miss Logic (3/4 conditions met)
+                conditions = {"Mom": mom_ok, "OBI": obi_ok, "Edge": edge_ok, "IV": iv_ready}
+                met_count = sum(conditions.values())
+                
+                if met_count == 3:
+                    failed_cond = [k for k, v in conditions.items() if not v][0]
+                    now = time.time()
+                    if not hasattr(self, '_last_near_miss_ts'):
+                        self._last_near_miss_ts = 0.0
+                    
+                    if now - self._last_near_miss_ts > 10.0:
+                        from datetime import datetime, timezone
+                        near_miss_data = {
+                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                            "mom": round(m30, 4),
+                            "obi": round(o_val, 2),
+                            "iv": round(getattr(self, '_last_iv', 0), 3),
+                            "edge": round(edge_pct, 2),
+                            "missing_condition": failed_cond
+                        }
+                        self.db.record_near_miss(near_miss_data)
+                        self._last_near_miss_ts = now
 
             if is_sprint:
                 sprint_markets_count += 1

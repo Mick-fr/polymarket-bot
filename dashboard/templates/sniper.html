@@ -189,6 +189,30 @@
                 id="scan-feed" hx-get="/api/sniper-feed" hx-trigger="every 1s">
                 <div class="text-slate-600">Initializing radar stream...</div>
             </div>
+
+            <!-- Near Miss Timeline (V15.7) -->
+            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mt-6 mb-2">Near Miss Timeline (Last 5)
+            </h2>
+            <div class="bg-[#09090b] border border-slate-800 rounded overflow-hidden">
+                <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
+                    <thead class="text-slate-500 border-b border-slate-800 bg-[#0A0A0C]">
+                        <tr>
+                            <th class="py-1.5 px-3 font-normal">TIME</th>
+                            <th class="py-1.5 px-3 font-normal">MOM</th>
+                            <th class="py-1.5 px-3 font-normal">OBI</th>
+                            <th class="py-1.5 px-3 font-normal">EDGE</th>
+                            <th class="py-1.5 px-3 font-normal">FAIL REASON</th>
+                        </tr>
+                    </thead>
+                    <tbody id="near-miss-body" hx-get="/api/sniper-near-misses" hx-trigger="every 5s">
+                        <tr>
+                            <td colspan="5"
+                                class="py-4 text-center text-slate-600 text-[0.7rem] uppercase tracking-widest">Loading
+                                near misses...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 

@@ -243,6 +243,23 @@ class Database:
                     (key, str(value))
                 )
 
+    def record_near_miss(self, metrics_dict: dict):
+        """V15.7 - Stocke les 5 derniers 'near misses' en JSON."""
+        import json
+        history_str = self.get_config_str("near_miss_history", "[]")
+        try:
+            history = json.loads(history_str)
+            if not isinstance(history, list):
+                history = []
+        except json.JSONDecodeError:
+            history = []
+            
+        history.append(metrics_dict)
+        if len(history) > 5:
+            history = history[-5:]
+            
+        self.set_config("near_miss_history", json.dumps(history))
+
     # ── Ordres ───────────────────────────────────────────────────
 
     def record_order(

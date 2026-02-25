@@ -144,6 +144,40 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/sniper-near-misses")
+    @login_required
+    def api_sniper_near_misses():
+        """V15.7: Retourne l'historique des Near Misses en HTML pour HTMX."""
+        import json
+        history_str = db.get_config_str("near_miss_history", "[]")
+        try:
+            history = json.loads(history_str)
+        except:
+            history = []
+        html = ""
+        # Render in reverse chronological order (newest first assuming appended to end)
+        for rev in reversed(history):
+            ts = rev.get("timestamp", "--:--:--")
+            mom = rev.get("mom", 0.0)
+            obi = rev.get("obi", 0.0)
+            edge = rev.get("edge", 0.0)
+            reason = rev.get("missing_condition", "?")
+            
+            # Formatting
+            mom_str = f"{mom:+.4f}%"
+            edge_str = f"{edge:+.2f}%"
+            edge_color = "text-orange-400 font-bold" if edge >= 10.0 else "text-slate-400"
+            
+            html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'>"
+            html += f"<td class='py-2 px-3 text-slate-500 font-terminal'>{ts}</td>"
+            html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{mom_str}</td>"
+            html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{obi:.2f}</td>"
+            html += f"<td class='py-2 px-3 font-terminal {edge_color}'>{edge_str}</td>"
+            html += f"<td class='py-2 px-3 font-terminal text-red-500/80 uppercase text-[0.65rem] tracking-wider'>{reason}</td>"
+            html += "</tr>"
+            
+        return html or "<tr><td colspan='5' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
+
     @app.route("/api/v14/execution")
     @login_required
     def api_v14_execution():
