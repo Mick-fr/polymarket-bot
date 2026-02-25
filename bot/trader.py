@@ -83,7 +83,7 @@ class Trader:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         
         logger.info("=" * 60)
-        logger.info("DÉMARRAGE DU BOT POLYMARKET — OBI Market Making")
+        logger.info("[V18.1] Info Edge Only ... | Edge min 4.5% | Maturity 0-90min | Vol>100")
         logger.info("=" * 60)
         self.db.add_log("INFO", "trader", "Démarrage du bot OBI")
 
@@ -126,16 +126,27 @@ class Trader:
             # Corrige les phantoms (DB qty >> CLOB qty) qui gonflent la valorisation.
             self._sync_positions_from_clob()
 
+        # V18.1 Cleanup de l'etat
+        if self.db.get_config("v18_1_cleaned") != "true":
+            with self.db._cursor() as cur:
+                cur.execute("DELETE FROM bot_state WHERE key IN ('high_water_mark', 'max_drawdown')")
+                cur.execute("DELETE FROM balance_history")
+            self.db.set_config("high_water_mark", "106.13")
+            self.db.set_config("max_drawdown", "0.0")
+            self.db.set_config("v18_1_cleaned", "true")
+            logger.info("[V18.1] DB nettoyée. high_water_mark forcé à 106.13.")
+
         # Reset HWM au démarrage pour éviter un circuit breaker immédiat
         # (le solde peut avoir changé entre deux sessions via fills ou dépôts)
         balance = self._fetch_balance()
         if balance is not None:
-            old_hwm = self.db.get_high_water_mark()
-            self.db.reset_high_water_mark()
+            old_hwm = float(self.db.get_high_water_mark() or 106.13)
+            # On conserve la valeur 106.13 si on vient juste de la setter
+            # et que le solde est similaire
             self.db.update_high_water_mark(balance)
             self.db.record_balance(balance)
-            logger.info("HWM réinitialisé: %.2f → %.2f USDC (solde actuel)", old_hwm, balance)
-            self.db.add_log("INFO", "trader", f"HWM reset: {old_hwm:.2f} → {balance:.2f}")
+            logger.info("HWM réévalué: %.2f → max(%.2f, %.2f) USDC", old_hwm, old_hwm, balance)
+            self.db.add_log("INFO", "trader", f"HWM check: {old_hwm:.2f} → {max(old_hwm, balance):.2f}")
 
         # Stratégie OBI avec accès à la DB pour cooldowns et inventaire
         self.strategy = OBIMarketMakingStrategy(

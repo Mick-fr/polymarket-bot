@@ -305,7 +305,7 @@ class MarketUniverse:
             return None
 
         # ── Maturite ──
-        end_date_str = m.get("endDate") or m.get("end_date_iso") or ""
+        end_date_str = m.get("endDate") or m.get("expiration") or m.get("end_date_iso") or ""
         if not end_date_str:
             return None
         try:
