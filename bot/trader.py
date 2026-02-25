@@ -338,6 +338,13 @@ class Trader:
             try:
                 self.pm_client.connect()
                 server_time = self.pm_client.get_server_time()
+                
+                # V15.2 Time Drift Check
+                drift = abs(int(time.time()) - server_time)
+                if drift > 1.0:
+                    logger.warning("⚠️ TIME DRIFT DETECTED: %ds. Synchronisez votre horloge NTP immédiatement", drift)
+                    self.db.add_log("WARNING", "trader", f"TIME DRIFT DETECTED: {drift}s")
+                
                 logger.info("API connectée. Heure serveur: %s", server_time)
                 self.db.add_log("INFO", "trader", "Connecté à Polymarket")
                 return

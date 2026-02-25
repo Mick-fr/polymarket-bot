@@ -101,6 +101,10 @@ class BinanceWSClient(threading.Thread):
             current_ts, current_mid = history[-1]
             target_ts = current_ts - 30.0
             
+            # V15.2 Fallback: If history is less than 30s old, momentum is zero
+            if history[0][0] > target_ts:
+                return 0.0
+                
             oldest_mid = history[0][1]
             for ts, mid in history:
                 if ts >= target_ts:
