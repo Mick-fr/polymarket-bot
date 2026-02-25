@@ -43,464 +43,611 @@
     <div class="flex items-center space-x-4">
         <div>
             <h1 class="text-xl font-bold tracking-widest text-white">SNIPER COMMAND CENTER</h1>
-            <p class="text-xs text-slate-500 font-terminal uppercase">V14 Execution Engine</p>
+            <p class="text-xs text-slate-500 font-terminal uppercase">V18 Institutional Edge Engine</p>
         </div>
         <div id="status-badge"
-            class="ml-4 px-3 py-1 rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-xs font-bold uppercase tracking-wider animate-pulse flex items-center">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span> V14 EVENT-DRIVEN ACTIVE
+            class="ml-4 px-3 py-1 rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-xs font-bold uppercase tracking-wider flex items-center shadow-[0_0_10px_rgba(52,211,153,0.2)]">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span> V18 ACTIVE
         </div>
     </div>
     <div class="flex items-center space-x-8 mt-4 md:mt-0 font-terminal">
         <div class="text-right">
-            <div class="text-xs text-slate-500 uppercase tracking-widest">High Water Mark</div>
+            <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Baseline Equity (HWM)</div>
             <div class="text-lg text-slate-300" id="hwm-val">{{ "%.2f"|format(hwm) }} USDC</div>
         </div>
-        <div class="text-right">
-            <div class="text-xs text-slate-500 uppercase tracking-widest">Drawdown</div>
-            <div class="text-lg text-slate-400" id="drawdown-val">0.0%</div>
-        </div>
     </div>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+<!-- V18 PERFORMANCE KPI BANNER -->
+<div hx-get="/api/v18/performance" hx-trigger="every 3s" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+    <div
+        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-emerald-500/50 shadow-lg relative overflow-hidden">
+        <div class="absolute -right-4 -top-4 w-16 h-16 bg-emerald-500/10 rounded-full blur-xl"></div>
+        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Net PnL (USDC)</div>
+        <div id="kpi-pnl" class="text-2xl font-terminal neon-text-emerald z-10">...</div>
+    </div>
+    <div
+        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-sky-500/50 shadow-lg relative overflow-hidden">
+        <div class="absolute -right-4 -top-4 w-16 h-16 bg-sky-500/10 rounded-full blur-xl"></div>
+        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Win Rate (Last 50)</div>
+        <div id="kpi-winrate" class="text-2xl font-terminal neon-text-sky z-10">...</div>
+        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase">Target: >65%</div>
+    </div>
+    <div
+        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-purple-500/50 shadow-lg relative overflow-hidden">
+        <div class="absolute -right-4 -top-4 w-16 h-16 bg-purple-500/10 rounded-full blur-xl"></div>
+        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Hourly Sharpe Ratio</div>
+        <div id="kpi-sharpe" class="text-2xl font-terminal neon-text-purple z-10">...</div>
+        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase">Risk-Adjusted Alpha</div>
+    </div>
+    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-red-500/50 shadow-lg relative overflow-hidden group transition-all duration-300"
+        id="kpi-dd-card">
+        <div
+            class="absolute -right-4 -top-4 w-16 h-16 bg-red-500/10 rounded-full blur-xl group-hover:bg-red-500/20 transition-all">
+        </div>
+        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">HWM Drawdown</div>
+        <div id="kpi-dd" class="text-2xl font-terminal neon-text-red z-10">...</div>
+        <div class="text-[0.6rem] text-red-500/70 mt-1 uppercase animate-pulse hidden" id="kpi-dd-alert">⚠️ >3% BREACH
+        </div>
+        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase" id="kpi-dd-safe">Safe Zone (< 3%)</div>
+        </div>
+    </div>
 
-    <!-- B. Zone Gauche : The Brain Pulse (Indicateurs Quantitatifs) -->
-    <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
-        <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                Brain Pulse</h2>
+    <script>
+        document.body.addEventListener('htmx:afterSwap', function (evt) {
+            if (evt.detail.elt.getAttribute('hx-get') === '/api/v18/performance') {
+                try {
+                    const data = JSON.parse(evt.detail.xhr.responseText);
 
-            <div class="mb-4">
-                <div class="flex justify-between text-xs mb-1">
-                    <span class="text-slate-400 uppercase">Momentum (30s)</span>
-                    <span id="mom-val" class="font-terminal neon-text-sky">0.00%</span>
+                    // PnL formatting
+                    const pnlEl = document.getElementById("kpi-pnl");
+                    const val = parseFloat(data.pnl_usdc);
+                    pnlEl.innerText = (val > 0 ? '+' : '') + val.toFixed(2);
+                    pnlEl.className = "text-2xl font-terminal z-10 " + (val >= 0 ? "neon-text-emerald" : "neon-text-red");
+
+                    // Win Rate
+                    document.getElementById("kpi-winrate").innerText = (data.win_rate_50 || 0).toFixed(1) + "%";
+
+                    // Sharpe
+                    const sharpeEl = document.getElementById("kpi-sharpe");
+                    const shrp = parseFloat(data.sharpe_ratio || 0);
+                    sharpeEl.innerText = shrp.toFixed(2);
+                    sharpeEl.className = "text-2xl font-terminal z-10 " + (shrp >= 1.5 ? "neon-text-purple" : "text-amber-500");
+
+                    // Drawdown
+                    const ddEl = document.getElementById("kpi-dd");
+                    const ddVal = parseFloat(data.drawdown_pct || 0);
+                    ddEl.innerText = ddVal.toFixed(2) + "%";
+
+                    const ddCard = document.getElementById("kpi-dd-card");
+                    const ddAlert = document.getElementById("kpi-dd-alert");
+                    const ddSafe = document.getElementById("kpi-dd-safe");
+
+                    if (ddVal > 3.0) {
+                        ddCard.classList.add("border-red-500");
+                        ddCard.classList.remove("border-red-500/50");
+                        ddCard.classList.add("bg-red-900/10");
+                        ddAlert.classList.remove("hidden");
+                        ddSafe.classList.add("hidden");
+                    } else {
+                        ddCard.classList.remove("border-red-500", "bg-red-900/10");
+                        ddCard.classList.add("border-red-500/50");
+                        ddAlert.classList.add("hidden");
+                        ddSafe.classList.remove("hidden");
+                    }
+                } catch (e) { }
+            }
+        });
+    </script>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+        <!-- B. Zone Gauche : The Brain Pulse (Indicateurs Quantitatifs) -->
+        <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
+            <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
+                <h2
+                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                    Brain Pulse</h2>
+
+                <div class="mb-4">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-400 uppercase">Momentum (30s)</span>
+                        <span id="mom-val" class="font-terminal neon-text-sky">0.00%</span>
+                    </div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5">
+                        <div id="mom-bar" class="bg-sky-400 h-1.5 rounded-full" style="width: 50%"></div>
+                    </div>
+                    <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.012%</div>
                 </div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5">
-                    <div id="mom-bar" class="bg-sky-400 h-1.5 rounded-full" style="width: 50%"></div>
+
+                <div class="mb-4">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-400 uppercase">Binance OBI</span>
+                        <span id="obi-val" class="font-terminal neon-text-emerald">0.00</span>
+                    </div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5">
+                        <div id="obi-bar" class="bg-emerald-400 h-1.5 rounded-full" style="width: 50%"></div>
+                    </div>
+                    <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.12</div>
                 </div>
-                <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.012%</div>
-            </div>
 
-            <div class="mb-4">
-                <div class="flex justify-between text-xs mb-1">
-                    <span class="text-slate-400 uppercase">Binance OBI</span>
-                    <span id="obi-val" class="font-terminal neon-text-emerald">0.00</span>
+                <div class="mb-4 mt-2 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Dynamic IV (V14)</div>
+                    <div id="iv-val" class="text-xl font-terminal neon-text-purple">0.00</div>
+                    <div class="text-xs text-slate-500 mt-1">Impacts Options Pricing Model</div>
                 </div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5">
-                    <div id="obi-bar" class="bg-emerald-400 h-1.5 rounded-full" style="width: 50%"></div>
+
+                <div class="p-3 bg-slate-900/50 border border-slate-800 rounded">
+                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Funding Drift (V14)</div>
+                    <div id="funding-val" class="text-xl font-terminal neon-text-sky">0.00%</div>
+                    <div class="text-xs text-slate-500 mt-1">Directional Bias (Derivatives)</div>
                 </div>
-                <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.12</div>
-            </div>
 
-            <div class="mb-4 mt-2 p-3 bg-slate-900/50 border border-slate-800 rounded">
-                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Dynamic IV (V14)</div>
-                <div id="iv-val" class="text-xl font-terminal neon-text-purple">0.00</div>
-                <div class="text-xs text-slate-500 mt-1">Impacts Options Pricing Model</div>
+                <div class="mt-4 p-3 bg-slate-900/50 border border-slate-800 rounded relative overflow-hidden">
+                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10 relative">AI Global
+                        Bias (Grok)</div>
+                    <div class="flex items-center justify-between">
+                        <div class="w-16 h-16 relative">
+                            <svg class="w-full h-full transform -rotate-180" viewBox="0 0 36 36">
+                                <path stroke-dasharray="50, 100"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    class="stroke-slate-800" stroke-width="3" fill="none" />
+                                <path id="ai-gauge-ring" stroke-dasharray="25, 100"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    class="stroke-yellow-400 transition-all duration-500" stroke-width="3"
+                                    fill="none" />
+                            </svg>
+                            <div class="absolute inset-0 flex items-center justify-center -mt-2">
+                                <span id="ai-bias-val"
+                                    class="font-terminal text-yellow-400 text-sm font-bold">1.0</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs text-slate-500 mt-1">Multiplier</div>
+                            <div id="ai-gauge-text" class="text-[0.65rem] text-slate-400 uppercase tracking-widest">
+                                Neutral</div>
+                        </div>
+                    </div>
+                </div>
             </div>
+        </div>
 
-            <div class="p-3 bg-slate-900/50 border border-slate-800 rounded">
-                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Funding Drift (V14)</div>
-                <div id="funding-val" class="text-xl font-terminal neon-text-sky">0.00%</div>
-                <div class="text-xs text-slate-500 mt-1">Directional Bias (Derivatives)</div>
+        <!-- C. Zone Centrale : Target Acquisition & Scan Feed -->
+        <div class="col-span-1 lg:col-span-6 flex flex-col gap-4">
+            <div class="panel-dark p-4 flex flex-col flex-grow shadow-lg relative overflow-hidden">
+                <h2
+                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                    Target Acquisition</h2>
+
+                <!-- Launch Sequence Panel (V15.5) -->
+                <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative flex flex-col space-y-3">
+                    <div class="text-xs text-slate-400 uppercase tracking-widest mb-1 border-b border-slate-800 pb-2">
+                        Launch
+                        Sequence Checklist</div>
+
+                    <!-- STEP 1: Data -->
+                    <div id="step-1"
+                        class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                        <div class="flex items-center space-x-3">
+                            <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 1
+                            </div>
+                            <div class="text-xs uppercase tracking-wider">Data: [IV Ready]</div>
+                        </div>
+                        <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
+                            <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3">
+                            </circle>
+                            <circle id="step-1-ring" cx="18" cy="18" r="14" fill="none"
+                                class="stroke-slate-700 transition-all duration-300" stroke-width="3"
+                                stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round">
+                            </circle>
+                        </svg>
+                    </div>
+
+                    <!-- STEP 2: Signal -->
+                    <div id="step-2"
+                        class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                        <div class="flex items-center space-x-3">
+                            <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 2
+                            </div>
+                            <div class="text-xs uppercase tracking-wider">Signal: [Mom] & [OBI]</div>
+                        </div>
+                        <svg class="w-8 h-8 transform -rotate-90" viewBox="0 0 36 36">
+                            <circle cx="18" cy="18" r="15" fill="none" class="stroke-slate-800" stroke-width="2">
+                            </circle>
+                            <circle id="step-2-obi-ring" cx="18" cy="18" r="15" fill="none"
+                                class="stroke-slate-700 transition-all duration-300" stroke-width="2"
+                                stroke-dasharray="94.24 94.24" stroke-dashoffset="94.24" stroke-linecap="round">
+                            </circle>
+                            <circle cx="18" cy="18" r="11" fill="none" class="stroke-slate-800" stroke-width="2">
+                            </circle>
+                            <circle id="step-2-mom-ring" cx="18" cy="18" r="11" fill="none"
+                                class="stroke-slate-700 transition-all duration-300" stroke-width="2"
+                                stroke-dasharray="69.11 69.11" stroke-dashoffset="69.11" stroke-linecap="round">
+                            </circle>
+                        </svg>
+                    </div>
+
+                    <!-- SYNERGY MATRIX (V16.0) -->
+                    <div class="flex justify-between items-center p-2 border border-slate-800/50 rounded bg-[#0A0A0C]">
+                        <div class="text-[0.65rem] uppercase tracking-widest text-slate-500 font-bold">SYNERGY MATRIX
+                        </div>
+                        <div class="flex space-x-2 text-[0.65rem]">
+                            <span id="syn-mom-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">MOM</span>
+                            <span id="syn-obi-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">OBI</span>
+                            <span id="syn-status" class="px-2 py-0.5 rounded bg-slate-800 text-slate-500">AWAIT</span>
+                        </div>
+                    </div>
+
+                    <!-- STEP 3: Alpha -->
+                    <div id="step-3"
+                        class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
+                        <div class="flex items-center space-x-3">
+                            <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 3
+                            </div>
+                            <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 4.5%]</div>
+                        </div>
+                        <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
+                            <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3">
+                            </circle>
+                            <circle id="step-3-ring" cx="18" cy="18" r="14" fill="none"
+                                class="stroke-slate-700 transition-all duration-300" stroke-width="3"
+                                stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round">
+                            </circle>
+                        </svg>
+                    </div>
+
+                    <!-- STEP 4: Safety -->
+                    <div id="step-4"
+                        class="flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300">
+                        <div class="flex items-center space-x-3">
+                            <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 4
+                            </div>
+                            <div class="text-xs uppercase tracking-wider">Safety: [L2 Slippage]</div>
+                        </div>
+                        <div id="step-4-icon" class="text-emerald-400 font-bold">✓</div>
+                    </div>
+
+                    <!-- FIRE VISUAL BUTTON -->
+                    <div id="fire-btn"
+                        class="mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300">
+                        STANDBY
+                    </div>
+
+                    <!-- THE GAP TRACKER (V16.0 / V18) -->
+                    <div
+                        class="mt-1 p-2 bg-[#050505]/50 border border-slate-800/80 rounded flex justify-between items-center text-xs">
+                        <span class="text-[0.65rem] text-slate-500 uppercase tracking-widest"><span
+                                class="text-sky-400">⚡</span> TRIGGER PROJECTION</span>
+                        <span id="trigger-proj-val" class="font-terminal text-sky-400">Target: ±$--.-- BTC movement
+                            needed</span>
+                    </div>
+
+                    <div class="flex justify-between items-end mt-2 pt-2 border-t border-slate-800 pt-3">
+                        <div class="flex items-end space-x-2">
+                            <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold">EDGE_PCT:
+                            </div>
+                            <div id="edge-val" class="font-terminal text-slate-300 text-lg leading-none">0.00%</div>
+                        </div>
+                        <div class="flex items-end space-x-2 text-[0.65rem] font-terminal text-slate-500">
+                            <div><span class="text-slate-600">P_t:</span> <span id="ptrue-val"
+                                    class="text-purple-400">0.00</span></div>
+                            <div><span class="text-slate-600">P_p:</span> <span id="ppoly-val"
+                                    class="text-sky-400">0.00</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Scan Feed -->
+                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Live Scan Feed</h2>
+                <div class="flex-grow bg-[#09090b] border border-slate-800 rounded p-3 overflow-y-auto font-terminal text-[0.7rem] text-slate-400 h-64"
+                    id="scan-feed" hx-get="/api/sniper-feed" hx-trigger="every 1s">
+                    <div class="text-slate-600">Initializing radar stream...</div>
+                </div>
+
+                <!-- Near Miss Timeline (V15.7) -->
+                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mt-6 mb-2">Near Miss Timeline
+                    (Last 5)
+                </h2>
+                <div class="bg-[#09090b] border border-slate-800 rounded overflow-hidden">
+                    <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
+                        <thead class="text-slate-500 border-b border-slate-800 bg-[#0A0A0C]">
+                            <tr>
+                                <th class="py-1.5 px-3 font-normal">TIME</th>
+                                <th class="py-1.5 px-3 font-normal">MOM</th>
+                                <th class="py-1.5 px-3 font-normal">OBI</th>
+                                <th class="py-1.5 px-3 font-normal">EDGE</th>
+                                <th class="py-1.5 px-3 font-normal text-center">SYNERGY</th>
+                                <th class="py-1.5 px-3 font-normal">FAIL REASON</th>
+                                <th class="py-1.5 px-3 font-normal text-right">OUTCOME (5m)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="near-miss-body" hx-get="/api/sniper-near-misses" hx-trigger="every 5s">
+                            <tr>
+                                <td colspan="7"
+                                    class="py-4 text-center text-slate-600 text-[0.7rem] uppercase tracking-widest">
+                                    Loading
+                                    near misses...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
+        </div>
 
-            <div class="mt-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
-                <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">AI Global Bias (Grok)</div>
-                <div id="ai-bias-val" class="text-xl font-terminal text-yellow-400">x1.00</div>
-                <div class="text-xs text-slate-500 mt-1">Multiplies Alpha Edge</div>
+        <!-- D. Zone Droite : Execution & Risk Manager -->
+        <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
+            <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
+                <h2
+                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
+                    Execution & Risk</h2>
+
+                <!-- Latency Sparkline Placeholder -->
+                <div class="mb-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">WS-to-Trade Latency</div>
+                        <div id="latency-val" class="text-xs font-terminal neon-text-emerald">0ms</div>
+                    </div>
+                    <div class="flex space-x-1 items-end h-8" id="latency-bars">
+                        <!-- JS populated sparkline -->
+                    </div>
+                </div>
+
+                <!-- Health & Slippage -->
+                <div class="mb-6 p-3 bg-slate-900/50 border border-slate-800 rounded flex justify-between items-center">
+                    <div>
+                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Slippage Blocks (>1.5%)
+                        </div>
+                        <div class="text-xs text-slate-400">L2 Safety Checks</div>
+                    </div>
+                    <div id="slippage-val" class="text-lg font-terminal text-orange-400">0</div>
+                </div>
+
+                <!-- Trailing Stops Table -->
+                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Active Trailing Stops</h2>
+                <div class="overflow-y-auto flex-grow max-h-48 mb-4">
+                    <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
+                        <thead class="text-slate-500 border-b border-slate-800 sticky top-0 bg-[#0A0A0C]">
+                            <tr>
+                                <th class="py-1 font-normal">Token</th>
+                                <th class="py-1 font-normal text-right">Max ROI</th>
+                                <th class="py-1 font-normal text-right">Target SL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trailing-stops-body">
+                            <tr>
+                                <td colspan="3" class="py-2 text-center text-slate-600">No active positions</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="mt-auto grid grid-cols-2 gap-2">
+                    <button onclick="confirmReset()"
+                        class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs uppercase tracking-widest transition-colors">Reset
+                        HWM</button>
+                    <button onclick="confirmKillSwitch()"
+                        class="py-2 px-3 bg-red-900/40 hover:bg-red-800 hover:text-white border border-red-700/50 text-red-400 rounded text-xs uppercase tracking-widest transition-all">Force
+                        Exit</button>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- C. Zone Centrale : Target Acquisition & Scan Feed -->
-    <div class="col-span-1 lg:col-span-6 flex flex-col gap-4">
-        <div class="panel-dark p-4 flex flex-col flex-grow shadow-lg relative overflow-hidden">
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                Target Acquisition</h2>
+    <script>
+        // JS Controller for Sniper Command Center
 
-            <!-- Launch Sequence Panel (V15.5) -->
-            <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative flex flex-col space-y-3">
-                <div class="text-xs text-slate-400 uppercase tracking-widest mb-1 border-b border-slate-800 pb-2">Launch
-                    Sequence Checklist</div>
-
-                <!-- STEP 1: Data -->
-                <div id="step-1"
-                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
-                    <div class="flex items-center space-x-3">
-                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 1</div>
-                        <div class="text-xs uppercase tracking-wider">Data: [IV Ready]</div>
-                    </div>
-                    <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
-                        <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3"></circle>
-                        <circle id="step-1-ring" cx="18" cy="18" r="14" fill="none"
-                            class="stroke-slate-700 transition-all duration-300" stroke-width="3"
-                            stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round"></circle>
-                    </svg>
-                </div>
-
-                <!-- STEP 2: Signal -->
-                <div id="step-2"
-                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
-                    <div class="flex items-center space-x-3">
-                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 2</div>
-                        <div class="text-xs uppercase tracking-wider">Signal: [Mom] & [OBI]</div>
-                    </div>
-                    <svg class="w-8 h-8 transform -rotate-90" viewBox="0 0 36 36">
-                        <circle cx="18" cy="18" r="15" fill="none" class="stroke-slate-800" stroke-width="2"></circle>
-                        <circle id="step-2-obi-ring" cx="18" cy="18" r="15" fill="none"
-                            class="stroke-slate-700 transition-all duration-300" stroke-width="2"
-                            stroke-dasharray="94.24 94.24" stroke-dashoffset="94.24" stroke-linecap="round"></circle>
-                        <circle cx="18" cy="18" r="11" fill="none" class="stroke-slate-800" stroke-width="2"></circle>
-                        <circle id="step-2-mom-ring" cx="18" cy="18" r="11" fill="none"
-                            class="stroke-slate-700 transition-all duration-300" stroke-width="2"
-                            stroke-dasharray="69.11 69.11" stroke-dashoffset="69.11" stroke-linecap="round"></circle>
-                    </svg>
-                </div>
-
-                <!-- SYNERGY MATRIX (V16.0) -->
-                <div class="flex justify-between items-center p-2 border border-slate-800/50 rounded bg-[#0A0A0C]">
-                    <div class="text-[0.65rem] uppercase tracking-widest text-slate-500 font-bold">SYNERGY MATRIX</div>
-                    <div class="flex space-x-2 text-[0.65rem]">
-                        <span id="syn-mom-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">MOM</span>
-                        <span id="syn-obi-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">OBI</span>
-                        <span id="syn-status" class="px-2 py-0.5 rounded bg-slate-800 text-slate-500">AWAIT</span>
-                    </div>
-                </div>
-
-                <!-- STEP 3: Alpha -->
-                <div id="step-3"
-                    class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
-                    <div class="flex items-center space-x-3">
-                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 3</div>
-                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 4.5%]</div>
-                    </div>
-                    <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
-                        <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3"></circle>
-                        <circle id="step-3-ring" cx="18" cy="18" r="14" fill="none"
-                            class="stroke-slate-700 transition-all duration-300" stroke-width="3"
-                            stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round"></circle>
-                    </svg>
-                </div>
-
-                <!-- STEP 4: Safety -->
-                <div id="step-4"
-                    class="flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300">
-                    <div class="flex items-center space-x-3">
-                        <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 4</div>
-                        <div class="text-xs uppercase tracking-wider">Safety: [L2 Slippage]</div>
-                    </div>
-                    <div id="step-4-icon" class="text-emerald-400 font-bold">✓</div>
-                </div>
-
-                <!-- FIRE VISUAL BUTTON -->
-                <div id="fire-btn"
-                    class="mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300">
-                    STANDBY
-                </div>
-
-                <!-- THE GAP TRACKER (V16.0) -->
-                <div
-                    class="mt-1 p-2 bg-[#050505]/50 border border-slate-800/80 rounded flex justify-between items-center text-xs">
-                    <span class="text-[0.65rem] text-slate-500 uppercase tracking-widest"><span
-                            class="text-sky-400">⚡</span> TRIGGER PROJECTION</span>
-                    <span id="trigger-proj-val" class="font-terminal text-sky-400">Waiting Depth...</span>
-                </div>
-
-                <div class="flex justify-between items-end mt-2 pt-2 border-t border-slate-800 pt-3">
-                    <div class="flex items-end space-x-2">
-                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold">EDGE_PCT:</div>
-                        <div id="edge-val" class="font-terminal text-slate-300 text-lg leading-none">0.00%</div>
-                    </div>
-                    <div class="flex items-end space-x-2 text-[0.65rem] font-terminal text-slate-500">
-                        <div><span class="text-slate-600">P_t:</span> <span id="ptrue-val"
-                                class="text-purple-400">0.00</span></div>
-                        <div><span class="text-slate-600">P_p:</span> <span id="ppoly-val"
-                                class="text-sky-400">0.00</span></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Live Scan Feed -->
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Live Scan Feed</h2>
-            <div class="flex-grow bg-[#09090b] border border-slate-800 rounded p-3 overflow-y-auto font-terminal text-[0.7rem] text-slate-400 h-64"
-                id="scan-feed" hx-get="/api/sniper-feed" hx-trigger="every 1s">
-                <div class="text-slate-600">Initializing radar stream...</div>
-            </div>
-
-            <!-- Near Miss Timeline (V15.7) -->
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mt-6 mb-2">Near Miss Timeline (Last 5)
-            </h2>
-            <div class="bg-[#09090b] border border-slate-800 rounded overflow-hidden">
-                <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
-                    <thead class="text-slate-500 border-b border-slate-800 bg-[#0A0A0C]">
-                        <tr>
-                            <th class="py-1.5 px-3 font-normal">TIME</th>
-                            <th class="py-1.5 px-3 font-normal">MOM</th>
-                            <th class="py-1.5 px-3 font-normal">OBI</th>
-                            <th class="py-1.5 px-3 font-normal">EDGE</th>
-                            <th class="py-1.5 px-3 font-normal text-center">SYNERGY</th>
-                            <th class="py-1.5 px-3 font-normal">FAIL REASON</th>
-                        </tr>
-                    </thead>
-                    <tbody id="near-miss-body" hx-get="/api/sniper-near-misses" hx-trigger="every 5s">
-                        <tr>
-                            <td colspan="5"
-                                class="py-4 text-center text-slate-600 text-[0.7rem] uppercase tracking-widest">Loading
-                                near misses...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- D. Zone Droite : Execution & Risk Manager -->
-    <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
-        <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                Execution & Risk</h2>
-
-            <!-- Latency Sparkline Placeholder -->
-            <div class="mb-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
-                <div class="flex justify-between items-center mb-2">
-                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">WS-to-Trade Latency</div>
-                    <div id="latency-val" class="text-xs font-terminal neon-text-emerald">0ms</div>
-                </div>
-                <div class="flex space-x-1 items-end h-8" id="latency-bars">
-                    <!-- JS populated sparkline -->
-                </div>
-            </div>
-
-            <!-- Health & Slippage -->
-            <div class="mb-6 p-3 bg-slate-900/50 border border-slate-800 rounded flex justify-between items-center">
-                <div>
-                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Slippage Blocks (>1.5%)</div>
-                    <div class="text-xs text-slate-400">L2 Safety Checks</div>
-                </div>
-                <div id="slippage-val" class="text-lg font-terminal text-orange-400">0</div>
-            </div>
-
-            <!-- Trailing Stops Table -->
-            <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Active Trailing Stops</h2>
-            <div class="overflow-y-auto flex-grow max-h-48 mb-4">
-                <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
-                    <thead class="text-slate-500 border-b border-slate-800 sticky top-0 bg-[#0A0A0C]">
-                        <tr>
-                            <th class="py-1 font-normal">Token</th>
-                            <th class="py-1 font-normal text-right">Max ROI</th>
-                            <th class="py-1 font-normal text-right">Target SL</th>
-                        </tr>
-                    </thead>
-                    <tbody id="trailing-stops-body">
-                        <tr>
-                            <td colspan="3" class="py-2 text-center text-slate-600">No active positions</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Action Buttons -->
-            <div class="mt-auto grid grid-cols-2 gap-2">
-                <button onclick="confirmReset()"
-                    class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs uppercase tracking-widest transition-colors">Reset
-                    HWM</button>
-                <button onclick="confirmKillSwitch()"
-                    class="py-2 px-3 bg-red-900/40 hover:bg-red-800 hover:text-white border border-red-700/50 text-red-400 rounded text-xs uppercase tracking-widest transition-all">Force
-                    Exit</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
-    // JS Controller for Sniper Command Center
-
-    function confirmKillSwitch() {
-        if (confirm("🚨 WARNING: KILL SWITCH ENGAGED 🚨\n\nThis will instantly market sell ALL open positions. Are you sure?")) {
-            // Need to implement backend route or reuse existing
-            alert("Kill Switch Signal Sent (Mock)");
+        function confirmKillSwitch() {
+            if (confirm("🚨 WARNING: KILL SWITCH ENGAGED 🚨\n\nThis will instantly market sell ALL open positions. Are you sure?")) {
+                // Need to implement backend route or reuse existing
+                alert("Kill Switch Signal Sent (Mock)");
+            }
         }
-    }
 
-    function confirmReset() {
-        if (confirm("Reset High Water Mark to current portfolio value?")) {
-            alert("Reset Sent (Mock)");
+        function confirmReset() {
+            if (confirm("Reset High Water Mark to current portfolio value?")) {
+                alert("Reset Sent (Mock)");
+            }
         }
-    }
 
-    // Polling Logic
-    async function updateBrainPulse() {
-        try {
-            const res = await fetch('/api/v14/brain');
-            const data = await res.json();
+        // Polling Logic
+        async function updateBrainPulse() {
+            try {
+                const res = await fetch('/api/v14/brain');
+                const data = await res.json();
 
-            // Update Gauges
-            document.getElementById('mom-val').innerText = (data.momentum > 0 ? '+' : '') + data.momentum.toFixed(3) + '%';
-            document.getElementById('obi-val').innerText = data.obi.toFixed(2);
-            document.getElementById('iv-val').innerText = data.iv.toFixed(3);
-            document.getElementById('funding-val').innerText = data.funding.toFixed(4) + '%';
-            document.getElementById('ai-bias-val').innerText = 'x' + data.ai_bias.toFixed(2);
+                // Update Gauges
+                document.getElementById('mom-val').innerText = (data.momentum > 0 ? '+' : '') + data.momentum.toFixed(3) + '%';
+                document.getElementById('obi-val').innerText = data.obi.toFixed(2);
+                document.getElementById('iv-val').innerText = data.iv.toFixed(3);
+                document.getElementById('funding-val').innerText = data.funding.toFixed(4) + '%';
 
-            // Bar calculations (visual flavor)
-            let momPct = 50 + (data.momentum * 1000); // Ex: 0.012 -> 50 + 12 = 62%
-            document.getElementById('mom-bar').style.width = Math.min(100, Math.max(0, momPct)) + '%';
-            document.getElementById('mom-bar').className = data.momentum > 0 ? "bg-emerald-400 h-1.5 rounded-full" : "bg-red-400 h-1.5 rounded-full";
+                // AI Bias SVG Gauge Update
+                let aiBias = data.ai_bias || 1.0;
+                document.getElementById('ai-bias-val').innerText = 'x' + aiBias.toFixed(2);
+                let aiPct = 25; // Neutral is half of the 50 half-circle
+                let aiText = "Neutral";
+                let aiColor = "stroke-yellow-400";
 
-            let obiPct = 50 + (data.obi * 100);
-            document.getElementById('obi-bar').style.width = Math.min(100, Math.max(0, obiPct)) + '%';
-            document.getElementById('obi-bar').className = data.obi > 0.1 ? "bg-emerald-400 h-1.5 rounded-full" : (data.obi < -0.1 ? "bg-red-400 h-1.5 rounded-full" : "bg-sky-400 h-1.5 rounded-full");
+                if (aiBias > 1.05) {
+                    aiPct = Math.min(50, 25 + (aiBias - 1.0) * 100);
+                    aiText = "Bullish";
+                    aiColor = "stroke-emerald-400";
+                    document.getElementById('ai-bias-val').className = "font-terminal text-emerald-400 text-sm font-bold";
+                } else if (aiBias < 0.95) {
+                    aiPct = Math.max(0, 25 - (1.0 - aiBias) * 100);
+                    aiText = "Bearish";
+                    aiColor = "stroke-red-400";
+                    document.getElementById('ai-bias-val').className = "font-terminal text-red-400 text-sm font-bold";
+                } else {
+                    document.getElementById('ai-bias-val').className = "font-terminal text-yellow-400 text-sm font-bold";
+                }
 
-            // Update V15.5 Visual Checklist
-            const edge = data.sprint_edge || 0;
-            document.getElementById('edge-val').innerText = (edge > 0 ? '+' : '') + edge.toFixed(2) + '%';
-            document.getElementById('ptrue-val').innerText = (data.p_true || 0).toFixed(3);
-            document.getElementById('ppoly-val').innerText = (data.p_poly || 0).toFixed(3);
+                const gaugeRing = document.getElementById('ai-gauge-ring');
+                gaugeRing.style.strokeDasharray = `${aiPct}, 100`;
+                gaugeRing.className = `${aiColor} transition-all duration-500`;
+                document.getElementById('ai-gauge-text').innerText = aiText;
 
-            const checklist = data.live_checklist || {};
-            const pct = data.live_percentages || {};
+                // Bar calculations (visual flavor)
+                let momPct = 50 + (data.momentum * 1000); // Ex: 0.012 -> 50 + 12 = 62%
+                document.getElementById('mom-bar').style.width = Math.min(100, Math.max(0, momPct)) + '%';
+                document.getElementById('mom-bar').className = data.momentum > 0 ? "bg-emerald-400 h-1.5 rounded-full" : "bg-red-400 h-1.5 rounded-full";
 
-            const checkOnClass = "flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300";
-            const checkOffClass = "flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300";
+                let obiPct = 50 + (data.obi * 100);
+                document.getElementById('obi-bar').style.width = Math.min(100, Math.max(0, obiPct)) + '%';
+                document.getElementById('obi-bar').className = data.obi > 0.1 ? "bg-emerald-400 h-1.5 rounded-full" : (data.obi < -0.1 ? "bg-red-400 h-1.5 rounded-full" : "bg-sky-400 h-1.5 rounded-full");
 
-            function updateRing(id, val, radius, sw) {
-                const el = document.getElementById(id);
-                if (!el) return;
-                const C = 2 * Math.PI * radius;
-                const drawPct = Math.min(100, Math.max(0, val * 100));
-                const offset = C - (drawPct / 100) * C;
-                el.style.strokeDasharray = `${C} ${C}`;
-                el.style.strokeDashoffset = offset;
+                // Update V15.5 Visual Checklist
+                const edge = data.sprint_edge || 0;
+                document.getElementById('edge-val').innerText = (edge > 0 ? '+' : '') + edge.toFixed(2) + '%';
+                document.getElementById('ptrue-val').innerText = (data.p_true || 0).toFixed(3);
+                document.getElementById('ppoly-val').innerText = (data.p_poly || 0).toFixed(3);
 
-                let colorClass = "stroke-red-500";
-                if (drawPct >= 100) colorClass = "stroke-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.8)]";
-                else if (drawPct >= 50) colorClass = "stroke-orange-400";
-                else if (drawPct === 0) colorClass = "stroke-slate-700";
+                const checklist = data.live_checklist || {};
+                const pct = data.live_percentages || {};
 
-                el.setAttribute('class', colorClass + " transition-all duration-300");
-                el.setAttribute('stroke-width', sw);
-                el.setAttribute('fill', 'none');
-            }
+                const checkOnClass = "flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300";
+                const checkOffClass = "flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300";
 
-            // Step 1: IV Ready (treated as 100% or 0%)
-            const step1Ready = checklist.iv_ready;
-            document.getElementById('step-1').className = step1Ready ? checkOnClass : checkOffClass;
-            updateRing("step-1-ring", step1Ready ? 1.0 : 0.0, 14, 3);
+                function updateRing(id, val, radius, sw) {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    const C = 2 * Math.PI * radius;
+                    const drawPct = Math.min(100, Math.max(0, val * 100));
+                    const offset = C - (drawPct / 100) * C;
+                    el.style.strokeDasharray = `${C} ${C}`;
+                    el.style.strokeDashoffset = offset;
 
-            // Step 2: Mom & OBI
-            const step2Ready = checklist.mom_ok && checklist.obi_ok;
-            document.getElementById('step-2').className = step2Ready ? checkOnClass : checkOffClass;
-            updateRing("step-2-mom-ring", pct.mom_progress || 0.0, 11, 2);
-            updateRing("step-2-obi-ring", pct.obi_progress || 0.0, 15, 2);
+                    let colorClass = "stroke-red-500";
+                    if (drawPct >= 100) colorClass = "stroke-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.8)]";
+                    else if (drawPct >= 50) colorClass = "stroke-orange-400";
+                    else if (drawPct === 0) colorClass = "stroke-slate-700";
 
-            // Synergy Matrix (V16.0)
-            const momDir = data.momentum > 0 ? 1 : (data.momentum < 0 ? -1 : 0);
-            const obiDir = data.obi > 0 ? 1 : (data.obi < 0 ? -1 : 0);
+                    el.setAttribute('class', colorClass + " transition-all duration-300");
+                    el.setAttribute('stroke-width', sw);
+                    el.setAttribute('fill', 'none');
+                }
 
-            const mb = document.getElementById('syn-mom-badge');
-            mb.className = momDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (momDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
+                // Step 1: IV Ready (treated as 100% or 0%)
+                const step1Ready = checklist.iv_ready;
+                document.getElementById('step-1').className = step1Ready ? checkOnClass : checkOffClass;
+                updateRing("step-1-ring", step1Ready ? 1.0 : 0.0, 14, 3);
 
-            const ob = document.getElementById('syn-obi-badge');
-            ob.className = obiDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (obiDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
+                // Step 2: Mom & OBI
+                const step2Ready = checklist.mom_ok && checklist.obi_ok;
+                document.getElementById('step-2').className = step2Ready ? checkOnClass : checkOffClass;
+                updateRing("step-2-mom-ring", pct.mom_progress || 0.0, 11, 2);
+                updateRing("step-2-obi-ring", pct.obi_progress || 0.0, 15, 2);
 
-            const sb = document.getElementById('syn-status');
-            if (momDir !== 0 && obiDir !== 0 && momDir === obiDir) {
-                sb.className = "px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-400 font-bold";
-                sb.innerText = "LOCKED";
-            } else if (momDir !== 0 || obiDir !== 0) {
-                sb.className = "px-2 py-0.5 rounded bg-red-900/60 text-red-400 font-bold";
-                sb.innerText = "CLASH";
-            } else {
-                sb.className = "px-2 py-0.5 rounded bg-slate-800 text-slate-500";
-                sb.innerText = "AWAIT";
-            }
+                // Synergy Matrix (V16.0)
+                const momDir = data.momentum > 0 ? 1 : (data.momentum < 0 ? -1 : 0);
+                const obiDir = data.obi > 0 ? 1 : (data.obi < 0 ? -1 : 0);
 
-            // Step 3: Edge
-            const step3Ready = checklist.edge_ok;
-            document.getElementById('step-3').className = step3Ready ? checkOnClass : checkOffClass;
-            updateRing("step-3-ring", pct.edge_progress || 0.0, 14, 3);
+                const mb = document.getElementById('syn-mom-badge');
+                mb.className = momDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (momDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
 
-            // Trigger Projection Text
-            const proj = data.price_gap_nominal;
-            if (proj > 0 && data.btc_spot > 0) {
-                const gap = proj - data.btc_spot;
-                const sign = gap > 0 ? "+" : "";
-                document.getElementById('trigger-proj-val').innerText = "Target: " + sign + "$" + Math.abs(gap).toFixed(2) + " BTC movement needed";
-            } else {
-                document.getElementById('trigger-proj-val').innerText = "Calculating...";
-            }
+                const ob = document.getElementById('syn-obi-badge');
+                ob.className = obiDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (obiDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
 
-            // Step 4 (Safety - Mocked True for Visual)
-            const step4Ready = true;
+                const sb = document.getElementById('syn-status');
+                if (momDir !== 0 && obiDir !== 0 && momDir === obiDir) {
+                    sb.className = "px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-400 font-bold";
+                    sb.innerText = "LOCKED";
+                } else if (momDir !== 0 || obiDir !== 0) {
+                    sb.className = "px-2 py-0.5 rounded bg-red-900/60 text-red-400 font-bold";
+                    sb.innerText = "CLASH";
+                } else {
+                    sb.className = "px-2 py-0.5 rounded bg-slate-800 text-slate-500";
+                    sb.innerText = "AWAIT";
+                }
 
-            // FIRE BUTTON
-            const fireBtn = document.getElementById('fire-btn');
-            if (step1Ready && step2Ready && step3Ready && step4Ready) {
-                fireBtn.className = "mt-2 py-3 text-center border border-purple-500/50 rounded bg-purple-900/30 neon-text-purple text-sm font-bold tracking-widest uppercase transition-all duration-300 animate-pulse";
-                fireBtn.innerText = "🔥 FIRE 🔥";
-                document.getElementById('edge-val').className = "font-terminal neon-text-emerald text-lg leading-none";
-            } else {
-                fireBtn.className = "mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300";
-                fireBtn.innerText = "STANDBY";
-                document.getElementById('edge-val').className = "font-terminal text-slate-300 text-lg leading-none";
-            }
+                // Step 3: Edge
+                const step3Ready = checklist.edge_ok;
+                document.getElementById('step-3').className = step3Ready ? checkOnClass : checkOffClass;
+                updateRing("step-3-ring", pct.edge_progress || 0.0, 14, 3);
 
-        } catch (e) { console.error("Error fetching brain pulse", e); }
-    }
+                // Trigger Projection Text
+                const proj = data.price_gap_nominal;
+                if (proj > 0 && data.btc_spot > 0) {
+                    const gap = proj - data.btc_spot;
+                    const sign = gap > 0 ? "+" : "";
+                    document.getElementById('trigger-proj-val').innerText = "Target: " + sign + "$" + Math.abs(gap).toFixed(2) + " BTC movement needed";
+                } else {
+                    document.getElementById('trigger-proj-val').innerText = "Calculating...";
+                }
 
-    async function updateExecutionAndRisk() {
-        try {
-            // Latency & Health
-            const resExec = await fetch('/api/v14/execution');
-            const execData = await resExec.json();
+                // Step 4 (Safety - Mocked True for Visual)
+                const step4Ready = true;
 
-            let lats = execData.latency || [];
-            if (lats.length > 0) {
-                const latest = lats[lats.length - 1];
-                document.getElementById('latency-val').innerText = latest.toFixed(0) + 'ms';
-                document.getElementById('latency-val').className = latest > 200 ? "text-xs font-terminal text-red-400" : "text-xs font-terminal neon-text-emerald";
-            }
+                // FIRE BUTTON
+                const fireBtn = document.getElementById('fire-btn');
+                if (step1Ready && step2Ready && step3Ready && step4Ready) {
+                    fireBtn.className = "mt-2 py-3 text-center border border-purple-500/50 rounded bg-purple-900/30 neon-text-purple text-sm font-bold tracking-widest uppercase transition-all duration-300 animate-pulse";
+                    fireBtn.innerText = "🔥 FIRE 🔥";
+                    document.getElementById('edge-val').className = "font-terminal neon-text-emerald text-lg leading-none";
+                } else {
+                    fireBtn.className = "mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300";
+                    fireBtn.innerText = "STANDBY";
+                    document.getElementById('edge-val').className = "font-terminal text-slate-300 text-lg leading-none";
+                }
 
-            const sparkline = document.getElementById('latency-bars');
-            sparkline.innerHTML = '';
-            lats.forEach(l => {
-                let h = Math.min(100, (l / 300) * 100);
-                let color = l > 200 ? 'bg-red-500' : 'bg-emerald-500';
-                sparkline.innerHTML += `<div class="w-full ${color} rounded-t opacity-80" style="height: ${h}%"></div>`;
-            });
+            } catch (e) { console.error("Error fetching brain pulse", e); }
+        }
 
-            document.getElementById('slippage-val').innerText = execData.slippage_protect_count || 0;
+        async function updateExecutionAndRisk() {
+            try {
+                // Latency & Health
+                const resExec = await fetch('/api/v14/execution');
+                const execData = await resExec.json();
 
-            // Positions & Trailing Stops
-            const resPos = await fetch('/api/v14/positions');
-            const posData = await resPos.json();
+                let lats = execData.latency || [];
+                if (lats.length > 0) {
+                    const latest = lats[lats.length - 1];
+                    document.getElementById('latency-val').innerText = latest.toFixed(0) + 'ms';
+                    document.getElementById('latency-val').className = latest > 200 ? "text-xs font-terminal text-red-400" : "text-xs font-terminal neon-text-emerald";
+                }
 
-            const tbody = document.getElementById('trailing-stops-body');
-            if (posData.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="py-2 text-center text-slate-600">No active positions</td></tr>';
-            } else {
-                tbody.innerHTML = '';
-                posData.forEach(p => {
-                    let maxPnl = p.max_pnl * 100;
-                    let trailSl = p.trailing_sl !== null ? (p.trailing_sl * 100).toFixed(1) + '%' : 'Wait/2%';
-                    tbody.innerHTML += `
+                const sparkline = document.getElementById('latency-bars');
+                sparkline.innerHTML = '';
+                lats.forEach(l => {
+                    let h = Math.min(100, (l / 300) * 100);
+                    let color = l > 200 ? 'bg-red-500' : 'bg-emerald-500';
+                    sparkline.innerHTML += `<div class="w-full ${color} rounded-t opacity-80" style="height: ${h}%"></div>`;
+                });
+
+                document.getElementById('slippage-val').innerText = execData.slippage_protect_count || 0;
+
+                // Positions & Trailing Stops
+                const resPos = await fetch('/api/v14/positions');
+                const posData = await resPos.json();
+
+                const tbody = document.getElementById('trailing-stops-body');
+                if (posData.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="py-2 text-center text-slate-600">No active positions</td></tr>';
+                } else {
+                    tbody.innerHTML = '';
+                    posData.forEach(p => {
+                        let maxPnl = p.max_pnl * 100;
+                        let trailSl = p.trailing_sl !== null ? (p.trailing_sl * 100).toFixed(1) + '%' : 'Wait/2%';
+                        tbody.innerHTML += `
                         <tr class="border-b border-slate-800/80 hover:bg-slate-800/30">
                             <td class="py-1 truncate max-w-[100px]" title="${p.question}">${p.question.substring(0, 20)}</td>
                             <td class="py-1 text-right text-emerald-400">+${maxPnl.toFixed(1)}%</td>
                             <td class="py-1 text-right text-orange-400">${trailSl}</td>
                         </tr>
                     `;
-                });
-            }
+                    });
+                }
 
-        } catch (e) { console.error("Error fetching execution stats", e); }
-    }
+            } catch (e) { console.error("Error fetching execution stats", e); }
+        }
 
-    setInterval(updateBrainPulse, 500);
-    setInterval(updateExecutionAndRisk, 3000);
+        setInterval(updateBrainPulse, 500);
+        setInterval(updateExecutionAndRisk, 3000);
 
-    // Initial fetch
-    updateBrainPulse();
-    updateExecutionAndRisk();
+        // Initial fetch
+        updateBrainPulse();
+        updateExecutionAndRisk();
 
-</script>
-{% endblock %}
+    </script>
+    {% endblock %}

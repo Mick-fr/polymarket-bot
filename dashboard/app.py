@@ -184,9 +184,44 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             html += f"<td class='py-2 px-3 font-terminal {edge_color}'>{edge_str}</td>"
             html += f"<td class='py-2 px-3 text-center text-[0.65rem]'>{syn_html}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-red-500/80 uppercase text-[0.65rem] tracking-wider'>{reason}</td>"
+            html += f"<td class='py-2 px-3 font-terminal text-slate-500 text-right text-[0.65rem]'>Pending (5m)</td>"
             html += "</tr>"
             
-        return html or "<tr><td colspan='6' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
+        return html or "<tr><td colspan='7' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
+
+    @app.route("/api/v18/performance")
+    @login_required
+    def api_v18_performance():
+        """V18: Top KPI Banner Metrics."""
+        try:
+            from bot.analytics import TradeAnalytics
+            analytics = TradeAnalytics(db)
+            
+            # Pnl total USDC
+            summary = db.get_pnl_summary()
+            pnl_total = summary.get("total_pnl", 0.0)
+            
+            # Win Rate (rolling 50)
+            win_rate = analytics.rolling_win_rate()
+            
+            # Sharpe Ratio (hourly dynamic)
+            sharpe = analytics.hourly_sharpe_ratio()
+            
+            # Drawdown relative to absolute 106.13 HWM baseline
+            hwm = max(float(db.get_high_water_mark() or 0), 106.13)
+            current_portfolio = db.get_latest_balance() or 106.13
+            drawdown = ((hwm - current_portfolio) / hwm * 100) if hwm > 0 else 0.0
+            if drawdown < 0:
+                drawdown = 0.0
+
+            return jsonify({
+                "pnl_usdc": pnl_total,
+                "win_rate_50": win_rate,
+                "sharpe_ratio": sharpe,
+                "drawdown_pct": drawdown
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/api/v14/execution")
     @login_required

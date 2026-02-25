@@ -59,6 +59,59 @@ class TradeAnalytics:
 
         return summary
 
+    def rolling_win_rate(self) -> float:
+        """V18: Win rate over the last 50 trades."""
+        closed = self.db.get_closed_trades(limit=50)
+        if not closed:
+            return 0.0
+        wins = sum(1 for t in closed if (t.get("pnl_usdc") or 0) > 0)
+        return (wins / len(closed)) * 100
+
+    def hourly_sharpe_ratio(self) -> float:
+        """V18: Sharpe ratio dynamically based on hourly returns instead of static logic."""
+        closed = self.db.get_closed_trades(limit=5000)
+        if not closed:
+            return 0.0
+            
+        hourly_returns = {}
+        for t in closed:
+            ts = t.get("close_timestamp", "")
+            if len(ts) >= 13:
+                hour_key = ts[:13]  # YYYY-MM-DD HH
+                hourly_returns[hour_key] = hourly_returns.get(hour_key, 0.0) + (t.get("pnl_usdc") or 0.0)
+                
+        returns = list(hourly_returns.values())
+        if len(returns) < 2:
+            return 0.0
+            
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+        std_r = math.sqrt(variance) if variance > 0 else 0.001
+        
+        # 24 hours * 365 days = 8760 periods/year
+        return (mean_r / std_r) * math.sqrt(8760)
+
+    def projected_vs_realized_edge(self) -> dict:
+        """V18: Deviations between entry edge and realized PnL."""
+        closed = self.db.get_closed_trades(limit=50)
+        if not closed:
+            return {"projected": 0.0, "realized": 0.0, "deviation": 0.0}
+            
+        total_realized_pct = sum(t.get("pnl_pct", 0) or 0 for t in closed)
+        avg_realized = (total_realized_pct / len(closed)) if closed else 0.0
+        
+        # If we had actual exact p_true per trade recorded in trades table, we would use it.
+        # As an approximation for the engine, the strategy requires edge > MIN_EDGE_SCORE (e.g. 4.5%).
+        # Let's assume an average projected edge of 5.5% for recent trades. 
+        # (Could be enriched further if DB schema is updated later to log p_true directly).
+        avg_projected = 5.5
+        
+        return {
+            "projected": round(avg_projected, 2),
+            "realized": round(avg_realized, 2),
+            "deviation": round(avg_realized - avg_projected, 2)
+        }
+
     # ── Analyse par dimension ──────────────────────────────────────
 
     def performance_by_market(self) -> list[dict]:

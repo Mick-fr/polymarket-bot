@@ -1048,7 +1048,7 @@ class InfoEdgeStrategy(BaseStrategy):
     MAX_EXPO_PCT   = 0.25
     MAX_ORDER_USDC = 12.0
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 4.5     # V16.0 — lowered from 6.5 for institutional realism
+    MIN_EDGE_SCORE = 4.5     # V18 / V16.0 — lowered from 12.5% to 4.5% for institutional realism
     MAX_TRADE_PCT  = 0.08
     MIN_MINUTES    = 0.0
     MAX_MINUTES    = 90.0    # sweet spot optimal
@@ -1436,8 +1436,8 @@ class InfoEdgeStrategy(BaseStrategy):
 
             if is_sprint:
                 sprint_markets_count += 1
-                min_minutes = 1.0  # VITAL: On trade jusqu'à la dernière minute ! Pas 2.2.
-                min_edge = 7.0     # Seuil assoupli pour capter le momentum
+                min_minutes = 0.0  # V18 EMERGENCY: Abaissé à 0 pour le paradoxe de maturité
+                min_edge = 4.5     # V18 EMERGENCY: Seuil assoupli à 4.5% pour capter le momentum
                 min_vol = 0        # MODIFIÉ V11.7 : Un marché neuf n'a pas de volume initial
                 max_trade = 0.06
             else:

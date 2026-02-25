@@ -494,6 +494,35 @@ class Trader:
             self._run_db_purge()
             self._cycles_since_purge = 0
             
+        # 6. V18 Hourly Analytics Alerts (Sharpe & Drawdown)
+        import time
+        now = time.time()
+        if not hasattr(self, "_last_analytics_alert_ts"):
+            self._last_analytics_alert_ts = now - 3600  # Trigger on first loop
+            
+        if now - self._last_analytics_alert_ts >= 3600:
+            self._last_analytics_alert_ts = now
+            try:
+                from bot.analytics import TradeAnalytics
+                from bot.telegram import send_alert
+                analytics = TradeAnalytics(self.db)
+                summary = analytics.compute_performance_summary()
+                sharpe = summary.get("sharpe_ratio")
+                drawdown = summary.get("max_drawdown_pct")
+                
+                alerts_triggered = []
+                if sharpe is not None and sharpe < 1.5 and summary.get("total_trades", 0) > 10:
+                    alerts_triggered.append(f"Sharpe Ratio critique: {sharpe:.2f} < 1.5")
+                if drawdown is not None and drawdown > 3.0:
+                    alerts_triggered.append(f"Drawdown critique: {drawdown:.2f}% > 3.0%")
+                    
+                if alerts_triggered:
+                    msg = "⚠️ [V18 ALARME_ANALYTICS] ⚠️\n" + "\n".join(alerts_triggered)
+                    send_alert(msg)
+                    logger.warning(msg.replace('\n', ' '))
+            except Exception as e:
+                logger.error("[V18 Analytics] Erreur check alertes horaires: %s", e)
+            
         logger.info("[Maintenance] ── Fin chronjob ──────────────────────────")
 
     def _run_db_purge(self, days: int = 30):
