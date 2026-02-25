@@ -1254,6 +1254,14 @@ class InfoEdgeStrategy(BaseStrategy):
 
     def analyze(self, balance: float = 0.0, target_market_ids: list[str] = None) -> list[Signal]:
         """V13.0: Event-Driven Sniper Architecture. Allows targeted rapid-fire."""
+        try:
+            return self._analyze_internal(balance, target_market_ids)
+        except Exception as e:
+            import traceback
+            logger.error("[STRATEGY] 🚨 SILENT CRASH IN analyze 🚨 : %s\n%s", e, traceback.format_exc())
+            return []
+
+    def _analyze_internal(self, balance: float = 0.0, target_market_ids: list[str] = None) -> list[Signal]:
         signals: list[Signal] = []
         if not self._universe.get_eligible_markets():
             pass # We still want to do the global update even if no markets

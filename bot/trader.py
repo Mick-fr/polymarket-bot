@@ -430,6 +430,13 @@ class Trader:
 
     def _on_price_tick(self, symbol: str, mid: float):
         """V13.0: Déclenché asynchronement depuis BinanceWSClient à chaque tick de prix BTC/ETH."""
+        try:
+            self._on_price_tick_internal(symbol, mid)
+        except Exception as e:
+            import traceback
+            logger.error("[TRADER] 🚨 SILENT CRASH IN _on_price_tick 🚨 : %s\n%s", e, traceback.format_exc())
+
+    def _on_price_tick_internal(self, symbol: str, mid: float):
         tick_start_ts = time.time()  # V14.0 Latency Trace Start
         if symbol != "BTCUSDT":
             return
