@@ -500,17 +500,23 @@ class Trader:
             logger.warning("API Polymarket injoignable, reconnexion...")
             self._connect()
 
-        # 2. Rechargements configs
-        import os as _os
-        _flag_path = "/tmp/reload_aggressivity.flag"
-        if _os.path.exists(_flag_path):
+        # 2. Rechargements configs / Redémarrage (via DB flags)
+        if self.db.get_config_str("bot_restart_requested", "false") == "true":
+            logger.info("[MAINTENANCE] Redémarrage du bot demandé via dashboard. Arrêt propre...")
+            self.db.set_config("bot_restart_requested", "false") # Clear flag
+            self._running = False
+            sys.exit(0) # Exit pour déclencher le redémarrage Docker
+
+        if self.db.get_config_str("bot_reload_aggressivity", "false") == "true":
+            logger.info("[MAINTENANCE] Rechargement de la configuration d'agressivité demandé via dashboard.")
+            self.db.set_config("bot_reload_aggressivity", "false") # Clear flag
             try:
-                _os.remove(_flag_path)
                 self.risk.reload_aggressivity()
                 if self.strategy:
                     self.strategy.reload_sizing()
-            except Exception:
-                pass
+            except Exception as e:
+                import traceback
+                logger.error("[MAINTENANCE] Erreur lors du rechargement des configs: %s - %s", e, traceback.format_exc(limit=1))
 
         try:
             self.db.merge_positions()

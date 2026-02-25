@@ -422,13 +422,12 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @app.route("/resume", methods=["POST"])
     @login_required
     def api_resume():
-        import os
         db.set_kill_switch(False)
         db.set_config("bot_active", "true")
         db.set_config("kill_switch_reason", "")
         logger.info("[DASHBOARD] Bot resumed by user")
         db.add_log("INFO", "dashboard", "[DASHBOARD] Bot resumed by user")
-        os.system("docker compose restart bot &")
+        db.set_config("bot_restart_requested", "true")
         return jsonify({"status": "ok", "active": True, "kill_switch": False})
 
     @app.route("/kill", methods=["POST"])
@@ -473,9 +472,8 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         db.set_config("strategy_mode", mode)
         logger.info("[DASHBOARD] Stratégie changée en : %s", mode)
         
-        # Reload configs
-        import os
-        os.system("touch /tmp/reload_aggressivity.flag")
+        # Signal au bot de recharger sa configuration
+        db.set_config("bot_reload_aggressivity", "true")
         
         return jsonify({"status": "ok", "mode": mode})
 
@@ -552,9 +550,8 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         res = db.factory_reset()
         
         if res.get("status") == "ok":
-            import os
-            # Redémarrer le bot pour prendre en compte la table vide
-            os.system("docker compose restart bot &")
+            # Demander au bot de redémarrer pour prendre en compte la table vide
+            db.set_config("bot_restart_requested", "true")
             return jsonify(res)
         else:
             return jsonify(res), 500
@@ -571,7 +568,7 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             db.set_config("kill_switch_reason", "")  # V7.6 clear reason on resume
             logger.info("[DASHBOARD] Bot toggled ON by user")
             db.add_log("INFO", "dashboard", "Bot toggled ON")
-            import os; os.system("docker compose restart bot &")
+            db.set_config("bot_restart_requested", "true")
             
             if request.headers.get("HX-Request"):
                 return '<button hx-post="/api/toggle-bot" hx-target="#bot-status-container" class="w-full bg-red-500/20 text-red-500 border border-red-500 hover:bg-red-500/30 font-bold py-3 px-4 rounded transition-colors">🛑 Mettre en Pause</button>'
@@ -613,12 +610,8 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             preset = LEVEL_PARAMS.get(level, {})
             if preset:
                 db.set_config_dict(preset)
-            # Write reload flag so bot picks it up instantly next cycle
-            try:
-                with open("/tmp/reload_aggressivity.flag", "w") as f:
-                    f.write(level)
-            except Exception:
-                pass  # Non-critical on Windows dev
+            # Signaler au bot de recharger sa configuration
+            db.set_config("bot_reload_aggressivity", "true")
             logger.info(f"[V7.3.8] Aggressivity changed to: {level} — all params persisted to DB")
             db.add_log("INFO", "dashboard", f"Agressivité changée pour : {level}")
             return jsonify({"status": "ok", "level": level, "params": preset})
@@ -1202,14 +1195,8 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 db.set_config(db_key, val)
             if db:
                 db.set_aggressivity_level("Custom")
-            # Write reload flag for instant pickup
-            try:
-                with open("/tmp/reload_aggressivity.flag", "w") as f:
-                    f.write("Custom")
-            except Exception:
-                pass
-        import os
-        os.system("docker compose restart bot &")
+            # Demander au bot de recharger sa configuration
+            db.set_config("bot_reload_aggressivity", "true")
         return jsonify({"status": "ok"})
 
     @app.route("/api/v73/apply-all-recs", methods=["POST"])
@@ -1233,14 +1220,8 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             
             if applied > 0 and db:
                 db.set_aggressivity_level("Custom")
-                # Write reload flag for instant pickup
-                try:
-                    with open("/tmp/reload_aggressivity.flag", "w") as f:
-                        f.write("Custom")
-                except Exception:
-                    pass
-                import os
-                os.system("docker compose restart bot &")
+                # Demander au bot de recharger sa configuration
+                db.set_config("bot_reload_aggressivity", "true")
                 
             return jsonify({"status": "ok", "applied_count": applied})
         except Exception as e:
