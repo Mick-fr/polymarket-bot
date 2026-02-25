@@ -157,12 +157,22 @@
                     </svg>
                 </div>
 
+                <!-- SYNERGY MATRIX (V16.0) -->
+                <div class="flex justify-between items-center p-2 border border-slate-800/50 rounded bg-[#0A0A0C]">
+                    <div class="text-[0.65rem] uppercase tracking-widest text-slate-500 font-bold">SYNERGY MATRIX</div>
+                    <div class="flex space-x-2 text-[0.65rem]">
+                        <span id="syn-mom-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">MOM</span>
+                        <span id="syn-obi-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400">OBI</span>
+                        <span id="syn-status" class="px-2 py-0.5 rounded bg-slate-800 text-slate-500">AWAIT</span>
+                    </div>
+                </div>
+
                 <!-- STEP 3: Alpha -->
                 <div id="step-3"
                     class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
                     <div class="flex items-center space-x-3">
                         <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 3</div>
-                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 6.5%]</div>
+                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 4.5%]</div>
                     </div>
                     <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
                         <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3"></circle>
@@ -356,15 +366,15 @@
                 const el = document.getElementById(id);
                 if (!el) return;
                 const C = 2 * Math.PI * radius;
-                const drawPct = Math.min(100, Math.max(0, val));
+                const drawPct = Math.min(100, Math.max(0, val * 100));
                 const offset = C - (drawPct / 100) * C;
                 el.style.strokeDasharray = `${C} ${C}`;
                 el.style.strokeDashoffset = offset;
 
                 let colorClass = "stroke-red-500";
-                if (val >= 100) colorClass = "stroke-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.8)]";
-                else if (val >= 50) colorClass = "stroke-orange-400";
-                else if (val === 0) colorClass = "stroke-slate-700";
+                if (drawPct >= 100) colorClass = "stroke-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.8)]";
+                else if (drawPct >= 50) colorClass = "stroke-orange-400";
+                else if (drawPct === 0) colorClass = "stroke-slate-700";
 
                 el.setAttribute('class', colorClass + " transition-all duration-300");
                 el.setAttribute('stroke-width', sw);
@@ -374,23 +384,47 @@
             // Step 1: IV Ready (treated as 100% or 0%)
             const step1Ready = checklist.iv_ready;
             document.getElementById('step-1').className = step1Ready ? checkOnClass : checkOffClass;
-            updateRing("step-1-ring", step1Ready ? 100 : 0, 14, 3);
+            updateRing("step-1-ring", step1Ready ? 1.0 : 0.0, 14, 3);
 
             // Step 2: Mom & OBI
             const step2Ready = checklist.mom_ok && checklist.obi_ok;
             document.getElementById('step-2').className = step2Ready ? checkOnClass : checkOffClass;
-            updateRing("step-2-mom-ring", pct.mom_pct || 0, 11, 2);
-            updateRing("step-2-obi-ring", pct.obi_pct || 0, 15, 2);
+            updateRing("step-2-mom-ring", pct.mom_progress || 0.0, 11, 2);
+            updateRing("step-2-obi-ring", pct.obi_progress || 0.0, 15, 2);
+
+            // Synergy Matrix (V16.0)
+            const momDir = data.momentum > 0 ? 1 : (data.momentum < 0 ? -1 : 0);
+            const obiDir = data.obi > 0 ? 1 : (data.obi < 0 ? -1 : 0);
+
+            const mb = document.getElementById('syn-mom-badge');
+            mb.className = momDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (momDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
+
+            const ob = document.getElementById('syn-obi-badge');
+            ob.className = obiDir > 0 ? "px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-400" : (obiDir < 0 ? "px-2 py-0.5 rounded bg-red-900/40 text-red-400" : "px-2 py-0.5 rounded bg-slate-800 text-slate-400");
+
+            const sb = document.getElementById('syn-status');
+            if (momDir !== 0 && obiDir !== 0 && momDir === obiDir) {
+                sb.className = "px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-400 font-bold";
+                sb.innerText = "LOCKED";
+            } else if (momDir !== 0 || obiDir !== 0) {
+                sb.className = "px-2 py-0.5 rounded bg-red-900/60 text-red-400 font-bold";
+                sb.innerText = "CLASH";
+            } else {
+                sb.className = "px-2 py-0.5 rounded bg-slate-800 text-slate-500";
+                sb.innerText = "AWAIT";
+            }
 
             // Step 3: Edge
             const step3Ready = checklist.edge_ok;
             document.getElementById('step-3').className = step3Ready ? checkOnClass : checkOffClass;
-            updateRing("step-3-ring", pct.edge_pct || 0, 14, 3);
+            updateRing("step-3-ring", pct.edge_progress || 0.0, 14, 3);
 
             // Trigger Projection Text
-            const proj = data.live_trigger_projection;
-            if (proj > 0) {
-                document.getElementById('trigger-proj-val').innerText = "BTC ≈ $" + proj.toFixed(2);
+            const proj = data.price_gap_nominal;
+            if (proj > 0 && data.btc_spot > 0) {
+                const gap = proj - data.btc_spot;
+                const sign = gap > 0 ? "+" : "";
+                document.getElementById('trigger-proj-val').innerText = "Target: " + sign + "$" + Math.abs(gap).toFixed(2) + " BTC movement needed";
             } else {
                 document.getElementById('trigger-proj-val').innerText = "Calculating...";
             }

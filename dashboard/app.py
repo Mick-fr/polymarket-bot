@@ -141,8 +141,12 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 "p_poly": float(db.get_config("live_sprint_ppoly", 0) or 0),
                 "ai_bias": float(db.get_config("live_ai_sentiment_bias", 1.0) or 1.0),
                 "live_checklist": json.loads(db.get_config_str("live_checklist", "{}") or "{}"),
-                "live_percentages": json.loads(db.get_config_str("live_percentages", "{}") or "{}"),
-                "live_trigger_projection": float(db.get_config("live_trigger_projection", 0) or 0)
+                "live_percentages": {
+                    "mom_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("mom_pct", 0) / 100.0, 3),
+                    "obi_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("obi_pct", 0) / 100.0, 3),
+                    "edge_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("edge_pct", 0) / 100.0, 3)
+                },
+                "price_gap_nominal": float(db.get_config("live_trigger_projection", 0) or 0)
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500

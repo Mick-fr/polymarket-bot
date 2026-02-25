@@ -1045,7 +1045,7 @@ class InfoEdgeStrategy(BaseStrategy):
     MAX_EXPO_PCT   = 0.25
     MAX_ORDER_USDC = 12.0
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 6.5     # V16.0 — lowered from 12.5 for institutional realism
+    MIN_EDGE_SCORE = 4.5     # V16.0 — lowered from 6.5 for institutional realism
     MAX_TRADE_PCT  = 0.08
     MIN_MINUTES    = 5.0
     MAX_MINUTES    = 90.0    # sweet spot optimal
@@ -1122,7 +1122,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     history = list(self.binance_ws.eth_history)
         
         if len(history) < 10 or (history[-1][0] - history[0][0]) < 30.0:
-            return 0.80
+            return 0.60
             
         returns = []
         for i in range(1, len(history)):
@@ -1132,7 +1132,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 returns.append(math.log(p1 / p0))
                 
         if not returns:
-            return 0.80
+            return 0.60
             
         mean_ret = sum(returns) / len(returns)
         var = sum((r - mean_ret)**2 for r in returns) / len(returns)
@@ -1191,6 +1191,15 @@ class InfoEdgeStrategy(BaseStrategy):
 
         if spot > 0 and strike > 0:
             p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
+            
+            # V16.0 OBI Drift
+            obi = 0.0
+            if self.binance_ws and self.binance_ws.is_connected:
+                obi = self.binance_ws.get_binance_obi("BTCUSDT")
+            if obi > 0.90:
+                p_true = min(0.99, p_true + (p_true - 0.5) * 0.2)
+            elif obi < -0.90:
+                p_true = max(0.01, p_true + (p_true - 0.5) * 0.2)
         else:
             p_true = 0.5
 
@@ -1243,8 +1252,13 @@ class InfoEdgeStrategy(BaseStrategy):
         if not markets:
             # --- V11.5 : Heartbeat pour le Live Scan Feed (when no markets) ---
             if self.db:
-                spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
+                now = time.time()
+                if not hasattr(self, '_last_heartbeat_ts'):
+                    self._last_heartbeat_ts = 0.0
+                if now - self._last_heartbeat_ts > 60.0:
+                    spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                    self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
+                    self._last_heartbeat_ts = now
             return signals
 
         portfolio = balance
@@ -1317,7 +1331,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 import json
                 tmom = 0.012
                 tobi = 0.12
-                tedge = 6.5
+                tedge = 4.5
                 
                 mom_ok = bool(abs(m30) > tmom)
                 obi_ok = bool(abs(o_val) > tobi)
@@ -1355,7 +1369,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         fixed_strike *= (1.0 - (getattr(self, '_last_funding', 0) * 50.0))
                         
                     minutes = market.days_to_expiry * 1440
-                    iv_val = getattr(self, '_last_iv', 0.80)
+                    iv_val = getattr(self, '_last_iv', 0.60)
                     
                     low, high = spot * 0.8, spot * 1.2
                     for _ in range(12):
@@ -1478,7 +1492,9 @@ class InfoEdgeStrategy(BaseStrategy):
                 else:
                     if self.db and not target_market_ids:
                         spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
-                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
+                        # V16.0 Only log interesting PASSes into GUI (edge > 2%) to reduce spam
+                        if abs(edge_pct) > 2.0:
+                            self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
                 
                 min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
                 continue # Bypass complet
