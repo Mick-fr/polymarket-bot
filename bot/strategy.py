@@ -1269,6 +1269,7 @@ class InfoEdgeStrategy(BaseStrategy):
         markets = self._universe.get_eligible_markets()
         
         # Récupération sécurisée des données Binance
+        live_spot = 0.0
         live_mom = 0.0
         live_obi = 0.0
         if self.binance_ws and self.binance_ws.is_connected:
@@ -1388,19 +1389,19 @@ class InfoEdgeStrategy(BaseStrategy):
                 
                 # V16.0 Trigger Projection Gap Tracker: Spot Required for 6.5% edge
                 spot_req = 0.0
-                if spot > 0 and getattr(self, '_last_iv', 0) > 0:
+                if live_spot > 0 and getattr(self, '_last_iv', 0) > 0:
                     target_p_true = min(0.99, market.mid_price + (tedge / 100.0))
                     if m30 < 0:
                         target_p_true = max(0.01, market.mid_price - (tedge / 100.0))
                         
-                    fixed_strike = spot * (1.0 - (market.mid_price - 0.5) * 0.1)
+                    fixed_strike = live_spot * (1.0 - (market.mid_price - 0.5) * 0.1)
                     if getattr(self, '_last_funding', 0) > 0.0001:
                         fixed_strike *= (1.0 - (getattr(self, '_last_funding', 0) * 50.0))
                         
                     minutes = market.days_to_expiry * 1440
                     iv_val = getattr(self, '_last_iv', 0.60)
                     
-                    low, high = spot * 0.8, spot * 1.2
+                    low, high = live_spot * 0.8, live_spot * 1.2
                     for _ in range(12):
                         mid_s = (low + high) / 2
                         pt = self._compute_p_true(mid_s, fixed_strike, minutes, iv_val)
