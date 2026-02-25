@@ -64,6 +64,7 @@ class TrailingStopManager:
         self.db = db
         self._position_max_pnl: dict[str, float] = {}
 
+    def update_and_check(self, positions: list[dict], current_vol: float) -> list[dict]:
         import json
         to_close = []
         status_data = {}
