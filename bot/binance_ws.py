@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 import collections
+import concurrent.futures
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class BinanceWSClient(threading.Thread):
     def __init__(self, on_tick_callback: Optional[callable] = None):
         super().__init__(daemon=True, name="BinanceWS")
         self.on_tick_callback = on_tick_callback
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         # Prix spot live
         self.btc_bid: float = 0.0
         self.btc_ask: float = 0.0
@@ -189,8 +191,8 @@ class BinanceWSClient(threading.Thread):
             
             # V13 Callback Asynchrone : Push Data Upstream Immediately
             if self.on_tick_callback and symbol in ["BTCUSDT", "ETHUSDT"]:
-                mid_signal = self.btc_bid + self.btc_ask / 2 if symbol == "BTCUSDT" else self.eth_bid + self.eth_ask / 2
-                threading.Thread(target=self.on_tick_callback, args=(symbol, mid_signal), daemon=True).start()
+                mid_signal = (self.btc_bid + self.btc_ask) / 2.0 if symbol == "BTCUSDT" else (self.eth_bid + self.eth_ask) / 2.0
+                self._executor.submit(self.on_tick_callback, symbol, mid_signal)
 
         except Exception:
             pass
@@ -236,7 +238,7 @@ class BinanceWSClient(threading.Thread):
 
                         # V13 Callback Asynchrone (Fallback)
                         if self.on_tick_callback and sym in ["BTCUSDT", "ETHUSDT"]:
-                            threading.Thread(target=self.on_tick_callback, args=(sym, mid), daemon=True).start()
+                            self._executor.submit(self.on_tick_callback, sym, mid)
                             
                     self._connected = True
             except Exception as e:
