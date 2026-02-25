@@ -374,7 +374,7 @@ class Trader:
             q_lower = m.question.lower()
             is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
             if is_btc and minutes_to_expiry <= 5.5:
-                sprint_ids.append(m.id)
+                sprint_ids.append(m.market_id)
                 
         if not sprint_ids:
             return

@@ -1260,7 +1260,7 @@ class InfoEdgeStrategy(BaseStrategy):
         traded = 0
         for market in markets:
             # V13 Rapid-Fire Targeting: Skip immediately if not in target list
-            if target_market_ids is not None and market.id not in target_market_ids:
+            if target_market_ids is not None and market.market_id not in target_market_ids:
                 continue
 
             if traded >= self.max_markets:
@@ -1331,7 +1331,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 
                 # V13 Optimization: Prevent console output spam during rapid-fire unless critical
                 if not target_market_ids and (abs(m30) > (tmom * 0.8) or abs(o_val) > (tobi * 0.8)):
-                    print(f"👀 [SCAN] {market.id[:6]} | Mom: {m30:.4f} (OK:{mom_ok_up or mom_ok_down}) | OBI: {o_val:.2f} (OK:{obi_ok_up or obi_ok_down})")
+                    print(f"👀 [SCAN] {market.market_id[:6]} | Mom: {m30:.4f} (OK:{mom_ok_up or mom_ok_down}) | OBI: {o_val:.2f} (OK:{obi_ok_up or obi_ok_down})")
                 
                 side = None
                 if mom_ok_up and obi_ok_up:
@@ -1340,7 +1340,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     side = "sell"
                 
                 if side:
-                    print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.id[:6]}")
+                    print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.market_id[:6]}")
                     max_edge_found = max(max_edge_found, 30.0)
                     
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
@@ -1349,7 +1349,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
                     signals.append(Signal(
                         token_id=token_yes if side == "buy" else token_no,
-                        market_id=market.id,
+                        market_id=market.market_id,
                         market_question=market.question,
                         side="buy",
                         order_type="market",
