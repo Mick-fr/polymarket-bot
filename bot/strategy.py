@@ -1254,8 +1254,9 @@ class InfoEdgeStrategy(BaseStrategy):
             m30 = float(self.db.get_config("live_btc_mom30s", 0) or 0)
             o_val = float(self.db.get_config("live_btc_obi", 0) or 0)
         
-        # Log de vérification (Bot Brain doit maintenant afficher comme le dashboard)
-        logger.info(f"[DEBUG RADAR] Bot Brain (DB Sync): Mom={m30:.4f}% | OBI={o_val:.2f}")
+        if self.db:
+            m30 = float(self.db.get_config("live_btc_mom30s", 0) or 0)
+            o_val = float(self.db.get_config("live_btc_obi", 0) or 0)
 
         traded = 0
         for market in markets:
@@ -1286,7 +1287,6 @@ class InfoEdgeStrategy(BaseStrategy):
                 min_edge = 7.0     # Seuil assoupli pour capter le momentum
                 min_vol = 0        # MODIFIÉ V11.7 : Un marché neuf n'a pas de volume initial
                 max_trade = 0.06
-                logger.info("[5MIN BTC SPRINT] Détecté — reste %.1f min | Edge cible=%.1f%%", minutes_to_expiry, min_edge)
             else:
                 min_minutes = self.MIN_MINUTES
                 min_edge = self.MIN_EDGE_SCORE
@@ -1329,9 +1329,16 @@ class InfoEdgeStrategy(BaseStrategy):
                 obi_ok_up = o_val > tobi
                 obi_ok_down = o_val < -tobi
                 
-                # V13 Optimization: Prevent console output spam during rapid-fire unless critical
-                if not target_market_ids and (abs(m30) > (tmom * 0.8) or abs(o_val) > (tobi * 0.8)):
-                    print(f"👀 [SCAN] {market.market_id[:6]} | Mom: {m30:.4f} (OK:{mom_ok_up or mom_ok_down}) | OBI: {o_val:.2f} (OK:{obi_ok_up or obi_ok_down})")
+                # V14.1 Radar Log Consolidation
+                now = time.time()
+                if not hasattr(self, '_last_pulse_ts'):
+                    self._last_pulse_ts = 0.0
+                
+                if (edge_pct > 0) or (now - self._last_pulse_ts > 2.0):
+                    spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                    logger.info("PULSE | Spot: %.2f | Mom: %.4f | OBI: %.2f | Edge: %.2f%%", 
+                                spot, m30, o_val, edge_pct)
+                    self._last_pulse_ts = now
                 
                 side = None
                 if mom_ok_up and obi_ok_up:
@@ -1435,7 +1442,14 @@ class InfoEdgeStrategy(BaseStrategy):
             traded += 1
 
         avg_edge = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
-        logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
+        
+        # V14.1 Log Throttling
+        now = time.time()
+        if not hasattr(self, '_last_v106_log_ts'):
+            self._last_v106_log_ts = 0.0
+        if now - self._last_v106_log_ts > 5.0 or signals:
+            logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
+            self._last_v106_log_ts = now
         if self.db:
             try:
                 self.db.set_config("info_edge_avg_score", round(avg_edge, 2))

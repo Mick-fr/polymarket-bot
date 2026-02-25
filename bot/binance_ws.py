@@ -51,12 +51,14 @@ class BinanceWSClient(threading.Thread):
         self.btc_ask: float = 0.0
         self.eth_bid: float = 0.0
         self.eth_ask: float = 0.0
+        # V10.5 Momentum & OBI
+        self.btc_obi: float = 0.0
+        self.btc_obi_ema: float = 0.0
+        self.eth_obi: float = 0.0
+        self.eth_obi_ema: float = 0.0
         # Funding rate (polled)
         self.btc_funding: float = 0.0
         self.eth_funding: float = 0.0
-        # V10.5 Momentum & OBI
-        self.btc_obi: float = 0.0
-        self.eth_obi: float = 0.0
         self.btc_history = collections.deque(maxlen=90)
         self.eth_history = collections.deque(maxlen=90)
         # Metadata
@@ -174,7 +176,9 @@ class BinanceWSClient(threading.Thread):
                     self.btc_ask = ask
                     bid_qty = float(data.get("B", 0))
                     ask_qty = float(data.get("A", 0))
-                    self.btc_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    raw_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    self.btc_obi_ema = 0.2 * raw_obi + 0.8 * self.btc_obi_ema if self.btc_obi_ema else raw_obi
+                    self.btc_obi = self.btc_obi_ema
                     mid = (bid + ask) / 2
                     if not self.btc_history or now - self.btc_history[-1][0] >= 1.0:
                         self.btc_history.append((now, mid))
@@ -183,7 +187,9 @@ class BinanceWSClient(threading.Thread):
                     self.eth_ask = ask
                     bid_qty = float(data.get("B", 0))
                     ask_qty = float(data.get("A", 0))
-                    self.eth_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    raw_obi = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
+                    self.eth_obi_ema = 0.2 * raw_obi + 0.8 * self.eth_obi_ema if self.eth_obi_ema else raw_obi
+                    self.eth_obi = self.eth_obi_ema
                     mid = (bid + ask) / 2
                     if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
                         self.eth_history.append((now, mid))
