@@ -1065,6 +1065,8 @@ class InfoEdgeStrategy(BaseStrategy):
         self._last_quote_ts = {}
         self._quote_cooldown = 16.0
         self.binance_ws = binance_ws  # BinanceWSClient instance
+        # V19: Telemetry buffer to decouple DB writes from rapid-fire loop
+        self._telemetry_buffer: dict[str, any] = {}
 
     def _check_market_streaks(self) -> bool:
         """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
@@ -1267,9 +1269,9 @@ class InfoEdgeStrategy(BaseStrategy):
             try:
                 live_obi = self.binance_ws.get_binance_obi("BTCUSDT")
                 live_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
-                if self.db:
-                    self.db.set_config("live_btc_mom30s", round(live_mom, 4))
-                    self.db.set_config("live_btc_obi", round(live_obi, 3))
+                # V19: Write to memory buffer instead of DB
+                self._telemetry_buffer["live_btc_mom30s"] = round(live_mom, 4)
+                self._telemetry_buffer["live_btc_obi"] = round(live_obi, 3)
             except Exception as e:
                 logger.debug("[Radar] Erreur update Binance globale: %s", e)
 
@@ -1341,15 +1343,16 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
 
             if is_sprint and self.db:
-                self.db.set_config("live_sprint_edge", round(edge_pct, 2))
-                self.db.set_config("live_sprint_ptrue", round(p_true, 3))
-                self.db.set_config("live_sprint_ppoly", round(p_poly, 3))
+                # V19: Buffered DB writes
+                self._telemetry_buffer["live_sprint_edge"] = round(edge_pct, 2)
+                self._telemetry_buffer["live_sprint_ptrue"] = round(p_true, 3)
+                self._telemetry_buffer["live_sprint_ppoly"] = round(p_poly, 3)
                 
                 # V15.2 Log these globally for dashboard compatibility even if not trading
                 if hasattr(self, '_last_iv'):
-                    self.db.set_config("live_dynamic_iv", round(self._last_iv, 4))
+                    self._telemetry_buffer["live_dynamic_iv"] = round(self._last_iv, 4)
                 if hasattr(self, '_last_funding'):
-                    self.db.set_config("live_funding_rate", round(self._last_funding, 6))
+                    self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
                 # V15.5 Visual Checklist & V16.0 Logic Constraints
                 import json
@@ -1373,13 +1376,13 @@ class InfoEdgeStrategy(BaseStrategy):
                     "edge_ok": edge_ok,
                     "iv_ready": iv_ready
                 }
-                self.db.set_config("live_checklist", json.dumps(checklist))
-                
-                self.db.set_config("live_percentages", json.dumps({
+                # V19: Buffered DB writes
+                self._telemetry_buffer["live_checklist"] = json.dumps(checklist)
+                self._telemetry_buffer["live_percentages"] = json.dumps({
                     "mom_pct": round(mom_pct, 1),
                     "obi_pct": round(obi_pct, 1),
                     "edge_pct": round(edge_pct_ratio, 1)
-                }))
+                })
                 
                 # V16.0 Trigger Projection Gap Tracker: Spot Required for 6.5% edge
                 spot_req = 0.0
@@ -1408,7 +1411,8 @@ class InfoEdgeStrategy(BaseStrategy):
                             high = mid_s
                     spot_req = (low + high) / 2
                 
-                self.db.set_config("live_trigger_projection", round(spot_req, 2))
+                # V19: Buffered DB write
+                self._telemetry_buffer["live_trigger_projection"] = round(spot_req, 2)
 
                 # V15.7 Near Miss Logic (3/4 conditions met)
                 conditions = {"Mom": mom_ok, "OBI": obi_ok, "Edge": edge_ok, "IV": iv_ready}
@@ -1620,6 +1624,21 @@ class InfoEdgeStrategy(BaseStrategy):
                 self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
 
         return signals
+
+    def flush_telemetry(self):
+        """V19: Asynchronously flush buffered telemetry to DB to avoid GIL locking in on_price_tick"""
+        if not self.db or not self._telemetry_buffer:
+            return
+            
+        try:
+            # Snapshot the buffer to avoid race conditions with tick updates
+            snapshot = dict(self._telemetry_buffer)
+            self._telemetry_buffer.clear()
+            
+            for key, value in snapshot.items():
+                self.db.set_config(key, value)
+        except Exception as e:
+            logger.debug("[Telemetry] Erreur lors du flush DB: %s", e)
 
     def info_edge_signals_only(self, balance: float = 0.0) -> list[Signal]:
         """V10.6 ENFORCED — 105$ capital optimized + 5-MIN BTC SCALPER (Mom>0.015%)."""

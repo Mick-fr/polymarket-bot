@@ -13,6 +13,7 @@ import logging
 import time
 import signal as os_signal
 import sys
+import threading
 from typing import Optional
 
 from bot.config import AppConfig
@@ -118,6 +119,37 @@ class Trader:
 
         self._connect()
 
+        # V19: Telemetry background flusher & Absolute Kill Switch
+        def _telemetry_worker():
+            while self._running:
+                # 1. Flush telemetry
+                if getattr(self, "info_edge_strategy", None):
+                    try:
+                        self.info_edge_strategy.flush_telemetry()
+                    except:
+                        pass
+                        
+                # 2. V19 Absolute Kill Switch: Watchdog BinanceWS
+                if getattr(self, "binance_ws", None) and getattr(self.config.bot, "paper_trading", False) is False:
+                    try:
+                        age = self.binance_ws.age_seconds
+                        if age > 5.0 and self.pm_client.is_alive():
+                            has_live = len(self.db.get_live_orders()) > 0
+                            if has_live:
+                                logger.critical("[V19 KILL SWITCH] 🚨 Perte Binance WS (%.1fs). Annulation URGENCE de tous les ordres!", age)
+                                self.pm_client.cancel_all_orders()
+                                self.db.add_log("CRITICAL", "trader", f"V19 Kill Switch: BinanceWS data age {age:.1f}s")
+                                # Mark as canceled in DB to avoid ghost orders
+                                for o in self.db.get_live_orders():
+                                    if o.get("order_id"):
+                                        self.db.update_order_status_by_clob_id(o["order_id"], "cancelled")
+                    except Exception as e:
+                        logger.error("[V19 KILL SWITCH] Erreur watchdog: %s", e)
+                        
+                time.sleep(1.0)
+                
+        self._telemetry_thread = threading.Thread(target=_telemetry_worker, daemon=True, name="TelemetryFlusher")
+
         # Vérifier et mettre à jour les allowances ERC-1155 pour tous les tokens
         # en inventaire au démarrage (évite les erreur 400 sur les SELL existants)
         if not self.config.bot.paper_trading:
@@ -208,16 +240,32 @@ class Trader:
         self._running = True
         logger.info("[V13.0] Basculement en mode Event-Driven Sniper. En attente de signaux WS...")
         
+        # V19: Isolate _maintenance_loop in a dedicated background thread to preserve GIL and main thread signals
+        def _bg_maintenance():
+            # Initial slight delay strictly for connection settling
+            time.sleep(5.0)
+            while self._running:
+                try:
+                    self._maintenance_loop()
+                    self._consecutive_errors = 0
+                except Exception as e:
+                    self._handle_error(e)
+                    
+                # Sleep in small chunks to allow quick exit on shutdown
+                for _ in range(60):
+                    if not self._running:
+                        break
+                    time.sleep(1.0)
+                    
+        self._maintenance_thread = threading.Thread(target=_bg_maintenance, daemon=True, name="MaintenanceLoop")
+        self._maintenance_thread.start()
+        
         while self._running:
             try:
-                self._maintenance_loop()
-                self._consecutive_errors = 0
-                time.sleep(60.0) # V13: Chronjob toutes les 60s
-
+                time.sleep(1.0)
             except KeyboardInterrupt:
                 logger.info("Arrêt demandé par l'utilisateur (Ctrl+C)")
                 break
-
             except Exception as e:
                 self._handle_error(e)
 
@@ -1279,56 +1327,57 @@ class Trader:
     def _compute_portfolio_value(self, usdc_balance: float) -> float:
         """
         Calcule la valeur totale du portefeuille en USDC.
-
-        Valorisation des shares par priorité (plus fiable → moins fiable) :
-          1. current_mid DB [0.01, 0.99] — prix de marché récent
-             (mis à jour par _refresh_inventory_mids() + strategy.py)
-          2. avg_price DB [0.01, 0.99] — prix d'entrée historique (fallback)
-             Utilisé quand current_mid est absent (ex: token 404 au 1er cycle)
-             ou pour les marchés sans liquidité persistante.
-          3. Position ignorée si avg_price aussi hors bornes (protège le HWM).
-
-        Utilisé pour le High Water Mark et le circuit breaker.
-        En cas d'erreur DB, retourne usdc_balance (mode dégradé safe).
+        V19: Refactor strict basé sur le VRAI mid_price du carnet WS de Polymarket
+        (si dispo) pour éviter le ghost balance lié aux décalages de DB avg_price.
         """
         try:
             positions = self.db.get_all_positions()
             inventory_value = 0.0
             skipped = []
+            
             for p in positions:
                 qty = float(p.get("quantity") or 0)
                 if qty <= 0:
                     continue
+                    
                 token_id = p.get("token_id", "")
                 if token_id in self._mid_404_tokens:
-                    # Ignore 404 (resolved/empty) from portfolio HWM
                     continue
-                # ── 1. current_mid DB ──────────────────────────────────────────
-                stored_mid = float(p.get("current_mid") or 0)
-                if 0.01 <= stored_mid <= 0.99:
-                    inventory_value += qty * stored_mid
-                    continue
-                # ── 2. avg_price DB [0.01, 0.99] ──────────────────────────────
-                raw_price = float(p.get("avg_price") or 0)
-                if 0.01 <= raw_price <= 0.99:
-                    inventory_value += qty * raw_price
-                    continue
-                # ── 3. avg_price hors bornes → exclure du HWM ─────────────────
-                skipped.append((p.get("token_id", "?")[:16], qty, raw_price))
 
-            if skipped:
-                logger.warning(
-                    "[Portfolio] %d position(s) exclue(s) du HWM — mid et avg_price "
-                    "hors bornes [0.01,0.99]: %s. Lancer sanitize_positions().",
-                    len(skipped),
-                    [(tid, f"qty={q:.2f}", f"avg={av:.4f}") for tid, q, av in skipped],
-                )
+                mid = 0.0
+                
+                # 1. WS Temps Réel (Le plus précis pour le HWM)
+                if getattr(self.pm_client, "ws_client", None) and getattr(self.pm_client.ws_client, "running", False):
+                    # PolymarketWSClient get_order_book
+                    ob = self.pm_client.ws_client.get_order_book(token_id)
+                    if ob and ob.get("mid"):
+                        live_mid = ob["mid"]
+                        if 0.01 < live_mid < 0.99:
+                            mid = live_mid
+                            
+                # 2. DB current_mid (Délai max: 60s)
+                if mid == 0.0:
+                    stored_mid = float(p.get("current_mid") or 0)
+                    if 0.01 <= stored_mid <= 0.99:
+                        mid = stored_mid
+                        
+                # 3. Fallback d'avg_price fortement pénalisé
+                # Empêche un faux trigger HWM si le marché a dump et on n'a plus de mid
+                if mid == 0.0:
+                    raw_price = float(p.get("avg_price") or 0)
+                    if 0.01 <= raw_price <= 0.99:
+                        mid = raw_price * 0.95
+                    else:
+                        skipped.append((token_id[:16], qty, raw_price))
+                        continue
+                        
+                inventory_value += qty * mid
 
             total = usdc_balance + inventory_value
             if inventory_value > 0:
                 logger.debug(
                     "[Portfolio] USDC=%.4f + inventaire=%.4f → total=%.4f USDC "
-                    "(%d position(s), %d exclue(s))",
+                    "(%d valides, %d exclues)",
                     usdc_balance, inventory_value, total,
                     len(positions) - len(skipped), len(skipped),
                 )
