@@ -45,7 +45,7 @@ class BinanceWSClient(threading.Thread):
     def __init__(self, on_tick_callback: Optional[callable] = None):
         super().__init__(daemon=True, name="BinanceWS")
         self.on_tick_callback = on_tick_callback
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
         # Prix spot live
         self.btc_bid: float = 0.0
         self.btc_ask: float = 0.0
@@ -160,7 +160,7 @@ class BinanceWSClient(threading.Thread):
             on_error=self._on_error,
             on_close=self._on_close,
         )
-        ws.run_forever(ping_interval=30, ping_timeout=10)
+        ws.run_forever(ping_interval=60, ping_timeout=30)
 
     def _on_open(self, ws):
         self._connected = True

@@ -1062,7 +1062,9 @@ class InfoEdgeStrategy(BaseStrategy):
         self._quote_cooldown = 16.0
         self.binance_ws = binance_ws  # BinanceWSClient instance
         # V19: Telemetry buffer to decouple DB writes from rapid-fire loop
+        import threading
         self._telemetry_buffer: dict[str, any] = {}
+        self._telemetry_lock = threading.Lock()
 
     def _check_market_streaks(self) -> bool:
         """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
@@ -1263,11 +1265,14 @@ class InfoEdgeStrategy(BaseStrategy):
         live_obi = 0.0
         if self.binance_ws and self.binance_ws.is_connected:
             try:
+                live_spot = self.binance_ws.get_mid("BTCUSDT")
                 live_obi = self.binance_ws.get_binance_obi("BTCUSDT")
                 live_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
                 # V19: Write to memory buffer instead of DB
-                self._telemetry_buffer["live_btc_mom30s"] = round(live_mom, 4)
-                self._telemetry_buffer["live_btc_obi"] = round(live_obi, 3)
+                with self._telemetry_lock:
+                    self._telemetry_buffer["live_btc_spot"] = round(live_spot, 2)
+                    self._telemetry_buffer["live_btc_mom30s"] = round(live_mom, 4)
+                    self._telemetry_buffer["live_btc_obi"] = round(live_obi, 3)
             except Exception as e:
                 logger.debug("[Radar] Erreur update Binance globale: %s", e)
 
@@ -1332,9 +1337,10 @@ class InfoEdgeStrategy(BaseStrategy):
 
             if is_sprint and self.db:
                 # V19: Buffered DB writes
-                self._telemetry_buffer["live_sprint_edge"] = round(edge_pct, 2)
-                self._telemetry_buffer["live_sprint_ptrue"] = round(p_true, 3)
-                self._telemetry_buffer["live_sprint_ppoly"] = round(p_poly, 3)
+                with self._telemetry_lock:
+                    self._telemetry_buffer["live_sprint_edge"] = round(edge_pct, 2)
+                    self._telemetry_buffer["live_sprint_ptrue"] = round(p_true, 3)
+                    self._telemetry_buffer["live_sprint_ppoly"] = round(p_poly, 3)
                 
                 # V15.2 Log these globally for dashboard compatibility even if not trading
                 if hasattr(self, '_last_iv'):
@@ -1509,11 +1515,11 @@ class InfoEdgeStrategy(BaseStrategy):
                     
                     # V13 Optimization: Only log to DB if we are not in rapid-fire mode to save MS
                     if self.db and not target_market_ids:
-                        spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
+                        spot_price = live_spot if 'live_spot' in locals() else 0.0
                         self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
                 else:
                     if self.db and not target_market_ids:
-                        spot_price = float(self.db.get_config("live_btc_spot", 0) or 0)
+                        spot_price = live_spot if 'live_spot' in locals() else 0.0
                         # V16.0 Only log interesting PASSes into GUI (edge > 2%) to reduce spam
                         if abs(edge_pct) > 2.0:
                             self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
@@ -1592,13 +1598,14 @@ class InfoEdgeStrategy(BaseStrategy):
             logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
             self._last_v106_log_ts = now
         if self.db:
-            self._telemetry_buffer["info_edge_avg_score"] = round(avg_edge, 2)
-            self._telemetry_buffer["live_found_markets"] = sprint_markets_count
-            self._telemetry_buffer["live_max_edge"] = round(max_edge_found, 1)
-            
-            # Nouveau : Sauvegarde du spread (si aucun marché, on met 0)
-            final_spread = round(min_spread_found, 3) if min_spread_found != 999.0 else 0.0
-            self._telemetry_buffer["live_min_spread"] = final_spread
+            with self._telemetry_lock:
+                self._telemetry_buffer["info_edge_avg_score"] = round(avg_edge, 2)
+                self._telemetry_buffer["live_found_markets"] = sprint_markets_count
+                self._telemetry_buffer["live_max_edge"] = round(max_edge_found, 1)
+                
+                # Nouveau : Sauvegarde du spread (si aucun marché, on met 0)
+                final_spread = round(min_spread_found, 3) if min_spread_found != 999.0 else 0.0
+                self._telemetry_buffer["live_min_spread"] = final_spread
 
         # --- V11.5 : Heartbeat pour le Live Scan Feed ---
         if self.db and len(signals) == 0:
@@ -1617,8 +1624,9 @@ class InfoEdgeStrategy(BaseStrategy):
             
         try:
             # Snapshot the buffer to avoid race conditions with tick updates
-            snapshot = dict(self._telemetry_buffer)
-            self._telemetry_buffer.clear()
+            with self._telemetry_lock:
+                snapshot = dict(self._telemetry_buffer)
+                self._telemetry_buffer.clear()
             
             for key, value in snapshot.items():
                 self.db.set_config(key, value)
