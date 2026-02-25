@@ -112,10 +112,6 @@ class OBIResult:
     v_bid:    float          # Volume agrege bid
     v_ask:    float          # Volume agrege ask
     regime:   str            # 'bullish' | 'bearish' | 'neutral'
-
-    regime:   str            # 'bullish' | 'bearish' | 'neutral'
-
-    regime:   str            # 'bullish' | 'bearish' | 'neutral'
 def fetch_sprint_targets():
     """Fetches the specific 5-Min BTC markets directly by slug."""
     current_ts = int(time.time())
@@ -1298,16 +1294,8 @@ class InfoEdgeStrategy(BaseStrategy):
         max_edge_found = 0.0
         min_spread_found = 999.0
         sprint_markets_count = 0
-        # --- V12.10 : LECTURE DIRECTE EN DB ---
-        m30 = 0.0
-        o_val = 0.0
-        if self.db:
-            m30 = float(self.db.get_config("live_btc_mom30s", 0) or 0)
-            o_val = float(self.db.get_config("live_btc_obi", 0) or 0)
-        
-        if self.db:
-            m30 = float(self.db.get_config("live_btc_mom30s", 0) or 0)
-            o_val = float(self.db.get_config("live_btc_obi", 0) or 0)
+        m30 = live_mom
+        o_val = live_obi
 
         traded = 0
         for market in markets:
@@ -1604,16 +1592,13 @@ class InfoEdgeStrategy(BaseStrategy):
             logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
             self._last_v106_log_ts = now
         if self.db:
-            try:
-                self.db.set_config("info_edge_avg_score", round(avg_edge, 2))
-            except Exception:
-                pass
-            self.db.set_config("live_found_markets", sprint_markets_count)
-            self.db.set_config("live_max_edge", round(max_edge_found, 1))
+            self._telemetry_buffer["info_edge_avg_score"] = round(avg_edge, 2)
+            self._telemetry_buffer["live_found_markets"] = sprint_markets_count
+            self._telemetry_buffer["live_max_edge"] = round(max_edge_found, 1)
             
             # Nouveau : Sauvegarde du spread (si aucun marché, on met 0)
             final_spread = round(min_spread_found, 3) if min_spread_found != 999.0 else 0.0
-            self.db.set_config("live_min_spread", final_spread)
+            self._telemetry_buffer["live_min_spread"] = final_spread
 
         # --- V11.5 : Heartbeat pour le Live Scan Feed ---
         if self.db and len(signals) == 0:

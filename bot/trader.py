@@ -63,6 +63,10 @@ class Trader:
         
         # V15 Throttling Caches
         self.cached_balance: float = 0.0
+        self.cached_portfolio_value: float = 0.0
+        self.cached_kill_switch: bool = False
+        self.cached_bot_active: bool = True
+        self.cached_strategy_mode: str = "Info Edge Only"
         self.active_targets: list[str] = []
         # Cache timestamps pour _refresh_inventory_mids().
         # {token_id: timestamp_dernière_tentative} — distinct selon le résultat :
@@ -427,13 +431,13 @@ class Trader:
         if symbol != "BTCUSDT":
             return
             
-        # Kill switch check
-        kill_switch = self.db.get_kill_switch()
-        bot_active = self.db.get_config("bot_active", "true") != "false"
+        # Kill switch check (V20.1 cached values)
+        kill_switch = self.cached_kill_switch
+        bot_active = self.cached_bot_active
         if kill_switch or not bot_active:
             return
             
-        strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
+        strategy_mode = self.cached_strategy_mode
         if strategy_mode != "Info Edge Only":
             return # Le mode sniper event-driven n'est actif que sur Info Edge Only
             
@@ -455,7 +459,7 @@ class Trader:
         if not signals:
             return
             
-        portfolio_value = self._compute_portfolio_value(balance_raw)
+        portfolio_value = self.cached_portfolio_value
         
         # Exécution immédiate
         residual_balance = balance
@@ -515,7 +519,14 @@ class Trader:
         self._log_inventory_breakdown(balance_raw, portfolio_value)
         
         balance = self._fetch_available_balance(balance_raw)
-        self.cached_balance = balance # V15 cache update
+        
+        # V20.1: Cache update for hot-path _on_price_tick to avoid DB blocking
+        self.cached_balance = balance
+        self.cached_portfolio_value = portfolio_value
+        self.cached_kill_switch = self.db.get_kill_switch()
+        self.cached_bot_active = self.db.get_config("bot_active", "true") != "false"
+        self.cached_strategy_mode = self.db.get_config_str("strategy_mode", "MM Balanced")
+        
         self.db.record_balance(balance)
         
         # V15 Static Target Population
