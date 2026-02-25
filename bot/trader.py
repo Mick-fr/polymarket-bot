@@ -1212,16 +1212,25 @@ class Trader:
                     dpnl = portfolio_value - start_balance
                     from bot.telegram import send_alert
                     send_alert(f"📊 DAILY SUMMARY\nPnL Jour: {dpnl:+.2f}$\nWinrate: {winrate:.1f}%\nMax Drawdown: -{dd*100:.1f}%\nPortfolio: ${portfolio_value:.2f}")
+                    
+                    # V17.0 Alertes Telemetry : Sharpe Ratio
+                    from bot.analytics import TradeAnalytics
+                    analytics = TradeAnalytics(self.db)
+                    metrics = analytics.get_overall_metrics()
+                    sharpe = metrics.get('sharpe_ratio', 0.0)
+                    if 0 < sharpe < 1.5:
+                        send_alert(f"⚠️ SHARPE RATIO ALERT: {sharpe:.2f} < 1.5 (Performance sous-optimale)")
+                        
                     self._last_daily_summary_date = now_utc.date()
             
             drawdown = (hwm - portfolio_value) / hwm if hwm > 0 else 0
             
-            # Critical Drawdown Alert > 8%
-            if drawdown > 0.08 and not getattr(self, "_dd_alerted", False):
+            # Critical Drawdown Alert > 3% (V17.0)
+            if drawdown > 0.03 and not getattr(self, "_dd_alerted", False):
                 from bot.telegram import send_alert
                 send_alert(f"🚨 CRITICAL DRAWDOWN: -{drawdown*100:.1f}%\nPortfolio: ${portfolio_value:.2f} (HWM: ${hwm:.2f})")
                 self._dd_alerted = True
-            elif drawdown < 0.05:
+            elif drawdown < 0.02:
                 self._dd_alerted = False
 
         except Exception as e:

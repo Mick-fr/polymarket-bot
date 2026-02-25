@@ -35,7 +35,8 @@ SIDE_MAP = {"buy": BUY, "sell": SELL}
 _CTF_EXCHANGE_ADDRESS      = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 _NEG_RISK_CTF_EXCHANGE     = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 _CTF_EXCHANGE_SPENDER      = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # FIXED: bon spender CLOB
-_POLYGON_RPC               = "https://polygon-rpc.com"
+import os as _os
+_POLYGON_RPC               = _os.getenv("PRIVATE_RPC_URL", "https://polygon-rpc.com")
 
 # ABI minimal ERC-1155 — uniquement isApprovedForAll (lecture seule, sans gas).
 _ERC1155_ABI_MINIMAL = [

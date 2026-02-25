@@ -123,7 +123,10 @@ def fetch_sprint_targets():
     slugs = [
         f"btc-updown-5m-{base_ts}",
         f"btc-updown-5m-{base_ts + 300}",
-        f"btc-updown-5m-{base_ts + 600}"
+        f"btc-updown-5m-{base_ts + 600}",
+        f"eth-updown-5m-{base_ts}",
+        f"eth-updown-5m-{base_ts + 300}",
+        f"eth-updown-5m-{base_ts + 600}"
     ]
     logger.debug("[V15.2 Sprints] Polling Sprint Targets: %s", slugs)
     sprint_markets = []
@@ -1052,7 +1055,7 @@ class InfoEdgeStrategy(BaseStrategy):
     MIN_VOLUME_5M  = 520     # ~150k$ volume 24h
     IMPLIED_VOL    = 0.80
 
-    def __init__(self, client: PolymarketClient, db=None, max_markets: int = 20,
+    def __init__(self, client: PolymarketClient, db=None, max_markets: int = 8,
                  max_order_size_usdc: float = 12.0, binance_ws=None):
         super().__init__(client)
         self.db = db
@@ -1062,6 +1065,27 @@ class InfoEdgeStrategy(BaseStrategy):
         self._last_quote_ts = {}
         self._quote_cooldown = 16.0
         self.binance_ws = binance_ws  # BinanceWSClient instance
+
+    def _check_market_streaks(self) -> bool:
+        """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
+        if not self.db: return False
+        try:
+            trades = self.db.get_closed_trades(limit=25)
+            btc_sprints = [t for t in trades if "BTC" in t.get("question", "").upper() and "5" in t.get("question", "")]
+            if len(btc_sprints) < 3:
+                return False
+            
+            recent_3 = btc_sprints[:3]
+            for t in recent_3:
+                side = t.get("side", "")
+                pnl = float(t.get("pnl_usdc", 0.0))
+                is_up = (side == "buy" and pnl > 0) or (side == "sell" and pnl < 0)
+                if not is_up:
+                    return False
+            return True
+        except Exception as e:
+            logger.debug("[Anti-Streak] Erreur: %s", e)
+            return False
 
     def _is_btc_eth(self, q: str) -> bool:
         q_up = q.upper()
@@ -1467,7 +1491,13 @@ class InfoEdgeStrategy(BaseStrategy):
                     print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.market_id[:6]}")
                     max_edge_found = max(max_edge_found, 30.0)
                     
-                    base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
+                    sizing_penalty = 1.0
+                    # V17.0: Filtre Anti-Streak
+                    if side == "buy" and is_btc and self._check_market_streaks():
+                        sizing_penalty = 0.5
+                        logger.warning("[V17.0] ANTI-STREAK: 3 derniers BTC UP -> Sizing -50% sur %s", market.market_id[:6])
+                        
+                    base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
                     order_size = min(base_order * 2.8, portfolio * 0.06, self.MAX_ORDER_USDC)
                     shares = max(5.0, order_size / 0.50)
 

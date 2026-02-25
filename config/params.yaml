@@ -16,7 +16,7 @@ bot:
   # 2026 V6 SCALING
   # Avellaneda-Stoikov
   as_enabled: true
-  as_risk_aversion: 0.25
+  as_risk_aversion: 0.45
   as_inventory_target: 0.0
   
   # Copy Trading

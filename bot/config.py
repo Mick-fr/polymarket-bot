@@ -78,7 +78,7 @@ class BotConfig:
 
     # 2026 V6 SCALING
     as_enabled: bool = True
-    as_risk_aversion: float = 0.25
+    as_risk_aversion: float = 0.45
     as_inventory_target: float = 0.0
 
     copy_trading_enabled: bool = False
@@ -170,7 +170,7 @@ def load_config() -> AppConfig:
             
             # 2026 V6 SCALING
             as_enabled=str(os.getenv("AS_ENABLED") or bot_yml.get("as_enabled", True)).lower() == "true",
-            as_risk_aversion=float(os.getenv("AS_RISK_AVERSION") or bot_yml.get("as_risk_aversion", 0.25)),
+            as_risk_aversion=float(os.getenv("AS_RISK_AVERSION") or bot_yml.get("as_risk_aversion", 0.45)),
             as_inventory_target=float(os.getenv("AS_INVENTORY_TARGET") or bot_yml.get("as_inventory_target", 0.0)),
             copy_trading_enabled=str(os.getenv("COPY_TRADING_ENABLED") or bot_yml.get("copy_trading_enabled", False)).lower() == "true",
             copy_top_n=int(os.getenv("COPY_TOP_N") or bot_yml.get("copy_top_n", 10)),

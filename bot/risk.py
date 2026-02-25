@@ -400,6 +400,14 @@ class RiskManager:
         delta = order_cost if signal.side == "buy" else -order_cost
         net_exposure = abs(current_exposure_usdc + delta)
 
+        # V17.0: Hard Inventory Cap (25% max per position)
+        if net_exposure > balance * 0.25:
+            return RiskVerdict(
+                False,
+                f"EXPO_MAX: position > 25% du portfolio ({net_exposure:.2f} > {balance*0.25:.2f} USDC)",
+                "none",
+            )
+
         if net_exposure > max_exposure:
             return RiskVerdict(
                 False,
@@ -426,6 +434,29 @@ class RiskManager:
         net_exposure = abs(self._get_current_exposure_usdc(
             signal.token_id, getattr(signal, "mid_price", 0.0)
         ))
+        
+        # V17.0: Kill Switch Skew (> 15% pendant > 60s)
+        import time
+        skew_ratio = net_exposure / balance if balance > 0 else 0.0
+        ts_key = f"skew_ts_{signal.token_id}"
+        if skew_ratio > 0.15:
+            now = time.time()
+            first_skew = float(self.db.get_config(ts_key) or 0.0)
+            if first_skew == 0.0:
+                self.db.set_config(ts_key, now)
+            elif (now - first_skew) > 60.0:
+                logger.warning(
+                    "[RiskManager] SKEW_WARNING: Skew > 15%% pendant >60s (%s). Ask-Only.", signal.token_id[:16]
+                )
+                if signal.side == "buy":
+                    return RiskVerdict(
+                        False, 
+                        f"SKEW_WARNING: Skew {skew_ratio*100:.1f}% > 60s", 
+                        "cancel_bids"
+                    )
+        else:
+            self.db.set_config(ts_key, 0.0)
+            
         ratio         = net_exposure / max_exposure
 
         if ratio >= INVENTORY_SKEW_LIQ:
