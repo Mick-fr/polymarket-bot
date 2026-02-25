@@ -139,7 +139,10 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 "sprint_edge": float(db.get_config("live_sprint_edge", 0) or 0),
                 "p_true": float(db.get_config("live_sprint_ptrue", 0) or 0),
                 "p_poly": float(db.get_config("live_sprint_ppoly", 0) or 0),
-                "ai_bias": float(db.get_config("live_ai_sentiment_bias", 1.0) or 1.0)
+                "ai_bias": float(db.get_config("live_ai_sentiment_bias", 1.0) or 1.0),
+                "live_checklist": json.loads(db.get_config_str("live_checklist", "{}") or "{}"),
+                "live_percentages": json.loads(db.get_config_str("live_percentages", "{}") or "{}"),
+                "live_trigger_projection": float(db.get_config("live_trigger_projection", 0) or 0)
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -162,21 +165,24 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             obi = rev.get("obi", 0.0)
             edge = rev.get("edge", 0.0)
             reason = rev.get("missing_condition", "?")
+            synergy = rev.get("synergy", False)
             
             # Formatting
             mom_str = f"{mom:+.4f}%"
             edge_str = f"{edge:+.2f}%"
             edge_color = "text-orange-400 font-bold" if edge >= 10.0 else "text-slate-400"
+            syn_html = "🟢" if synergy else "🔴"
             
             html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'>"
             html += f"<td class='py-2 px-3 text-slate-500 font-terminal'>{ts}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{mom_str}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{obi:.2f}</td>"
             html += f"<td class='py-2 px-3 font-terminal {edge_color}'>{edge_str}</td>"
+            html += f"<td class='py-2 px-3 text-center text-[0.65rem]'>{syn_html}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-red-500/80 uppercase text-[0.65rem] tracking-wider'>{reason}</td>"
             html += "</tr>"
             
-        return html or "<tr><td colspan='5' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
+        return html or "<tr><td colspan='6' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
 
     @app.route("/api/v14/execution")
     @login_required

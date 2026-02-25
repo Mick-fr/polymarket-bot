@@ -1045,7 +1045,7 @@ class InfoEdgeStrategy(BaseStrategy):
     MAX_EXPO_PCT   = 0.25
     MAX_ORDER_USDC = 12.0
     SIZING_MULT    = 1.0
-    MIN_EDGE_SCORE = 12.5    # V10.3 — compromis qualité/quantité pour 100$
+    MIN_EDGE_SCORE = 6.5     # V16.0 — lowered from 12.5 for institutional realism
     MAX_TRADE_PCT  = 0.08
     MIN_MINUTES    = 5.0
     MAX_MINUTES    = 90.0    # sweet spot optimal
@@ -1313,12 +1313,21 @@ class InfoEdgeStrategy(BaseStrategy):
                 if hasattr(self, '_last_funding'):
                     self.db.set_config("live_funding_rate", round(self._last_funding, 6))
 
-                # V15.5 Visual Checklist & V15.7 Near Miss
+                # V15.5 Visual Checklist & V16.0 Logic Constraints
                 import json
-                mom_ok = bool(abs(m30) > 0.012)
-                obi_ok = bool(abs(o_val) > 0.12)
-                edge_ok = bool(abs(edge_pct) > 12.5)
+                tmom = 0.012
+                tobi = 0.12
+                tedge = 6.5
+                
+                mom_ok = bool(abs(m30) > tmom)
+                obi_ok = bool(abs(o_val) > tobi)
+                edge_ok = bool(abs(edge_pct) > tedge)
                 iv_ready = bool(getattr(self, '_last_iv', 0) > 0)
+                
+                # V16.0 percentages
+                mom_pct = min(150.0, (abs(m30) / tmom) * 100) if tmom > 0 else 0
+                obi_pct = min(150.0, (abs(o_val) / tobi) * 100) if tobi > 0 else 0
+                edge_pct_ratio = min(150.0, (abs(edge_pct) / tedge) * 100) if tedge > 0 else 0
                 
                 checklist = {
                     "mom_ok": mom_ok,
@@ -1327,6 +1336,41 @@ class InfoEdgeStrategy(BaseStrategy):
                     "iv_ready": iv_ready
                 }
                 self.db.set_config("live_checklist", json.dumps(checklist))
+                
+                self.db.set_config("live_percentages", json.dumps({
+                    "mom_pct": round(mom_pct, 1),
+                    "obi_pct": round(obi_pct, 1),
+                    "edge_pct": round(edge_pct_ratio, 1)
+                }))
+                
+                # V16.0 Trigger Projection Gap Tracker: Spot Required for 6.5% edge
+                spot_req = 0.0
+                if spot > 0 and getattr(self, '_last_iv', 0) > 0:
+                    target_p_true = min(0.99, market.mid_price + (tedge / 100.0))
+                    if m30 < 0:
+                        target_p_true = max(0.01, market.mid_price - (tedge / 100.0))
+                        
+                    fixed_strike = spot * (1.0 - (market.mid_price - 0.5) * 0.1)
+                    if getattr(self, '_last_funding', 0) > 0.0001:
+                        fixed_strike *= (1.0 - (getattr(self, '_last_funding', 0) * 50.0))
+                        
+                    minutes = market.days_to_expiry * 1440
+                    iv_val = getattr(self, '_last_iv', 0.80)
+                    
+                    low, high = spot * 0.8, spot * 1.2
+                    for _ in range(12):
+                        mid_s = (low + high) / 2
+                        pt = self._compute_p_true(mid_s, fixed_strike, minutes, iv_val)
+                        if getattr(self, '_last_ai_bias', 1.0) != 1.0:
+                             # Re-apply any known AI bias (crude approx here to match edge)
+                             pass 
+                        if pt < target_p_true:
+                            low = mid_s
+                        else:
+                            high = mid_s
+                    spot_req = (low + high) / 2
+                
+                self.db.set_config("live_trigger_projection", round(spot_req, 2))
 
                 # V15.7 Near Miss Logic (3/4 conditions met)
                 conditions = {"Mom": mom_ok, "OBI": obi_ok, "Edge": edge_ok, "IV": iv_ready}
@@ -1346,7 +1390,8 @@ class InfoEdgeStrategy(BaseStrategy):
                             "obi": round(o_val, 2),
                             "iv": round(getattr(self, '_last_iv', 0), 3),
                             "edge": round(edge_pct, 2),
-                            "missing_condition": failed_cond
+                            "missing_condition": failed_cond,
+                            "synergy": bool((m30 * o_val) > 0)
                         }
                         self.db.record_near_miss(near_miss_data)
                         self._last_near_miss_ts = now

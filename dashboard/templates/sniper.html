@@ -130,7 +130,12 @@
                         <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 1</div>
                         <div class="text-xs uppercase tracking-wider">Data: [IV Ready]</div>
                     </div>
-                    <div id="step-1-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
+                    <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
+                        <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3"></circle>
+                        <circle id="step-1-ring" cx="18" cy="18" r="14" fill="none"
+                            class="stroke-slate-700 transition-all duration-300" stroke-width="3"
+                            stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round"></circle>
+                    </svg>
                 </div>
 
                 <!-- STEP 2: Signal -->
@@ -140,7 +145,16 @@
                         <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 2</div>
                         <div class="text-xs uppercase tracking-wider">Signal: [Mom] & [OBI]</div>
                     </div>
-                    <div id="step-2-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
+                    <svg class="w-8 h-8 transform -rotate-90" viewBox="0 0 36 36">
+                        <circle cx="18" cy="18" r="15" fill="none" class="stroke-slate-800" stroke-width="2"></circle>
+                        <circle id="step-2-obi-ring" cx="18" cy="18" r="15" fill="none"
+                            class="stroke-slate-700 transition-all duration-300" stroke-width="2"
+                            stroke-dasharray="94.24 94.24" stroke-dashoffset="94.24" stroke-linecap="round"></circle>
+                        <circle cx="18" cy="18" r="11" fill="none" class="stroke-slate-800" stroke-width="2"></circle>
+                        <circle id="step-2-mom-ring" cx="18" cy="18" r="11" fill="none"
+                            class="stroke-slate-700 transition-all duration-300" stroke-width="2"
+                            stroke-dasharray="69.11 69.11" stroke-dashoffset="69.11" stroke-linecap="round"></circle>
+                    </svg>
                 </div>
 
                 <!-- STEP 3: Alpha -->
@@ -148,9 +162,14 @@
                     class="flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300">
                     <div class="flex items-center space-x-3">
                         <div class="text-[0.65rem] uppercase tracking-widest font-bold w-12 text-slate-600">STEP 3</div>
-                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 12.5%]</div>
+                        <div class="text-xs uppercase tracking-wider">Alpha: [Edge > 6.5%]</div>
                     </div>
-                    <div id="step-3-icon" class="w-4 h-4 rounded-full bg-slate-700"></div>
+                    <svg class="w-6 h-6 transform -rotate-90" viewBox="0 0 36 36">
+                        <circle cx="18" cy="18" r="14" fill="none" class="stroke-slate-800" stroke-width="3"></circle>
+                        <circle id="step-3-ring" cx="18" cy="18" r="14" fill="none"
+                            class="stroke-slate-700 transition-all duration-300" stroke-width="3"
+                            stroke-dasharray="87.96 87.96" stroke-dashoffset="87.96" stroke-linecap="round"></circle>
+                    </svg>
                 </div>
 
                 <!-- STEP 4: Safety -->
@@ -167,6 +186,14 @@
                 <div id="fire-btn"
                     class="mt-2 py-3 text-center border border-slate-700 rounded bg-slate-800 text-slate-500 text-sm font-bold tracking-widest uppercase transition-all duration-300">
                     STANDBY
+                </div>
+
+                <!-- THE GAP TRACKER (V16.0) -->
+                <div
+                    class="mt-1 p-2 bg-[#050505]/50 border border-slate-800/80 rounded flex justify-between items-center text-xs">
+                    <span class="text-[0.65rem] text-slate-500 uppercase tracking-widest"><span
+                            class="text-sky-400">⚡</span> TRIGGER PROJECTION</span>
+                    <span id="trigger-proj-val" class="font-terminal text-sky-400">Waiting Depth...</span>
                 </div>
 
                 <div class="flex justify-between items-end mt-2 pt-2 border-t border-slate-800 pt-3">
@@ -201,6 +228,7 @@
                             <th class="py-1.5 px-3 font-normal">MOM</th>
                             <th class="py-1.5 px-3 font-normal">OBI</th>
                             <th class="py-1.5 px-3 font-normal">EDGE</th>
+                            <th class="py-1.5 px-3 font-normal text-center">SYNERGY</th>
                             <th class="py-1.5 px-3 font-normal">FAIL REASON</th>
                         </tr>
                     </thead>
@@ -319,32 +347,53 @@
             document.getElementById('ppoly-val').innerText = (data.p_poly || 0).toFixed(3);
 
             const checklist = data.live_checklist || {};
+            const pct = data.live_percentages || {};
 
             const checkOnClass = "flex items-center justify-between p-2 border border-emerald-500/30 rounded bg-emerald-900/20 neon-text-emerald transition-all duration-300";
             const checkOffClass = "flex items-center justify-between p-2 border border-slate-800 rounded bg-slate-800/20 text-slate-500 transition-all duration-300";
 
-            const iconOnClass = "text-emerald-400 font-bold";
-            const iconOnHtml = "✓";
-            const iconOffClass = "w-4 h-4 rounded-full bg-slate-700";
-            const iconOffHtml = "";
+            function updateRing(id, val, radius, sw) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const C = 2 * Math.PI * radius;
+                const drawPct = Math.min(100, Math.max(0, val));
+                const offset = C - (drawPct / 100) * C;
+                el.style.strokeDasharray = `${C} ${C}`;
+                el.style.strokeDashoffset = offset;
 
-            // Step 1
+                let colorClass = "stroke-red-500";
+                if (val >= 100) colorClass = "stroke-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.8)]";
+                else if (val >= 50) colorClass = "stroke-orange-400";
+                else if (val === 0) colorClass = "stroke-slate-700";
+
+                el.setAttribute('class', colorClass + " transition-all duration-300");
+                el.setAttribute('stroke-width', sw);
+                el.setAttribute('fill', 'none');
+            }
+
+            // Step 1: IV Ready (treated as 100% or 0%)
             const step1Ready = checklist.iv_ready;
             document.getElementById('step-1').className = step1Ready ? checkOnClass : checkOffClass;
-            document.getElementById('step-1-icon').className = step1Ready ? iconOnClass : iconOffClass;
-            document.getElementById('step-1-icon').innerHTML = step1Ready ? iconOnHtml : iconOffHtml;
+            updateRing("step-1-ring", step1Ready ? 100 : 0, 14, 3);
 
-            // Step 2
+            // Step 2: Mom & OBI
             const step2Ready = checklist.mom_ok && checklist.obi_ok;
             document.getElementById('step-2').className = step2Ready ? checkOnClass : checkOffClass;
-            document.getElementById('step-2-icon').className = step2Ready ? iconOnClass : iconOffClass;
-            document.getElementById('step-2-icon').innerHTML = step2Ready ? iconOnHtml : iconOffHtml;
+            updateRing("step-2-mom-ring", pct.mom_pct || 0, 11, 2);
+            updateRing("step-2-obi-ring", pct.obi_pct || 0, 15, 2);
 
-            // Step 3
+            // Step 3: Edge
             const step3Ready = checklist.edge_ok;
             document.getElementById('step-3').className = step3Ready ? checkOnClass : checkOffClass;
-            document.getElementById('step-3-icon').className = step3Ready ? iconOnClass : iconOffClass;
-            document.getElementById('step-3-icon').innerHTML = step3Ready ? iconOnHtml : iconOffHtml;
+            updateRing("step-3-ring", pct.edge_pct || 0, 14, 3);
+
+            // Trigger Projection Text
+            const proj = data.live_trigger_projection;
+            if (proj > 0) {
+                document.getElementById('trigger-proj-val').innerText = "BTC ≈ $" + proj.toFixed(2);
+            } else {
+                document.getElementById('trigger-proj-val').innerText = "Calculating...";
+            }
 
             // Step 4 (Safety - Mocked True for Visual)
             const step4Ready = true;
@@ -412,7 +461,7 @@
         } catch (e) { console.error("Error fetching execution stats", e); }
     }
 
-    setInterval(updateBrainPulse, 1000);
+    setInterval(updateBrainPulse, 500);
     setInterval(updateExecutionAndRisk, 3000);
 
     // Initial fetch
