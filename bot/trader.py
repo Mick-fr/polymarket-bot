@@ -448,11 +448,10 @@ class Trader:
             return
             
         # V15 Static Targets: Fetch from cache populated by _maintenance_loop
+        # We NO LONGER return early if not sprint_ids, because analyze() MUST run 
+        # minimally to update the Dashboard's global telemetry (MOM, OBI, SPOT).
         sprint_ids = self.active_targets
-                
-        if not sprint_ids:
-            return
-            
+        
         # V15 Balance Throttling: Use cached balance instead of API calls
         balance = self.cached_balance
         

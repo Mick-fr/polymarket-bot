@@ -1612,8 +1612,11 @@ class InfoEdgeStrategy(BaseStrategy):
             # Compter si on a vu des marchés sprint ce cycle
             sprint_count = sum(1 for m in markets if ("btc" in m.question.lower() or "bitcoin" in m.question.lower()) and (m.days_to_expiry * 1440 <= 5.5))
             if sprint_count == 0:
-                spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
+                now = time.time()
+                if not hasattr(self, '_last_heartbeat_ts') or now - self._last_heartbeat_ts > 10.0:
+                    spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                    self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
+                    self._last_heartbeat_ts = now
 
         return signals
 
