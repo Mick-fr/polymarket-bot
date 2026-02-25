@@ -1,0 +1,76 @@
+
+# litellm-config.yaml
+# Configuration for LiteLLM Proxy
+
+# Model Fallback and Routing
+model_list:
+  # Tier Eco (80% des tâches) - Default fallback for cheapest models
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+    tpm: 1000000 # Example TPM, adjust based on actual limits
+    rpm: 3000
+  - model_name: grok-3-fast
+    litellm_params:
+      model: groq/grok-4-1-fast-reasoning # Using 4-1 as placeholder for 3-fast
+      api_key: os.environ/GROQ_API_KEY
+    tpm: 1000000
+    rpm: 3000
+
+  # Tier Standard (15% des tâches) - Coding, more complex tasks
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    tpm: 1000000
+    rpm: 3000
+  - model_name: grok-standard
+    litellm_params:
+      model: groq/grok-4-1-fast-reasoning # Can be adjusted to another Grok if a "standard" tier is available
+      api_key: os.environ/GROQ_API_KEY
+    tpm: 1000000
+    rpm: 3000
+
+  # Tier Premium (5% des tâches) - Architecture, critical debug, complex planning
+  - model_name: claude-opus
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+    tpm: 1000000
+    rpm: 3000
+  - model_name: gemini-pro-premium
+    litellm_params:
+      model: gemini/gemini-3-pro-preview
+      api_key: os.environ/GEMINI_API_KEY
+    tpm: 1000000
+    rpm: 3000
+
+# Model Routing Logic (Custom Logic)
+# This uses LiteLLM's `model_router` feature.
+# We'll rely on the agent to select the appropriate model from the tiers for now.
+# Future enhancement: LiteLLM's `router_config` can do dynamic routing based on prompt length, keywords etc.
+
+# Caching Configuration (Redis backend)
+# This will significantly reduce costs by reusing previous responses for identical prompts.
+redis_host: redis
+redis_port: 6379
+
+caching:
+  ttl: 3600 # Cache entries expire after 1 hour (3600 seconds)
+  # prompt_caching: True # Enable prompt caching (LiteLLM handles this automatically if cache is enabled)
+  # response_caching: True # Enable response caching (LiteLLM handles this automatically if cache is enabled)
+
+# Cost Tracking and Budget Alerts
+# LiteLLM tracks costs. We will use webhooks or monitoring for alerts.
+# Example budget:
+# budget:
+#   daily: 10.0 # Daily budget in USD
+#   monthly: 200.0 # Monthly budget in USD
+# webhooks:
+#   - url: "http://your-alert-system.com/webhook"
+#     type: "budget_exceeded"
+
+# Secure API Key handling via environment variables passed from Docker Secrets
+# All API keys are loaded from environment variables within the container.
+# In the docker-compose.yml, these will be sourced from Docker Secrets.
