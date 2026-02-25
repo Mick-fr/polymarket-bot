@@ -149,6 +149,7 @@ class Trader:
                 time.sleep(1.0)
                 
         self._telemetry_thread = threading.Thread(target=_telemetry_worker, daemon=True, name="TelemetryFlusher")
+        self._telemetry_thread.start()
 
         # Vérifier et mettre à jour les allowances ERC-1155 pour tous les tokens
         # en inventaire au démarrage (évite les erreur 400 sur les SELL existants)
