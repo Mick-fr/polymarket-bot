@@ -138,7 +138,8 @@ class BinanceWSClient(threading.Thread):
             try:
                 self._run_ws()
             except Exception as e:
-                logger.warning("[BinanceWS] Erreur WS: %s — reconnexion dans 5s", e)
+                import traceback
+                logger.warning("[BinanceWS] Erreur WS: %s — %s - reconnexion dans 5s", e, traceback.format_exc(limit=2))
                 self._connected = False
                 time.sleep(5)
 
@@ -164,7 +165,9 @@ class BinanceWSClient(threading.Thread):
 
     def _on_open(self, ws):
         self._connected = True
-        logger.info("[BinanceWS] Connecté aux bookTicker BTC/ETH")
+        logger.info("[BinanceWS] ==================================")
+        logger.info("[BinanceWS] Connecté aux bookTicker BTC/ETH (ping: 60s, timeout: 30s)")
+        logger.info("[BinanceWS] ==================================")
 
     def _on_message(self, ws, message):
         try:
@@ -204,15 +207,15 @@ class BinanceWSClient(threading.Thread):
                 mid_signal = (self.btc_bid + self.btc_ask) / 2.0 if symbol == "BTCUSDT" else (self.eth_bid + self.eth_ask) / 2.0
                 self._executor.submit(self.on_tick_callback, symbol, mid_signal)
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[BinanceWS] payload json error : %s", e)
 
     def _on_error(self, ws, error):
-        logger.debug("[BinanceWS] Erreur: %s", error)
+        logger.warning("[BinanceWS] ! WebSocket Error Détectée ! : %s", error)
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._connected = False
-        logger.info("[BinanceWS] Connexion fermée (%s)", close_msg)
+        logger.warning("[BinanceWS] -> Connexion fermée (Code: %s, Msg: %s)", close_status_code, close_msg)
 
     # ── Fallback REST (si pas de lib websocket) ─────────────────────
 

@@ -130,8 +130,9 @@ class Trader:
                 if getattr(self, "info_edge_strategy", None):
                     try:
                         self.info_edge_strategy.flush_telemetry()
-                    except:
-                        pass
+                    except Exception as e:
+                        import traceback
+                        logger.warning("[Telemetry] Erreur lors du flush buffer: %s - %s", e, traceback.format_exc(limit=1))
                         
                 # 2. V19 Absolute Kill Switch: Watchdog BinanceWS
                 if getattr(self, "binance_ws", None) and getattr(self.config.bot, "paper_trading", False) is False:
@@ -254,6 +255,8 @@ class Trader:
                     self._maintenance_loop()
                     self._consecutive_errors = 0
                 except Exception as e:
+                    import traceback
+                    logger.error("[Maintenance] Crash de la boucle de fond : %s - %s", e, traceback.format_exc(limit=2))
                     self._handle_error(e)
                     
                 # Sleep in small chunks to allow quick exit on shutdown
