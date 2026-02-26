@@ -1148,6 +1148,20 @@ class InfoEdgeStrategy(BaseStrategy):
             return "BTC"
         return "ETH"
 
+    def _parse_strike_from_question(self, question: str) -> float:
+        """Extrait le strike dollar réel depuis la question du marché.
+        Ex: 'Will BTC be above $97,500 at 14:00 UTC?' → 97500.0
+        Retourne 0.0 si non parsable (fallback → p_true = 0.5 = no edge).
+        """
+        import re
+        m = re.search(r'\$([0-9][0-9,]*(?:\.[0-9]+)?)', question)
+        if m:
+            try:
+                return float(m.group(1).replace(',', ''))
+            except (ValueError, AttributeError):
+                pass
+        return 0.0
+
     def _compute_p_true(self, spot_price: float, strike_proxy: float,
                         t_minutes: float, vol: float) -> float:
         """
@@ -1233,28 +1247,15 @@ class InfoEdgeStrategy(BaseStrategy):
             spot = self.binance_ws.get_mid(sym)
             funding = self.binance_ws.get_funding(sym)
 
-        # Strike proxy : dérivé du mid Polymarket
-        # Pour un marché "BTC > 100k ?", le strike ~ spot*(1 - (p_poly-0.5)*0.1)
-        if spot > 0:
-            strike = spot * (1.0 - (p_poly - 0.5) * 0.1)
-            # V14.0 : Funding Rate Alpha Drift
-            # Si le funding est fortement positif, le proxy strike est artificiellement baissé
-            # pour pousser p_true à la hausse (sentiment dérivé bullish)
-            self._last_funding = funding # Cache for DB push
-            # Approximation simple : funding annualisé = rate * (24/8) * 365
-            # Binance = 3 cycles/jour (toutes les 8h)
-            ann_funding = funding * 3 * 365
-            # Simplification: drift log-normal = risk-free (0) - div_yield (funding)
-            # This part of the snippet seems to be from a different context or an incomplete thought.
-            # The original code calculates strike and then p_true.
-            # The instruction asks to "Update DB with IV and Funding rates" which is handled later.
-            # The provided snippet for _calculate_edge_score seems to be a mix of different logic.
-            # I will integrate the _last_funding caching and keep the original strike/p_true logic.
-            if abs(funding) > 0.0001:  # > 0.01%
-                strike = strike * (1.0 - (funding * 50.0))
-        else:
-            # Pas de prix Binance — fallback demi-conservateur
-            strike = 0.0
+        # Strike réel : extrait du texte de la question du marché BTC Sprint
+        # Ex: "Will BTC be above $97,500 at 14:00 UTC?" → strike = 97500.0
+        # CORRECTIF [P0] : le strike ne doit JAMAIS être dérivé de p_poly
+        # (la tautologie spot*(1-(p_poly-0.5)*0.1) garantissait edge_pct ≈ 0)
+        strike = self._parse_strike_from_question(market.question)
+        self._last_funding = funding  # Cache for DB push
+        # V14.0 : Funding Rate Alpha Drift — funding fort décale légèrement le strike
+        if spot > 0 and strike > 0 and abs(funding) > 0.0001:
+            strike = strike * (1.0 - (funding * 50.0))
 
         minutes_to_expiry = market.days_to_expiry * 1440
 
@@ -1265,7 +1266,11 @@ class InfoEdgeStrategy(BaseStrategy):
 
         if spot > 0 and strike > 0:
             p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
-            
+            logger.debug(
+                "[EDGE] S=%.2f K=%.2f T_min=%.2f vol=%.3f → p_true=%.4f p_poly=%.4f",
+                spot, strike, minutes_to_expiry, vol, p_true, p_poly
+            )
+
             # V16.0 OBI Drift
             obi = 0.0
             if self.binance_ws and self.binance_ws.is_connected:
@@ -1275,6 +1280,11 @@ class InfoEdgeStrategy(BaseStrategy):
             elif obi < -0.90:
                 p_true = max(0.01, p_true + (p_true - 0.5) * 0.2)
         else:
+            # strike non parsable (question sans $X) ou spot absent → pas d'edge
+            logger.warning(
+                "[EDGE] Strike non parsé (spot=%.2f strike=%.2f) pour: %s",
+                spot, strike, market.question[:60]
+            )
             p_true = 0.5
 
         edge_pct = (p_true - p_poly) * 100.0
