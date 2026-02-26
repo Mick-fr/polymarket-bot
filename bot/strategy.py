@@ -1148,10 +1148,17 @@ class InfoEdgeStrategy(BaseStrategy):
             return "BTC"
         return "ETH"
 
+    def _is_updown_market(self, question: str) -> bool:
+        """Détecte les marchés directionnels 'Up or Down' (pas de strike dollar fixe).
+        Ex: 'Bitcoin Up or Down - February 26, 3:45PM-3:50PM ET' → True
+        """
+        q_up = question.upper()
+        return "UP OR DOWN" in q_up or "UPDOWN" in q_up
+
     def _parse_strike_from_question(self, question: str) -> float:
-        """Extrait le strike dollar réel depuis la question du marché.
+        """Extrait le strike dollar réel pour les marchés 'Will X be above $Y?'.
         Ex: 'Will BTC be above $97,500 at 14:00 UTC?' → 97500.0
-        Retourne 0.0 si non parsable (fallback → p_true = 0.5 = no edge).
+        Retourne 0.0 si non parsable.
         """
         import re
         m = re.search(r'\$([0-9][0-9,]*(?:\.[0-9]+)?)', question)
@@ -1161,6 +1168,33 @@ class InfoEdgeStrategy(BaseStrategy):
             except (ValueError, AttributeError):
                 pass
         return 0.0
+
+    def _compute_p_true_updown(self, sym: str, funding: float) -> tuple[float, float, float]:
+        """Modèle directionnel pour marchés 'Bitcoin/ETH Up or Down'.
+
+        YES = l'actif finit plus haut qu'à l'ouverture du créneau.
+        p_true_up = 0.5 + contrib_momentum + contrib_OBI + contrib_funding
+
+        Calibration (m30 en %, OBI en [-1,+1]) :
+          m30 = 0.012% →  +3.6%  |  m30 = 0.05% → +15%  |  m30 = 0.10% → +30%
+          OBI = 0.12   →  +2.4%  |  OBI = 0.50  → +10%  |  OBI = 1.0  → +20%
+          fund > 0 (longs paient) → légère pression haussière (+max 5%)
+
+        Returns: (p_true_up, mom, obi)
+        """
+        mom = 0.0
+        obi = 0.0
+        if self.binance_ws:
+            ws_sym = f"{sym}USDT" if len(sym) <= 3 else sym
+            mom = self.binance_ws.get_30s_momentum(ws_sym)
+            obi = self.binance_ws.get_binance_obi(ws_sym)
+
+        mom_contrib  = min(0.35, max(-0.35, mom  * 3.0))
+        obi_contrib  = min(0.20, max(-0.20, obi  * 0.20))
+        fund_contrib = min(0.05, max(-0.05, funding * 500.0))
+
+        p_up = 0.50 + mom_contrib + obi_contrib + fund_contrib
+        return min(0.95, max(0.05, p_up)), mom, obi
 
     def _compute_p_true(self, spot_price: float, strike_proxy: float,
                         t_minutes: float, vol: float) -> float:
@@ -1247,45 +1281,49 @@ class InfoEdgeStrategy(BaseStrategy):
             spot = self.binance_ws.get_mid(sym)
             funding = self.binance_ws.get_funding(sym)
 
-        # Strike réel : extrait du texte de la question du marché BTC Sprint
-        # Ex: "Will BTC be above $97,500 at 14:00 UTC?" → strike = 97500.0
-        # CORRECTIF [P0] : le strike ne doit JAMAIS être dérivé de p_poly
-        # (la tautologie spot*(1-(p_poly-0.5)*0.1) garantissait edge_pct ≈ 0)
-        strike = self._parse_strike_from_question(market.question)
         self._last_funding = funding  # Cache for DB push
-        # V14.0 : Funding Rate Alpha Drift — funding fort décale légèrement le strike
-        if spot > 0 and strike > 0 and abs(funding) > 0.0001:
-            strike = strike * (1.0 - (funding * 50.0))
-
         minutes_to_expiry = market.days_to_expiry * 1440
 
-        # V14.0 : Utilisation de la Volatilité Dynamique
+        # V14.0 : Volatilité Dynamique (utilisée par les deux branches)
         base_vol = self._get_dynamic_vol(sym)
-        self._last_iv = base_vol # Cache for DB push
-        vol = base_vol + abs(funding) * 50.0  # funding fort = vol plus haute
+        self._last_iv = base_vol  # Cache for DB push
+        vol = base_vol + abs(funding) * 50.0
 
-        if spot > 0 and strike > 0:
-            p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
+        if self._is_updown_market(market.question):
+            # ── Branche A : marché directionnel "Up or Down" ──────────────────
+            # Modèle momentum + OBI — pas de strike fixe
+            p_true, _mom, _obi = self._compute_p_true_updown(sym, funding)
             logger.debug(
-                "[EDGE] S=%.2f K=%.2f T_min=%.2f vol=%.3f → p_true=%.4f p_poly=%.4f",
-                spot, strike, minutes_to_expiry, vol, p_true, p_poly
+                "[EDGE UpDown] mom=%.4f%% obi=%.3f → p_true=%.4f p_poly=%.4f",
+                _mom, _obi, p_true, p_poly
             )
-
-            # V16.0 OBI Drift
-            obi = 0.0
-            if self.binance_ws and self.binance_ws.is_connected:
-                obi = self.binance_ws.get_binance_obi("BTCUSDT")
-            if obi > 0.90:
-                p_true = min(0.99, p_true + (p_true - 0.5) * 0.2)
-            elif obi < -0.90:
-                p_true = max(0.01, p_true + (p_true - 0.5) * 0.2)
         else:
-            # strike non parsable (question sans $X) ou spot absent → pas d'edge
-            logger.warning(
-                "[EDGE] Strike non parsé (spot=%.2f strike=%.2f) pour: %s",
-                spot, strike, market.question[:60]
-            )
-            p_true = 0.5
+            # ── Branche B : marché à niveau fixe "Will X be above $Y?" ────────
+            strike = self._parse_strike_from_question(market.question)
+            # V14.0 Funding Rate Alpha Drift
+            if spot > 0 and strike > 0 and abs(funding) > 0.0001:
+                strike = strike * (1.0 - (funding * 50.0))
+
+            if spot > 0 and strike > 0:
+                p_true = self._compute_p_true(spot, strike, minutes_to_expiry, vol)
+                logger.debug(
+                    "[EDGE Level] S=%.2f K=%.2f T_min=%.2f vol=%.3f → p_true=%.4f p_poly=%.4f",
+                    spot, strike, minutes_to_expiry, vol, p_true, p_poly
+                )
+                # V16.0 OBI Drift (extrêmes seulement)
+                obi_drift = 0.0
+                if self.binance_ws and self.binance_ws.is_connected:
+                    obi_drift = self.binance_ws.get_binance_obi("BTCUSDT")
+                if obi_drift > 0.90:
+                    p_true = min(0.99, p_true + (p_true - 0.5) * 0.2)
+                elif obi_drift < -0.90:
+                    p_true = max(0.01, p_true + (p_true - 0.5) * 0.2)
+            else:
+                logger.warning(
+                    "[EDGE Level] Strike non parsé (spot=%.2f strike=%.2f) pour: %s",
+                    spot, strike, market.question[:60]
+                )
+                p_true = 0.5
 
         edge_pct = (p_true - p_poly) * 100.0
 
