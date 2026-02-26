@@ -50,7 +50,14 @@
             <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span> V18 ACTIVE
         </div>
     </div>
-    <div class="flex items-center space-x-8 mt-4 md:mt-0 font-terminal">
+    <div class="flex items-center space-x-4 mt-4 md:mt-0 font-terminal flex-wrap gap-2">
+        <div id="btc-live-bar"
+             hx-get="/api/live-btc"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             class="flex items-center font-terminal text-xs px-3 py-1.5 bg-slate-900/50 rounded border border-slate-700/50">
+          <span class="text-slate-500">BTC chargement...</span>
+        </div>
         <div class="text-right">
             <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Baseline Equity (HWM)</div>
             <div class="text-lg text-slate-300" id="hwm-val">{{ "%.2f"|format(hwm) }} USDC</div>
@@ -139,6 +146,14 @@
             }
         });
     </script>
+
+    <!-- SCANNER DECISION PIPELINE -->
+    <div class="panel-dark p-4 mb-4" id="funnel-panel"
+         hx-get="/api/scanner-funnel"
+         hx-trigger="every 5s"
+         hx-swap="outerHTML">
+      <div class="text-[0.6rem] text-slate-500 uppercase tracking-widest mb-2">Pipeline de D&#233;cision — chargement...</div>
+    </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
 

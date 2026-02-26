@@ -155,6 +155,17 @@ class MarketUniverse:
         self._cache: list[EligibleMarket] = []
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 60.0   # MODIFIÉ V15: Restauration du cache (rate-limit protection)
+        # Funnel counters — reset each refresh cycle, read by InfoEdgeOnlyStrategy
+        self._f_raw      = 0
+        self._f_price    = 0
+        self._f_volume   = 0
+        self._f_spread   = 0
+        self._f_eligible = 0
+        self._f_sprint   = 0
+
+    def _funnel_reset(self):
+        self._f_raw = 0; self._f_price = 0; self._f_volume = 0
+        self._f_spread = 0; self._f_eligible = 0; self._f_sprint = 0
 
     def get_eligible_markets(self, force_refresh: bool = False) -> list[EligibleMarket]:
         """Retourne la liste des marches eligibles (avec cache 60s)."""
@@ -165,12 +176,15 @@ class MarketUniverse:
         raw = self._fetch_gamma_markets()
         # 2026 V6.4 ULTRA-SURGICAL
         # self._detect_cross_arbitrage(raw)  # Removed caller to match new signature
-        
+        self._funnel_reset()
+        self._f_raw = len(raw)
+
         eligible = []
         for m in raw:
             result = self._evaluate(m)
             if result is not None:
                 eligible.append(result)
+        self._f_eligible = len(eligible)
 
         logger.debug(
             "[Universe] %d marches bruts -> %d eligibles (filtres: prix, spread>=%.2f/%.2f, vol>=%.0f, mat<=%dj)",
@@ -279,6 +293,7 @@ class MarketUniverse:
             logger.debug("[Universe] '%s' rejete: mid=%.3f hors [%.2f, %.2f]",
                          question[:40], mid, MIN_PRICE, MAX_PRICE)
             return None
+        self._f_price += 1
 
         # ── Volume 24h (evaluer avant le spread pour le seuil adaptatif) ──
         try:
@@ -290,6 +305,7 @@ class MarketUniverse:
             logger.debug("[Universe] '%s' rejete: volume24h=%.0f < %.0f",
                          question[:40], vol, MIN_VOLUME_24H)
             return None
+        self._f_volume += 1
 
         # ── Spread adaptatif (volume-aware) ──
         # Marches tres liquides (>50k vol) : spread 1 tick OK
@@ -299,6 +315,7 @@ class MarketUniverse:
             logger.debug("[Universe] '%s' rejete: spread=%.4f < %.2f (vol=%.0f)",
                          question[:40], spread, min_spread, vol)
             return None
+        self._f_spread += 1
 
         # ── Maturite ──
         end_date_str = m.get("endDate") or m.get("expiration") or m.get("end_date_iso") or ""
@@ -1648,6 +1665,15 @@ class InfoEdgeStrategy(BaseStrategy):
                 # Nouveau : Sauvegarde du spread (si aucun marché, on met 0)
                 final_spread = round(min_spread_found, 3) if min_spread_found != 999.0 else 0.0
                 self._telemetry_buffer["live_min_spread"] = final_spread
+                # Funnel transparence — pipeline de décision visible dans le dashboard
+                u = self._universe
+                self._telemetry_buffer["live_funnel_raw"]      = u._f_raw
+                self._telemetry_buffer["live_funnel_price"]    = u._f_price
+                self._telemetry_buffer["live_funnel_volume"]   = u._f_volume
+                self._telemetry_buffer["live_funnel_spread"]   = u._f_spread
+                self._telemetry_buffer["live_funnel_eligible"] = u._f_eligible
+                self._telemetry_buffer["live_funnel_sprint"]   = sprint_markets_count
+                self._telemetry_buffer["live_btc_ws_age"]      = round(self.binance_ws.age_seconds, 1) if self.binance_ws else 999.0
 
         # --- V11.5 : Heartbeat pour le Live Scan Feed ---
         if self.db and len(signals) == 0:

@@ -1391,5 +1391,132 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     def copy_trading_page():
         return render_template("copy_trading.html")
 
+    @app.route("/api/scanner-funnel")
+    @login_required
+    def api_scanner_funnel():
+        """Retourne le panneau HTML du pipeline de décision (HTMX outerHTML swap)."""
+        from flask import render_template_string
+        raw      = int(db.get_config("live_funnel_raw",      0) or 0)
+        price    = int(db.get_config("live_funnel_price",    0) or 0)
+        volume   = int(db.get_config("live_funnel_volume",   0) or 0)
+        spread   = int(db.get_config("live_funnel_spread",   0) or 0)
+        eligible = int(db.get_config("live_funnel_eligible", 0) or 0)
+        sprint   = int(db.get_config("live_funnel_sprint",   0) or 0)
+        signals  = int(db.get_config("live_found_markets",   0) or 0)
+        max_edge = float(db.get_config("live_max_edge",      0) or 0)
+        edge_threshold = 4.5
+        edge_pct_bar = min(100, int(max_edge / edge_threshold * 100)) if edge_threshold > 0 else 0
+        edge_bar_color = "bg-emerald-500" if max_edge >= edge_threshold else ("bg-yellow-500" if max_edge > 2.0 else "bg-red-600")
+        ctf_pnl   = float(db.get_config("ctf_arb_pnl",   0) or 0)
+        ctf_count = int(db.get_config("ctf_arb_count",    0) or 0)
+
+        def step_color(val, prev):
+            if raw == 0: return "text-slate-500"
+            if prev == 0: return "text-slate-400"
+            pct = val / prev
+            if pct > 0.7: return "text-emerald-400"
+            if pct > 0.3: return "text-yellow-400"
+            return "text-red-400"
+
+        c_price  = step_color(price,    raw)
+        c_vol    = step_color(volume,   price)
+        c_spread = step_color(spread,   volume)
+        c_elig   = step_color(eligible, spread)
+        c_sprint = "text-sky-400" if sprint > 0 else "text-slate-500"
+        c_sig    = "text-emerald-400" if signals > 0 else "text-slate-500"
+
+        tmpl = """
+<div class="panel-dark p-4 mb-4" id="funnel-panel"
+     hx-get="/api/scanner-funnel" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="text-[0.6rem] text-slate-500 uppercase tracking-widest mb-3">Pipeline de D&#233;cision — Cycle en cours</div>
+  <div class="flex items-center gap-1 font-terminal text-xs">
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold text-slate-300">{{ raw if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">Gamma API</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_price }}">{{ price if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">Prix OK</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_vol }}">{{ volume if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">Vol&gt;10k$</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_spread }}">{{ spread if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">Spread OK</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_elig }}">{{ eligible if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">&#201;ligibles</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_sprint }}">{{ sprint if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">BTC Sprint</div>
+    </div>
+    <div class="text-slate-600 text-base px-1">&#8594;</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold {{ c_sig }}">{{ signals if raw > 0 else '&#8212;' }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">Signaux</div>
+    </div>
+    {% if ctf_count > 0 %}
+    <div class="text-slate-700 text-base px-1">|</div>
+    <div class="flex-1 text-center">
+      <div class="text-lg font-bold text-violet-400">{{ ctf_count }}</div>
+      <div class="text-[0.6rem] text-slate-500 uppercase">CTF Arb</div>
+      <div class="text-[0.6rem] {{ 'text-emerald-400' if ctf_pnl >= 0 else 'text-red-400' }}">{{ '%.3f$' % ctf_pnl }}</div>
+    </div>
+    {% endif %}
+  </div>
+  <div class="mt-3">
+    <div class="flex justify-between text-[0.6rem] text-slate-500 mb-1">
+      <span>Max Edge d&#233;tect&#233; ce cycle</span>
+      <span>{{ '%.1f' % max_edge }}% / {{ edge_threshold }}% seuil</span>
+    </div>
+    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+      <div class="h-full rounded-full {{ edge_bar_color }} transition-all duration-500" style="width:{{ edge_pct_bar }}%"></div>
+    </div>
+  </div>
+</div>"""
+        return render_template_string(tmpl,
+            raw=raw, price=price, volume=volume, spread=spread, eligible=eligible,
+            sprint=sprint, signals=signals, max_edge=max_edge,
+            edge_threshold=edge_threshold, edge_pct_bar=edge_pct_bar, edge_bar_color=edge_bar_color,
+            ctf_pnl=ctf_pnl, ctf_count=ctf_count,
+            c_price=c_price, c_vol=c_vol, c_spread=c_spread,
+            c_elig=c_elig, c_sprint=c_sprint, c_sig=c_sig)
+
+    @app.route("/api/live-btc")
+    @login_required
+    def api_live_btc():
+        """Retourne le contenu HTML de la barre BTC live (HTMX innerHTML swap)."""
+        spot    = float(db.get_config("live_btc_spot",     0) or 0)
+        mom     = float(db.get_config("live_btc_mom30s",   0) or 0)
+        obi     = float(db.get_config("live_btc_obi",      0) or 0)
+        funding = float(db.get_config("live_funding_rate", 0) or 0)
+        age     = float(db.get_config("live_btc_ws_age",   999) or 999)
+        ws_ok   = age < 5.0
+        mom_cls = "text-emerald-400" if mom > 0.015 else ("text-red-400" if mom < -0.015 else "text-slate-400")
+        obi_cls = "text-emerald-400" if obi > 0.1  else ("text-red-400" if obi < -0.1   else "text-slate-400")
+        ws_dot  = ('<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block mr-1"></span>'
+                   if ws_ok else
+                   '<span class="w-2 h-2 rounded-full bg-red-500 inline-block mr-1"></span>')
+        ws_lbl  = "LIVE" if ws_ok else f"AGE {age:.0f}s"
+        spot_str = f"${spot:,.0f}" if spot > 0 else "—"
+        return (f'<span class="text-slate-400 text-xs mr-2">BTC</span>'
+                f'<span class="text-white font-bold mr-3">{spot_str}</span>'
+                f'<span class="text-slate-500 text-xs mr-1">Mom30s</span>'
+                f'<span class="{mom_cls} font-mono text-xs mr-3">{mom:+.3f}%</span>'
+                f'<span class="text-slate-500 text-xs mr-1">OBI</span>'
+                f'<span class="{obi_cls} font-mono text-xs mr-3">{obi:+.3f}</span>'
+                f'<span class="text-slate-500 text-xs mr-1">Fund</span>'
+                f'<span class="text-slate-300 font-mono text-xs mr-3">{funding*100:+.4f}%</span>'
+                f'<span class="text-xs">{ws_dot}{ws_lbl}</span>')
+
     logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics + V7.5).")
     return app
