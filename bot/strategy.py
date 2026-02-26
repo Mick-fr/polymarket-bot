@@ -1405,17 +1405,16 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
 
             if is_sprint and self.db:
-                # V19: Buffered DB writes
+                # V19: Buffered DB writes — tout dans un seul bloc lock (atomic)
                 with self._telemetry_lock:
                     self._telemetry_buffer["live_sprint_edge"] = round(edge_pct, 2)
                     self._telemetry_buffer["live_sprint_ptrue"] = round(p_true, 3)
                     self._telemetry_buffer["live_sprint_ppoly"] = round(p_poly, 3)
-                
-                # V15.2 Log these globally for dashboard compatibility even if not trading
-                if hasattr(self, '_last_iv'):
-                    self._telemetry_buffer["live_dynamic_iv"] = round(self._last_iv, 4)
-                if hasattr(self, '_last_funding'):
-                    self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
+                    # V15.2: IV et funding dans le même lock pour éviter la race condition
+                    if hasattr(self, '_last_iv'):
+                        self._telemetry_buffer["live_dynamic_iv"] = round(self._last_iv, 4)
+                    if hasattr(self, '_last_funding'):
+                        self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
                 # V15.5 Visual Checklist & V16.0 Logic Constraints
                 import json
