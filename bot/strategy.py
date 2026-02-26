@@ -1455,10 +1455,10 @@ class InfoEdgeStrategy(BaseStrategy):
                         self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
                 # V20 Checklist — reflète les 4 conditions du gate V20
-                # Gate réel : abs(edge) >= 4.5 AND abs(mom) >= 0.010 AND sign(edge)==sign(mom)
+                # Gate réel V20 : abs(edge) >= 4.0 AND abs(mom) >= 0.005 AND sign(edge)==sign(mom)
                 import json
-                tmom = 0.010
-                tedge = 4.5
+                tmom = 0.005
+                tedge = 4.0
 
                 mom_ok    = bool(abs(m30) >= tmom)
                 edge_ok   = bool(abs(edge_pct) >= tedge)
@@ -1579,11 +1579,11 @@ class InfoEdgeStrategy(BaseStrategy):
                 # Gate V20 : le modèle directionnel (edge) incorpore DÉJÀ OBI.
                 # Exiger un OBI indépendant > seuil est un double-comptage qui bloque.
                 # Nouveau critère :
-                #   1. abs(edge_pct) >= tedge  → signal combiné mom+OBI suffisamment fort
-                #   2. abs(m30) >= tmom         → momentum confirme qu'il y a mouvement
-                #   3. sign(edge) == sign(m30)  → les deux signaux s'accordent sur la direction
-                tmom = 0.010
-                tedge_gate = 4.5  # même seuil que checklist
+                #   1. abs(edge_pct) >= tedge_gate → signal combiné mom+OBI suffisamment fort
+                #   2. abs(m30) >= tmom            → momentum non-nul confirme le mouvement
+                #   3. sign(edge) == sign(m30)     → les deux signaux s'accordent sur la direction
+                tmom = 0.005       # 0.5 bps en 30s (~$3 sur BTC $67k) — minimum non-nul
+                tedge_gate = 4.0   # 4% edge (baissé de 4.5 : corrélation inverse edge/mom)
 
                 side = None
                 if abs(edge_pct) >= tedge_gate and abs(m30) >= tmom:
