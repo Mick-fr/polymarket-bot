@@ -1455,10 +1455,10 @@ class InfoEdgeStrategy(BaseStrategy):
                         self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
                 # V20 Checklist — reflète les 4 conditions du gate V20
-                # Gate réel V20 : abs(edge) >= 4.0 AND abs(mom) >= 0.005 AND sign(edge)==sign(mom)
+                # Gate réel V20 : abs(edge) >= 3.0 AND abs(mom) >= 0.005 AND sign(edge)==sign(mom)
                 import json
                 tmom = 0.005
-                tedge = 4.0
+                tedge = 3.0
 
                 mom_ok    = bool(abs(m30) >= tmom)
                 edge_ok   = bool(abs(edge_pct) >= tedge)
@@ -1583,7 +1583,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 #   2. abs(m30) >= tmom            → momentum non-nul confirme le mouvement
                 #   3. sign(edge) == sign(m30)     → les deux signaux s'accordent sur la direction
                 tmom = 0.005       # 0.5 bps en 30s (~$3 sur BTC $67k) — minimum non-nul
-                tedge_gate = 4.0   # 4% edge (baissé de 4.5 : corrélation inverse edge/mom)
+                tedge_gate = 3.0   # 3% edge — distribution observée cluster 2-4%, 4% trop haut
 
                 side = None
                 if abs(edge_pct) >= tedge_gate and abs(m30) >= tmom:
