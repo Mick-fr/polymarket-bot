@@ -1,107 +1,112 @@
 {% extends "base.html" %}
 
 {% block content %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
 <style>
     body {
         background-color: #050505 !important;
         color: #cbd5e1 !important;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
     }
 
+    /* ── Panels ── */
     .panel-dark {
         background-color: #0A0A0C;
-        border: 1px solid #1f1f22;
-        border-radius: 0.5rem;
+        border: 1px solid #1e1e22;
+        border-radius: 0.625rem;
+        transition: border-color 0.2s;
+    }
+    .panel-dark:hover { border-color: #2d2d33; }
+
+    /* ── Neon values ── */
+    .neon-text-emerald { color: #34d399; text-shadow: 0 0 10px rgba(52,211,153,0.35); }
+    .neon-text-sky     { color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.35); }
+    .neon-text-purple  { color: #a855f7; text-shadow: 0 0 10px rgba(168,85,247,0.35); }
+    .neon-text-red     { color: #f87171; text-shadow: 0 0 10px rgba(248,113,113,0.35); }
+
+    /* ── Typography ── */
+    .font-terminal { font-family: 'JetBrains Mono', 'Courier New', monospace; }
+    .label-xs      { font-size: 0.625rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #475569; }
+    .label-sm      { font-size: 0.7rem;   font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #64748b; }
+    .kpi-value     { font-family: 'JetBrains Mono', monospace; font-size: 1.75rem; font-weight: 600; line-height: 1; }
+    .metric-value  { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; font-weight: 500; }
+
+    /* ── Section headers ── */
+    .section-header {
+        font-size: 0.65rem; font-weight: 600; letter-spacing: 0.1em;
+        text-transform: uppercase; color: #475569;
+        border-bottom: 1px solid #1e1e22; padding-bottom: 0.5rem; margin-bottom: 1rem;
     }
 
-    .neon-text-emerald {
-        color: #34d399;
-        text-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
-    }
+    /* ── Scrollbars ── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2d2d33; border-radius: 2px; }
 
-    .neon-text-sky {
-        color: #38bdf8;
-        text-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
-    }
-
-    .neon-text-purple {
-        color: #a855f7;
-        text-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
-    }
-
-    .neon-text-red {
-        color: #f87171;
-        text-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
-    }
-
-    .font-terminal {
-        font-family: 'Courier New', Courier, monospace;
-    }
+    /* ── BTC bar ── */
+    #btc-live-bar { transition: all 0.3s; }
 </style>
 
-<!-- A. Header : The Global P&L Tracker -->
-<div class="panel-dark p-4 flex flex-col md:flex-row justify-between items-center mb-4 shadow-lg">
-    <div class="flex items-center space-x-4">
+<!-- A. Header -->
+<div class="panel-dark px-5 py-4 flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+    <!-- Left: Title + badge -->
+    <div class="flex items-center gap-3">
         <div>
-            <h1 class="text-xl font-bold tracking-widest text-white">SNIPER COMMAND CENTER</h1>
-            <p class="text-xs text-slate-500 font-terminal uppercase">V18 Institutional Edge Engine</p>
+            <h1 class="text-lg font-semibold tracking-tight text-white leading-tight">Sniper Command Center</h1>
+            <p class="label-xs mt-0.5">V18 · Institutional Edge Engine</p>
         </div>
-        <div id="status-badge"
-            class="ml-4 px-3 py-1 rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-xs font-bold uppercase tracking-wider flex items-center shadow-[0_0_10px_rgba(52,211,153,0.2)]">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span> V18 ACTIVE
+        <div class="px-2.5 py-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-[0.65rem] font-semibold flex items-center gap-1.5 tracking-wide">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>LIVE
         </div>
     </div>
-    <div class="flex items-center space-x-4 mt-4 md:mt-0 font-terminal flex-wrap gap-2">
+    <!-- Right: BTC bar + HWM -->
+    <div class="flex items-center gap-4 flex-wrap">
         <div id="btc-live-bar"
-             hx-get="/api/live-btc"
-             hx-trigger="every 2s"
-             hx-swap="innerHTML"
-             class="flex items-center font-terminal text-xs px-3 py-1.5 bg-slate-900/50 rounded border border-slate-700/50">
-          <span class="text-slate-500">BTC chargement...</span>
+             hx-get="/api/live-btc" hx-trigger="every 2s" hx-swap="innerHTML"
+             class="flex items-center gap-2 text-xs px-3 py-2 bg-slate-900/60 rounded-lg border border-slate-700/40 font-terminal min-w-[16rem]">
+          <span class="text-slate-500 text-[0.7rem]">BTC…</span>
         </div>
         <div class="text-right">
-            <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Baseline Equity (HWM)</div>
-            <div class="text-lg text-slate-300" id="hwm-val">{{ "%.2f"|format(hwm) }} USDC</div>
+            <div class="label-xs">HWM Equity</div>
+            <div class="font-terminal text-base font-semibold text-slate-200 mt-0.5" id="hwm-val">{{ "%.2f"|format(hwm) }} USDC</div>
         </div>
     </div>
 </div>
 
 <!-- V18 PERFORMANCE KPI BANNER -->
-<div hx-get="/api/v18/performance" hx-trigger="every 3s" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-    <div
-        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-emerald-500/50 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-4 -top-4 w-16 h-16 bg-emerald-500/10 rounded-full blur-xl"></div>
-        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Net PnL (USDC)</div>
-        <div id="kpi-pnl" class="text-2xl font-terminal neon-text-emerald z-10">...</div>
+<div hx-get="/api/v18/performance" hx-trigger="every 3s" hx-swap="none" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-emerald-500/40 relative overflow-hidden">
+        <div class="absolute -right-3 -top-3 w-14 h-14 bg-emerald-500/8 rounded-full blur-xl"></div>
+        <div class="label-xs mb-2 z-10">Net PnL</div>
+        <div id="kpi-pnl" class="kpi-value neon-text-emerald z-10">—</div>
+        <div class="label-xs mt-1.5 z-10 text-slate-600">USDC</div>
     </div>
-    <div
-        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-sky-500/50 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-4 -top-4 w-16 h-16 bg-sky-500/10 rounded-full blur-xl"></div>
-        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Win Rate (Last 50)</div>
-        <div id="kpi-winrate" class="text-2xl font-terminal neon-text-sky z-10">...</div>
-        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase">Target: >65%</div>
+    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-sky-500/40 relative overflow-hidden">
+        <div class="absolute -right-3 -top-3 w-14 h-14 bg-sky-500/8 rounded-full blur-xl"></div>
+        <div class="label-xs mb-2 z-10">Win Rate</div>
+        <div id="kpi-winrate" class="kpi-value neon-text-sky z-10">—</div>
+        <div class="label-xs mt-1.5 z-10 text-slate-600">Last 50 · Target &gt;65%</div>
     </div>
-    <div
-        class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-purple-500/50 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-4 -top-4 w-16 h-16 bg-purple-500/10 rounded-full blur-xl"></div>
-        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">Hourly Sharpe Ratio</div>
-        <div id="kpi-sharpe" class="text-2xl font-terminal neon-text-purple z-10">...</div>
-        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase">Risk-Adjusted Alpha</div>
+    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-purple-500/40 relative overflow-hidden">
+        <div class="absolute -right-3 -top-3 w-14 h-14 bg-purple-500/8 rounded-full blur-xl"></div>
+        <div class="label-xs mb-2 z-10">Sharpe Ratio</div>
+        <div id="kpi-sharpe" class="kpi-value neon-text-purple z-10">—</div>
+        <div class="label-xs mt-1.5 z-10 text-slate-600">Hourly · Risk-Adj Alpha</div>
     </div>
-    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-red-500/50 shadow-lg relative overflow-hidden group transition-all duration-300"
-        id="kpi-dd-card">
-        <div
-            class="absolute -right-4 -top-4 w-16 h-16 bg-red-500/10 rounded-full blur-xl group-hover:bg-red-500/20 transition-all">
-        </div>
-        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10">HWM Drawdown</div>
-        <div id="kpi-dd" class="text-2xl font-terminal neon-text-red z-10">...</div>
-        <div class="text-[0.6rem] text-red-500/70 mt-1 uppercase animate-pulse hidden" id="kpi-dd-alert">⚠️ >3% BREACH
-        </div>
-        <div class="text-[0.6rem] text-slate-600 mt-1 uppercase" id="kpi-dd-safe">Safe Zone (< 3%)</div>
-        </div>
+    <div class="panel-dark p-4 flex flex-col items-center justify-center border-l-2 border-red-500/40 relative overflow-hidden group transition-colors duration-300" id="kpi-dd-card">
+        <div class="absolute -right-3 -top-3 w-14 h-14 bg-red-500/8 rounded-full blur-xl group-hover:bg-red-500/15 transition-all"></div>
+        <div class="label-xs mb-2 z-10">HWM Drawdown</div>
+        <div id="kpi-dd" class="kpi-value neon-text-red z-10">—</div>
+        <div class="label-xs mt-1.5 z-10 text-red-500/60 animate-pulse hidden" id="kpi-dd-alert">⚠ &gt;3% BREACH</div>
+        <div class="label-xs mt-1.5 z-10 text-slate-600" id="kpi-dd-safe">Safe Zone · &lt;3%</div>
     </div>
+</div>
 
     <script>
-        document.body.addEventListener('htmx:afterSwap', function (evt) {
+        document.body.addEventListener('htmx:afterRequest', function (evt) {
             if (evt.detail.elt.getAttribute('hx-get') === '/api/v18/performance') {
                 try {
                     const data = JSON.parse(evt.detail.xhr.responseText);
@@ -110,7 +115,7 @@
                     const pnlEl = document.getElementById("kpi-pnl");
                     const val = parseFloat(data.pnl_usdc);
                     pnlEl.innerText = (val > 0 ? '+' : '') + val.toFixed(2);
-                    pnlEl.className = "text-2xl font-terminal z-10 " + (val >= 0 ? "neon-text-emerald" : "neon-text-red");
+                    pnlEl.className = "kpi-value z-10 " + (val >= 0 ? "neon-text-emerald" : "neon-text-red");
 
                     // Win Rate
                     document.getElementById("kpi-winrate").innerText = (data.win_rate_50 || 0).toFixed(1) + "%";
@@ -119,7 +124,7 @@
                     const sharpeEl = document.getElementById("kpi-sharpe");
                     const shrp = parseFloat(data.sharpe_ratio || 0);
                     sharpeEl.innerText = shrp.toFixed(2);
-                    sharpeEl.className = "text-2xl font-terminal z-10 " + (shrp >= 1.5 ? "neon-text-purple" : "text-amber-500");
+                    sharpeEl.className = "kpi-value z-10 " + (shrp >= 1.5 ? "neon-text-purple" : "text-amber-500");
 
                     // Drawdown
                     const ddEl = document.getElementById("kpi-dd");
@@ -157,70 +162,67 @@
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
-        <!-- B. Zone Gauche : The Brain Pulse (Indicateurs Quantitatifs) -->
+        <!-- B. Zone Gauche : Brain Pulse -->
         <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
-            <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
-                <h2
-                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                    Brain Pulse</h2>
+            <div class="panel-dark p-4 flex flex-col h-full">
+                <div class="section-header">Brain Pulse</div>
 
+                <!-- Momentum -->
                 <div class="mb-4">
-                    <div class="flex justify-between text-xs mb-1">
-                        <span class="text-slate-400 uppercase">Momentum (30s)</span>
-                        <span id="mom-val" class="font-terminal neon-text-sky">0.00%</span>
+                    <div class="flex justify-between items-baseline mb-1.5">
+                        <span class="label-sm">Momentum 30s</span>
+                        <span id="mom-val" class="metric-value neon-text-sky">0.00%</span>
                     </div>
-                    <div class="w-full bg-slate-800 rounded-full h-1.5">
-                        <div id="mom-bar" class="bg-sky-400 h-1.5 rounded-full" style="width: 50%"></div>
+                    <div class="w-full bg-slate-800/80 rounded-full h-1">
+                        <div id="mom-bar" class="bg-sky-400/80 h-1 rounded-full transition-all duration-300" style="width:50%"></div>
                     </div>
-                    <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.012%</div>
+                    <div class="label-xs mt-1 text-right text-slate-700">threshold ±0.012%</div>
                 </div>
 
+                <!-- OBI -->
                 <div class="mb-4">
-                    <div class="flex justify-between text-xs mb-1">
-                        <span class="text-slate-400 uppercase">Binance OBI</span>
-                        <span id="obi-val" class="font-terminal neon-text-emerald">0.00</span>
+                    <div class="flex justify-between items-baseline mb-1.5">
+                        <span class="label-sm">Order Book Imbalance</span>
+                        <span id="obi-val" class="metric-value neon-text-emerald">0.00</span>
                     </div>
-                    <div class="w-full bg-slate-800 rounded-full h-1.5">
-                        <div id="obi-bar" class="bg-emerald-400 h-1.5 rounded-full" style="width: 50%"></div>
+                    <div class="w-full bg-slate-800/80 rounded-full h-1">
+                        <div id="obi-bar" class="bg-emerald-400/80 h-1 rounded-full transition-all duration-300" style="width:50%"></div>
                     </div>
-                    <div class="text-[0.65rem] text-slate-600 mt-1 text-right">Seuil ±0.12</div>
+                    <div class="label-xs mt-1 text-right text-slate-700">threshold ±0.12</div>
                 </div>
 
-                <div class="mb-4 mt-2 p-3 bg-slate-900/50 border border-slate-800 rounded">
-                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Dynamic IV (V14)</div>
-                    <div id="iv-val" class="text-xl font-terminal neon-text-purple">0.00</div>
-                    <div class="text-xs text-slate-500 mt-1">Impacts Options Pricing Model</div>
+                <!-- IV + Funding side by side -->
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div class="p-2.5 bg-slate-900/60 border border-slate-800/60 rounded-lg">
+                        <div class="label-xs mb-1.5">Dynamic IV</div>
+                        <div id="iv-val" class="metric-value neon-text-purple text-base">0.00</div>
+                    </div>
+                    <div class="p-2.5 bg-slate-900/60 border border-slate-800/60 rounded-lg">
+                        <div class="label-xs mb-1.5">Funding Rate</div>
+                        <div id="funding-val" class="metric-value neon-text-sky text-base">0.00%</div>
+                    </div>
                 </div>
 
-                <div class="p-3 bg-slate-900/50 border border-slate-800 rounded">
-                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1">Funding Drift (V14)</div>
-                    <div id="funding-val" class="text-xl font-terminal neon-text-sky">0.00%</div>
-                    <div class="text-xs text-slate-500 mt-1">Directional Bias (Derivatives)</div>
-                </div>
-
-                <div class="mt-4 p-3 bg-slate-900/50 border border-slate-800 rounded relative overflow-hidden">
-                    <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest mb-1 z-10 relative">AI Global
-                        Bias (Grok)</div>
-                    <div class="flex items-center justify-between">
-                        <div class="w-16 h-16 relative">
+                <!-- AI Grok Bias -->
+                <div class="p-3 bg-slate-900/60 border border-slate-800/60 rounded-lg">
+                    <div class="label-xs mb-2">AI Global Bias (Grok)</div>
+                    <div class="flex items-center gap-3">
+                        <div class="w-14 h-14 relative flex-shrink-0">
                             <svg class="w-full h-full transform -rotate-180" viewBox="0 0 36 36">
-                                <path stroke-dasharray="50, 100"
+                                <path stroke-dasharray="50,100"
                                     d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                                    class="stroke-slate-800" stroke-width="3" fill="none" />
-                                <path id="ai-gauge-ring" stroke-dasharray="25, 100"
+                                    class="stroke-slate-800" stroke-width="3" fill="none"/>
+                                <path id="ai-gauge-ring" stroke-dasharray="25,100"
                                     d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                                    class="stroke-yellow-400 transition-all duration-500" stroke-width="3"
-                                    fill="none" />
+                                    class="stroke-yellow-400 transition-all duration-500" stroke-width="3" fill="none"/>
                             </svg>
-                            <div class="absolute inset-0 flex items-center justify-center -mt-2">
-                                <span id="ai-bias-val"
-                                    class="font-terminal text-yellow-400 text-sm font-bold">1.0</span>
+                            <div class="absolute inset-0 flex items-center justify-center -mt-1">
+                                <span id="ai-bias-val" class="font-terminal text-yellow-400 text-xs font-semibold">1.0</span>
                             </div>
                         </div>
-                        <div class="text-right">
-                            <div class="text-xs text-slate-500 mt-1">Multiplier</div>
-                            <div id="ai-gauge-text" class="text-[0.65rem] text-slate-400 uppercase tracking-widest">
-                                Neutral</div>
+                        <div>
+                            <div class="label-xs text-slate-600">Multiplier</div>
+                            <div id="ai-gauge-text" class="label-sm text-slate-300 mt-0.5 normal-case tracking-normal">Neutral</div>
                         </div>
                     </div>
                 </div>
@@ -229,16 +231,12 @@
 
         <!-- C. Zone Centrale : Target Acquisition & Scan Feed -->
         <div class="col-span-1 lg:col-span-6 flex flex-col gap-4">
-            <div class="panel-dark p-4 flex flex-col flex-grow shadow-lg relative overflow-hidden">
-                <h2
-                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                    Target Acquisition</h2>
+            <div class="panel-dark p-4 flex flex-col flex-grow relative overflow-hidden">
+                <div class="section-header">Target Acquisition</div>
 
                 <!-- Launch Sequence Panel (V15.5) -->
-                <div class="mb-6 p-4 bg-slate-900 border border-slate-700 rounded-lg relative flex flex-col space-y-3">
-                    <div class="text-xs text-slate-400 uppercase tracking-widest mb-1 border-b border-slate-800 pb-2">
-                        Launch
-                        Sequence Checklist</div>
+                <div class="mb-5 p-3 bg-slate-900/60 border border-slate-800/60 rounded-lg relative flex flex-col space-y-2">
+                    <div class="label-xs mb-1 border-b border-slate-800 pb-2">Launch Sequence Checklist</div>
 
                     <!-- STEP 1: Data -->
                     <div id="step-1"
@@ -353,35 +351,31 @@
                 </div>
 
                 <!-- Live Scan Feed -->
-                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Live Scan Feed</h2>
-                <div class="flex-grow bg-[#09090b] border border-slate-800 rounded p-3 overflow-y-auto font-terminal text-[0.7rem] text-slate-400 h-64"
+                <div class="label-sm mb-2">Live Scan Feed</div>
+                <div class="flex-grow bg-[#07070a] border border-slate-800/60 rounded-lg p-3 overflow-y-auto font-terminal text-[0.7rem] text-slate-400 h-64"
                     id="scan-feed" hx-get="/api/sniper-feed" hx-trigger="every 1s">
                     <div class="text-slate-600">Initializing radar stream...</div>
                 </div>
 
                 <!-- Near Miss Timeline (V15.7) -->
-                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mt-6 mb-2">Near Miss Timeline
-                    (Last 5)
-                </h2>
-                <div class="bg-[#09090b] border border-slate-800 rounded overflow-hidden">
-                    <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
-                        <thead class="text-slate-500 border-b border-slate-800 bg-[#0A0A0C]">
-                            <tr>
-                                <th class="py-1.5 px-3 font-normal">TIME</th>
-                                <th class="py-1.5 px-3 font-normal">MOM</th>
-                                <th class="py-1.5 px-3 font-normal">OBI</th>
-                                <th class="py-1.5 px-3 font-normal">EDGE</th>
-                                <th class="py-1.5 px-3 font-normal text-center">SYNERGY</th>
-                                <th class="py-1.5 px-3 font-normal">FAIL REASON</th>
-                                <th class="py-1.5 px-3 font-normal text-right">OUTCOME (5m)</th>
+                <div class="label-sm mt-5 mb-2">Near Miss Timeline <span class="text-slate-600 font-normal normal-case tracking-normal">(Last 5)</span></div>
+                <div class="bg-[#07070a] border border-slate-800/60 rounded-lg overflow-hidden">
+                    <table class="w-full text-left text-[0.65rem] font-terminal text-slate-400">
+                        <thead class="border-b border-slate-800/60 bg-[#0A0A0C]">
+                            <tr class="text-slate-600">
+                                <th class="py-2 px-2.5 font-medium tracking-wide">TIME</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide">MOM</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide">OBI</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide">EDGE</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide text-center">SYNERGY</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide">FAIL REASON</th>
+                                <th class="py-2 px-2.5 font-medium tracking-wide text-right">OUTCOME</th>
                             </tr>
                         </thead>
                         <tbody id="near-miss-body" hx-get="/api/sniper-near-misses" hx-trigger="every 5s">
                             <tr>
-                                <td colspan="7"
-                                    class="py-4 text-center text-slate-600 text-[0.7rem] uppercase tracking-widest">
-                                    Loading
-                                    near misses...</td>
+                                <td colspan="7" class="py-5 text-center text-slate-700 text-[0.65rem] tracking-widest uppercase">
+                                    Chargement…</td>
                             </tr>
                         </tbody>
                     </table>
@@ -391,34 +385,29 @@
 
         <!-- D. Zone Droite : Execution & Risk Manager -->
         <div class="col-span-1 lg:col-span-3 flex flex-col gap-4">
-            <div class="panel-dark p-4 flex flex-col h-full shadow-lg">
-                <h2
-                    class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">
-                    Execution & Risk</h2>
+            <div class="panel-dark p-4 flex flex-col h-full">
+                <div class="section-header">Execution &amp; Risk</div>
 
-                <!-- Latency Sparkline Placeholder -->
-                <div class="mb-4 p-3 bg-slate-900/50 border border-slate-800 rounded">
+                <!-- Latency Sparkline -->
+                <div class="mb-3 p-2.5 bg-slate-900/60 border border-slate-800/60 rounded-lg">
                     <div class="flex justify-between items-center mb-2">
-                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">WS-to-Trade Latency</div>
-                        <div id="latency-val" class="text-xs font-terminal neon-text-emerald">0ms</div>
+                        <div class="label-xs">WS-to-Trade Latency</div>
+                        <div id="latency-val" class="metric-value neon-text-emerald">0ms</div>
                     </div>
-                    <div class="flex space-x-1 items-end h-8" id="latency-bars">
-                        <!-- JS populated sparkline -->
-                    </div>
+                    <div class="flex space-x-0.5 items-end h-7" id="latency-bars"></div>
                 </div>
 
-                <!-- Health & Slippage -->
-                <div class="mb-6 p-3 bg-slate-900/50 border border-slate-800 rounded flex justify-between items-center">
+                <!-- Slippage -->
+                <div class="mb-4 p-2.5 bg-slate-900/60 border border-slate-800/60 rounded-lg flex justify-between items-center">
                     <div>
-                        <div class="text-[0.65rem] text-slate-500 uppercase tracking-widest">Slippage Blocks (>1.5%)
-                        </div>
-                        <div class="text-xs text-slate-400">L2 Safety Checks</div>
+                        <div class="label-xs">Slippage Blocks</div>
+                        <div class="label-xs text-slate-700 mt-0.5 normal-case tracking-normal">&gt;1.5% · L2 Safety</div>
                     </div>
-                    <div id="slippage-val" class="text-lg font-terminal text-orange-400">0</div>
+                    <div id="slippage-val" class="font-terminal text-lg text-orange-400">0</div>
                 </div>
 
                 <!-- Trailing Stops Table -->
-                <h2 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Active Trailing Stops</h2>
+                <div class="label-sm mb-2">Active Trailing Stops</div>
                 <div class="overflow-y-auto flex-grow max-h-48 mb-4">
                     <table class="w-full text-left text-[0.7rem] font-terminal text-slate-400">
                         <thead class="text-slate-500 border-b border-slate-800 sticky top-0 bg-[#0A0A0C]">
@@ -488,14 +477,14 @@
                     aiPct = Math.min(50, 25 + (aiBias - 1.0) * 100);
                     aiText = "Bullish";
                     aiColor = "stroke-emerald-400";
-                    document.getElementById('ai-bias-val').className = "font-terminal text-emerald-400 text-sm font-bold";
+                    document.getElementById('ai-bias-val').className = "font-terminal text-emerald-400 text-xs font-semibold";
                 } else if (aiBias < 0.95) {
                     aiPct = Math.max(0, 25 - (1.0 - aiBias) * 100);
                     aiText = "Bearish";
                     aiColor = "stroke-red-400";
-                    document.getElementById('ai-bias-val').className = "font-terminal text-red-400 text-sm font-bold";
+                    document.getElementById('ai-bias-val').className = "font-terminal text-red-400 text-xs font-semibold";
                 } else {
-                    document.getElementById('ai-bias-val').className = "font-terminal text-yellow-400 text-sm font-bold";
+                    document.getElementById('ai-bias-val').className = "font-terminal text-yellow-400 text-xs font-semibold";
                 }
 
                 const gaugeRing = document.getElementById('ai-gauge-ring');
@@ -506,11 +495,11 @@
                 // Bar calculations (visual flavor)
                 let momPct = 50 + (data.momentum * 1000); // Ex: 0.012 -> 50 + 12 = 62%
                 document.getElementById('mom-bar').style.width = Math.min(100, Math.max(0, momPct)) + '%';
-                document.getElementById('mom-bar').className = data.momentum > 0 ? "bg-emerald-400 h-1.5 rounded-full" : "bg-red-400 h-1.5 rounded-full";
+                document.getElementById('mom-bar').className = "h-1 rounded-full transition-all duration-300 " + (data.momentum > 0 ? "bg-emerald-400/80" : "bg-red-400/80");
 
                 let obiPct = 50 + (data.obi * 100);
                 document.getElementById('obi-bar').style.width = Math.min(100, Math.max(0, obiPct)) + '%';
-                document.getElementById('obi-bar').className = data.obi > 0.1 ? "bg-emerald-400 h-1.5 rounded-full" : (data.obi < -0.1 ? "bg-red-400 h-1.5 rounded-full" : "bg-sky-400 h-1.5 rounded-full");
+                document.getElementById('obi-bar').className = "h-1 rounded-full transition-all duration-300 " + (data.obi > 0.1 ? "bg-emerald-400/80" : (data.obi < -0.1 ? "bg-red-400/80" : "bg-sky-400/80"));
 
                 // Update V15.5 Visual Checklist
                 const edge = data.sprint_edge || 0;
@@ -619,7 +608,7 @@
                 if (lats.length > 0) {
                     const latest = lats[lats.length - 1];
                     document.getElementById('latency-val').innerText = latest.toFixed(0) + 'ms';
-                    document.getElementById('latency-val').className = latest > 200 ? "text-xs font-terminal text-red-400" : "text-xs font-terminal neon-text-emerald";
+                    document.getElementById('latency-val').className = "metric-value " + (latest > 200 ? "text-red-400" : "neon-text-emerald");
                 }
 
                 const sparkline = document.getElementById('latency-bars');

@@ -1425,71 +1425,59 @@ def create_app(config: AppConfig, db: Database) -> Flask:
         c_sprint = "text-sky-400" if sprint > 0 else "text-slate-500"
         c_sig    = "text-emerald-400" if signals > 0 else "text-slate-500"
 
-        tmpl = """
-<div class="panel-dark p-4 mb-4" id="funnel-panel"
-     hx-get="/api/scanner-funnel" hx-trigger="every 5s" hx-swap="outerHTML">
-  <div class="text-[0.6rem] text-slate-500 uppercase tracking-widest mb-3">Pipeline de D&#233;cision — Cycle en cours</div>
-  <div class="flex items-center gap-1 font-terminal text-xs">
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold text-slate-300">{{ raw if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">Gamma API</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_price }}">{{ price if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">Prix OK</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_vol }}">{{ volume if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">Vol&gt;10k$</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_spread }}">{{ spread if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">Spread OK</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_elig }}">{{ eligible if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">&#201;ligibles</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_sprint }}">{{ sprint if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">BTC Sprint</div>
-    </div>
-    <div class="text-slate-600 text-base px-1">&#8594;</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold {{ c_sig }}">{{ signals if raw > 0 else '&#8212;' }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">Signaux</div>
-    </div>
-    {% if ctf_count > 0 %}
-    <div class="text-slate-700 text-base px-1">|</div>
-    <div class="flex-1 text-center">
-      <div class="text-lg font-bold text-violet-400">{{ ctf_count }}</div>
-      <div class="text-[0.6rem] text-slate-500 uppercase">CTF Arb</div>
-      <div class="text-[0.6rem] {{ 'text-emerald-400' if ctf_pnl >= 0 else 'text-red-400' }}">{{ '%.3f$' % ctf_pnl }}</div>
-    </div>
-    {% endif %}
+        # Funnel steps: (value, color_class, label)
+        steps = [
+            (raw,      "text-slate-300", "Gamma API"),
+            (price,    c_price,          "Prix"),
+            (volume,   c_vol,            "Vol \u003e10k"),
+            (spread,   c_spread,         "Spread"),
+            (eligible, c_elig,           "\u00c9ligibles"),
+            (sprint,   c_sprint,         "BTC Sprint"),
+            (signals,  c_sig,            "Signaux"),
+        ]
+        dash = "\u2014"  # em-dash
+
+        def step_html(val_n, color, lbl, last):
+            num = str(val_n) if raw > 0 else dash
+            sep = "" if last else '<div class="flex items-center text-slate-700 text-sm px-0.5 select-none">\u203a</div>'
+            border = "" if last else "border-r border-slate-800/60"
+            return f"""
+    <div class="flex-1 text-center px-1 py-2 {border}">
+      <div class="font-terminal font-semibold text-xl leading-none {color} mb-1">{num}</div>
+      <div style="font-size:0.58rem;font-weight:500;letter-spacing:0.07em;text-transform:uppercase;color:#475569">{lbl}</div>
+    </div>{sep}"""
+
+        steps_html = "".join(step_html(v, c, l, i == len(steps)-1) for i, (v, c, l) in enumerate(steps))
+
+        ctf_html = ""
+        if ctf_count > 0:
+            ctf_color = "text-emerald-400" if ctf_pnl >= 0 else "text-red-400"
+            ctf_html = f"""
+    <div class="border-l border-slate-700 ml-1 pl-2 flex-1 text-center py-2">
+      <div class="font-terminal font-semibold text-xl text-violet-400 mb-1">{ctf_count}</div>
+      <div style="font-size:0.58rem;font-weight:500;letter-spacing:0.07em;text-transform:uppercase;color:#475569">CTF Arb</div>
+      <div class="font-terminal text-[0.6rem] {ctf_color} mt-0.5">{ctf_pnl:.3f}$</div>
+    </div>"""
+
+        return f"""
+<div class="panel-dark px-5 py-4 mb-4" id="funnel-panel"
+     hx-get="/api/scanner-funnel" hx-trigger="every 5s" hx-swap="outerHTML"
+     style="font-family:'Inter',system-ui,sans-serif">
+  <div style="font-size:0.6rem;font-weight:600;letter-spacing:0.09em;text-transform:uppercase;color:#475569;margin-bottom:0.75rem">
+    Pipeline de D&eacute;cision &mdash; cycle actuel
   </div>
-  <div class="mt-3">
-    <div class="flex justify-between text-[0.6rem] text-slate-500 mb-1">
-      <span>Max Edge d&#233;tect&#233; ce cycle</span>
-      <span>{{ '%.1f' % max_edge }}% / {{ edge_threshold }}% seuil</span>
+  <div class="flex items-stretch">{steps_html}{ctf_html}
+  </div>
+  <div class="mt-4 pt-3 border-t border-slate-800/60">
+    <div class="flex justify-between mb-1.5" style="font-size:0.6rem;font-weight:500;color:#475569">
+      <span>Max Edge ce cycle</span>
+      <span class="font-terminal">{max_edge:.1f}%<span style="color:#334155"> / {edge_threshold}% seuil</span></span>
     </div>
-    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-      <div class="h-full rounded-full {{ edge_bar_color }} transition-all duration-500" style="width:{{ edge_pct_bar }}%"></div>
+    <div class="w-full h-1 bg-slate-800/80 rounded-full overflow-hidden">
+      <div class="h-full rounded-full {edge_bar_color} transition-all duration-500" style="width:{edge_pct_bar}%"></div>
     </div>
   </div>
 </div>"""
-        return render_template_string(tmpl,
-            raw=raw, price=price, volume=volume, spread=spread, eligible=eligible,
-            sprint=sprint, signals=signals, max_edge=max_edge,
-            edge_threshold=edge_threshold, edge_pct_bar=edge_pct_bar, edge_bar_color=edge_bar_color,
-            ctf_pnl=ctf_pnl, ctf_count=ctf_count,
-            c_price=c_price, c_vol=c_vol, c_spread=c_spread,
-            c_elig=c_elig, c_sprint=c_sprint, c_sig=c_sig)
 
     @app.route("/api/live-btc")
     @login_required
