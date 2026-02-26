@@ -1454,28 +1454,33 @@ class InfoEdgeStrategy(BaseStrategy):
                     if hasattr(self, '_last_funding'):
                         self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
-                # V15.5 Visual Checklist — aligné sur les seuils du trading gate
-                # (tmom=0.010, tobi=0.05 = mêmes valeurs que la gate réelle ligne ~1568)
+                # V20 Checklist — reflète les 4 conditions du gate V20
+                # Gate réel : abs(edge) >= 4.5 AND abs(mom) >= 0.010 AND sign(edge)==sign(mom)
                 import json
                 tmom = 0.010
-                tobi = 0.05
                 tedge = 4.5
-                
-                mom_ok = bool(abs(m30) > tmom)
-                obi_ok = bool(abs(o_val) > tobi)
-                edge_ok = bool(abs(edge_pct) > tedge)
-                iv_ready = bool(getattr(self, '_last_iv', 0) > 0)
-                
+
+                mom_ok    = bool(abs(m30) >= tmom)
+                edge_ok   = bool(abs(edge_pct) >= tedge)
+                iv_ready  = bool(getattr(self, '_last_iv', 0) > 0)
+                # direction_ok : edge et mom pointent dans le même sens
+                direction_ok = bool((edge_pct > 0 and m30 > 0) or (edge_pct < 0 and m30 < 0))
+
+                # OBI reste affiché à titre informatif (non bloquant dans gate V20)
+                tobi = 0.05
+                obi_ok = bool(abs(o_val) >= tobi)
+
                 # V16.0 percentages
-                mom_pct = min(150.0, (abs(m30) / tmom) * 100) if tmom > 0 else 0
-                obi_pct = min(150.0, (abs(o_val) / tobi) * 100) if tobi > 0 else 0
+                mom_pct       = min(150.0, (abs(m30) / tmom) * 100) if tmom > 0 else 0
+                obi_pct       = min(150.0, (abs(o_val) / tobi) * 100) if tobi > 0 else 0
                 edge_pct_ratio = min(150.0, (abs(edge_pct) / tedge) * 100) if tedge > 0 else 0
-                
+
                 checklist = {
-                    "mom_ok": mom_ok,
-                    "obi_ok": obi_ok,
-                    "edge_ok": edge_ok,
-                    "iv_ready": iv_ready
+                    "mom_ok":       mom_ok,
+                    "edge_ok":      edge_ok,
+                    "direction_ok": direction_ok,
+                    "iv_ready":     iv_ready,
+                    "obi_ok":       obi_ok,  # informatif uniquement
                 }
                 # V19: Buffered DB writes
                 self._telemetry_buffer["live_checklist"] = json.dumps(checklist)
@@ -1515,16 +1520,22 @@ class InfoEdgeStrategy(BaseStrategy):
                 # V19: Buffered DB write
                 self._telemetry_buffer["live_trigger_projection"] = round(spot_req, 2)
 
-                # V15.7 Near Miss Logic (3/4 conditions met)
-                conditions = {"Mom": mom_ok, "OBI": obi_ok, "Edge": edge_ok, "IV": iv_ready}
-                met_count = sum(conditions.values())
-                
+                # V20 Near Miss : 3/4 conditions du gate V20
+                # Conditions gate V20 : Mom, Edge, Direction, IV
+                v20_conditions = {
+                    "Mom":       mom_ok,
+                    "Edge":      edge_ok,
+                    "Direction": direction_ok,
+                    "IV":        iv_ready,
+                }
+                met_count = sum(v20_conditions.values())
+
                 if met_count == 3:
-                    failed_cond = [k for k, v in conditions.items() if not v][0]
+                    failed_cond = [k for k, v in v20_conditions.items() if not v][0]
                     now = time.time()
                     if not hasattr(self, '_last_near_miss_ts'):
                         self._last_near_miss_ts = 0.0
-                    
+
                     if now - self._last_near_miss_ts > 10.0:
                         from datetime import datetime, timezone
                         near_miss_data = {
@@ -1534,7 +1545,7 @@ class InfoEdgeStrategy(BaseStrategy):
                             "iv": round(getattr(self, '_last_iv', 0), 3),
                             "edge": round(edge_pct, 2),
                             "missing_condition": failed_cond,
-                            "synergy": bool((m30 * o_val) > 0)
+                            "synergy": bool(direction_ok),
                         }
                         self.db.record_near_miss(near_miss_data)
                         self._last_near_miss_ts = now
@@ -1563,34 +1574,33 @@ class InfoEdgeStrategy(BaseStrategy):
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
 
-            # --- V12.12 : SENSIBILITÉ ACCRUE & LOGS DE DÉBUG SPRINT ---
+            # --- Trading Gate Sprint (V20) : Edge-primary + Mom direction ---
             if is_sprint:
-                # --- V12.12 : SENSIBILITÉ & LOGS ---
+                # Gate V20 : le modèle directionnel (edge) incorpore DÉJÀ OBI.
+                # Exiger un OBI indépendant > seuil est un double-comptage qui bloque.
+                # Nouveau critère :
+                #   1. abs(edge_pct) >= tedge  → signal combiné mom+OBI suffisamment fort
+                #   2. abs(m30) >= tmom         → momentum confirme qu'il y a mouvement
+                #   3. sign(edge) == sign(m30)  → les deux signaux s'accordent sur la direction
                 tmom = 0.010
-                tobi = 0.05
-                
-                # Vérification des conditions
-                mom_ok_up = m30 > tmom
-                mom_ok_down = m30 < -tmom
-                obi_ok_up = o_val > tobi
-                obi_ok_down = o_val < -tobi
-                
+                tedge_gate = 4.5  # même seuil que checklist
+
+                side = None
+                if abs(edge_pct) >= tedge_gate and abs(m30) >= tmom:
+                    if edge_pct > 0 and m30 > 0:
+                        side = "buy"   # modèle dit UP, momentum confirme UP
+                    elif edge_pct < 0 and m30 < 0:
+                        side = "sell"  # modèle dit DOWN, momentum confirme DOWN
+
                 # V14.1 Radar Log Consolidation
                 now = time.time()
                 if not hasattr(self, '_last_pulse_ts'):
                     self._last_pulse_ts = 0.0
-                
-                if (edge_pct > 0) or (now - self._last_pulse_ts > 2.0):
+                if now - self._last_pulse_ts > 2.0:
                     spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                    logger.info("PULSE | Spot: %.2f | Mom: %.4f | OBI: %.2f | Edge: %.2f%%", 
+                    logger.info("PULSE | Spot: %.2f | Mom: %.4f%% | OBI: %.3f | Edge: %.2f%%",
                                 spot, m30, o_val, edge_pct)
                     self._last_pulse_ts = now
-                
-                side = None
-                if mom_ok_up and obi_ok_up:
-                    side = "buy"
-                elif mom_ok_down and obi_ok_down:
-                    side = "sell"
                 
                 if side:
                     logger.info("🔥 [FIRE] %s | Mom=%.4f%% OBI=%.3f Edge=%.1f%% | market=%s",
