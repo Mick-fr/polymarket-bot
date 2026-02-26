@@ -39,14 +39,33 @@ def main():
         trader.start()
 
     elif mode == "dashboard":
-        from dashboard.app import create_app
+        import subprocess
 
-        app = create_app(config, db)
-        app.run(
-            host=config.dashboard.host,
-            port=config.dashboard.port,
-            debug=False,
-        )
+        bind = f"{config.dashboard.host}:{config.dashboard.port}"
+        logger = logging.getLogger("dashboard")
+        logger.info("Démarrage dashboard via Gunicorn sur %s", bind)
+
+        cmd = [
+            sys.executable, "-m", "gunicorn",
+            "--bind", bind,
+            "--workers", "2",
+            "--timeout", "30",
+            "--access-logfile", "-",
+            "dashboard.wsgi:app",
+        ]
+        try:
+            subprocess.run(cmd, check=True)
+        except FileNotFoundError:
+            # Fallback : gunicorn non installé (Windows dev) → Flask dev server
+            logger.warning("Gunicorn non disponible, fallback Flask dev server")
+            from dashboard.app import create_app
+
+            app = create_app(config, db)
+            app.run(
+                host=config.dashboard.host,
+                port=config.dashboard.port,
+                debug=False,
+            )
 
 
 if __name__ == "__main__":

@@ -1569,8 +1569,8 @@ class Trader:
                         "INFO", "trader",
                         f"CTF-ARB: {market.question[:60]} | combined={combined:.4f}",
                     )
-                    # Taille de l'arb : 2% du solde, max 5 USDC
-                    arb_size = min(balance * 0.02, 5.0)
+                    # R7: Taille arb augmentée — edge mathématiquement garanti
+                    arb_size = min(balance * 0.03, self.config.bot.max_order_size)
                     self._execute_ctf_arb(market, arb_size, ask_yes, ask_no, balance)
 
         except Exception as e:
@@ -1578,10 +1578,18 @@ class Trader:
 
     def _execute_ctf_arb(self, market, arb_size: float,
                           ask_yes: float, ask_no: float, balance: float):
-        """Exécute l'arb CTF en plaçant deux market orders (FOK)."""
+        """Exécute l'arb CTF en plaçant deux market orders (FOK).
+
+        R7: Le PnL CTF Arb est isolé du PnL market-making via un tag 'CTF-ARB'
+        dans la reason du signal ET un compteur dédié en DB (ctf_arb_pnl, ctf_arb_count).
+        """
         from bot.strategy import Signal
+        combined = ask_yes + ask_no
+        est_profit_per_share = 1.0 - combined
         yes_shares = round(arb_size / ask_yes, 2)
         no_shares  = round(arb_size / ask_no,  2)
+        total_cost = yes_shares * ask_yes + no_shares * ask_no
+        est_pnl = (min(yes_shares, no_shares) * 1.0) - total_cost
 
         for token_id, shares, price, label in [
             (market.yes_token_id, yes_shares, ask_yes, "YES"),
@@ -1596,9 +1604,24 @@ class Trader:
                 price=price,
                 size=arb_size,
                 confidence=0.95,
-                reason=f"CTF-ARB combined={ask_yes+ask_no:.4f}",
+                reason=f"CTF-ARB combined={combined:.4f}",
             )
             self._execute_signal(sig, balance)
+
+        # R7: Tracking isolé du PnL CTF Arb
+        try:
+            prev_pnl = float(self.db.get_config("ctf_arb_pnl", "0.0") or 0)
+            prev_count = int(self.db.get_config("ctf_arb_count", "0") or 0)
+            self.db.set_config("ctf_arb_pnl", str(round(prev_pnl + est_pnl, 4)))
+            self.db.set_config("ctf_arb_count", str(prev_count + 1))
+            logger.info(
+                "[CTF-ARB] Exécuté: %s | coût=%.4f USDC | profit_est=%.4f USDC "
+                "| cumul=%d arbs, PnL=%.4f USDC",
+                market.question[:35], total_cost, est_pnl,
+                prev_count + 1, prev_pnl + est_pnl,
+            )
+        except Exception as e:
+            logger.debug("[CTF-ARB] Erreur tracking PnL: %s", e)
 
     def _has_live_sell(self, token_id: str) -> bool:
         """

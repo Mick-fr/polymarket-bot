@@ -100,11 +100,10 @@ class TradeAnalytics:
         total_realized_pct = sum(t.get("pnl_pct", 0) or 0 for t in closed)
         avg_realized = (total_realized_pct / len(closed)) if closed else 0.0
         
-        # If we had actual exact p_true per trade recorded in trades table, we would use it.
-        # As an approximation for the engine, the strategy requires edge > MIN_EDGE_SCORE (e.g. 4.5%).
-        # Let's assume an average projected edge of 5.5% for recent trades. 
-        # (Could be enriched further if DB schema is updated later to log p_true directly).
-        avg_projected = 5.5
+        # R8: Calcul dynamique du projected edge basé sur la confidence moyenne
+        # des signaux récents (au lieu d'une constante hardcodée à 5.5%)
+        confidences = [t.get("confidence", 0) or 0 for t in closed if t.get("confidence")]
+        avg_projected = (sum(confidences) / len(confidences) * 100) if confidences else 5.0
         
         return {
             "projected": round(avg_projected, 2),
@@ -193,9 +192,9 @@ class TradeAnalytics:
     def _compute_sharpe(self, returns: list[float],
                          risk_free_rate: float = 0.0) -> float:
         """
-        Sharpe ratio annualise.
-        Estimation : ~10 trades/jour (8s cycles, ~3 signals/cycle, 8h de trading)
-        → ~3650 trades/an.
+        Sharpe ratio annualisé dynamiquement.
+        R8: Le facteur d'annualisation est calculé à partir de la durée réelle
+        de l'historique de trades (au lieu d'une constante fixe de 3650).
         """
         if len(returns) < 2:
             return 0.0
@@ -203,11 +202,28 @@ class TradeAnalytics:
         variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
         std_r = math.sqrt(variance) if variance > 0 else 0.001
 
-        # Estimer le nombre de periodes par an
-        # En moyenne ~10 trades/jour, ~365 jours
-        trades_per_year = 3650
-        annualization = math.sqrt(trades_per_year)
+        # R8: Annualisation dynamique basée sur l'historique réel
+        closed = self.db.get_closed_trades(limit=10000)
+        if len(closed) >= 10:
+            timestamps = [t.get("close_timestamp", "") for t in closed if t.get("close_timestamp")]
+            if len(timestamps) >= 2:
+                oldest = min(timestamps)
+                newest = max(timestamps)
+                try:
+                    from datetime import datetime
+                    d_old = datetime.fromisoformat(oldest.replace("Z", "+00:00"))
+                    d_new = datetime.fromisoformat(newest.replace("Z", "+00:00"))
+                    duration_days = max((d_new - d_old).total_seconds() / 86400, 1.0)
+                    trades_per_day = len(returns) / duration_days
+                    trades_per_year = trades_per_day * 365
+                except Exception:
+                    trades_per_year = len(returns) * 12  # Fallback conservateur
+            else:
+                trades_per_year = len(returns) * 12
+        else:
+            trades_per_year = len(returns) * 12  # Fallback conservateur
 
+        annualization = math.sqrt(max(trades_per_year, 1))
         return ((mean_r - risk_free_rate) / std_r) * annualization
 
     # ── Max Drawdown ───────────────────────────────────────────────

@@ -341,24 +341,53 @@ class MarketUniverse:
 
 class AvellanedaStoikovSkew:
     """
-    Calcule le skew additionnel via le modèle d'Avellaneda-Stoikov simplifié.
-    Formule : reservation_price = mid - (q * gamma * sigma^2 * T)
-    - q : inventaire directionnel (négatif si short)
-    - gamma : as_risk_aversion
-    - sigma : volatilité historique
-    - T : temps restant (en fraction de jour ou année, ici jours pour la démo)
+    Calcule le skew via Avellaneda-Stoikov (2008).
+    Reservation price : r = mid - gamma * sigma^2 * T_remaining * q
+    Optimal spread    : delta = gamma * sigma^2 * T_remaining + (2/gamma) * ln(1 + gamma/k)
+
+    Inputs calibrés pour marchés Polymarket 5min BTC :
+      - q : inventaire normalisé [-1, +1] = (expo_usdc / max_expo_usdc)
+      - sigma : volatilité du mid Polymarket estimée sur fenêtre glissante
+      - T_remaining : temps restant normalisé [0, 1] (fraction de la durée du marché)
+      - gamma : risk aversion (config.as_risk_aversion, défaut 0.45)
     """
-    def __init__(self, risk_aversion: float = 0.25):
+    def __init__(self, risk_aversion: float = 0.45):
         self.gamma = risk_aversion
 
     def calculate_skew_ticks(self, q: float, sigma: float, t_days: float) -> int:
-        """Retourne le nombre de ticks de skew AS directionnel."""
-        # Réservation price
-        # Plus q est grand (inventaire long fort), plus RP baisse (pour inciter au ask bas)
-        rp_delta = - (q * self.gamma * (sigma ** 2) * max(t_days, 0.1))
-        # Skew directionnel (positif = penche à l'achat, négatif = penche à la vente)
-        directional_skew = rp_delta  # Si rp_delta négatif, on baisse les quotes
-        return round(directional_skew / TICK_SIZE)
+        """Retourne le nombre de ticks de skew AS directionnel.
+
+        Args:
+            q: inventaire normalisé [-1, +1]. >0 = long, <0 = short.
+            sigma: volatilité du mid (ex: 0.02 = 2% sur la fenêtre).
+                   Si c'est la raw EMA vol, elle est clampée à [0.001, 0.10].
+            t_days: temps restant en jours (pour marchés 5min → ~0.0035 jour).
+        """
+        # Clamp sigma pour éviter les valeurs aberrantes (0 ou NaN)
+        sigma = max(0.001, min(0.10, sigma))
+        # Clamp q pour éviter les skews extrêmes
+        q = max(-1.0, min(1.0, q))
+        # Temps restant minimal pour éviter div/0 comportement
+        T = max(t_days, 0.001)
+
+        # Reservation price delta (ticks)
+        # rp_delta > 0 quand q < 0 (short → incentive BUY → bid monte)
+        # rp_delta < 0 quand q > 0 (long → incentive SELL → ask baisse)
+        rp_delta = -(q * self.gamma * (sigma ** 2) * T)
+        return round(rp_delta / TICK_SIZE)
+
+    def optimal_spread_ticks(self, sigma: float, t_days: float) -> int:
+        """Spread optimal A-S (en ticks).
+
+        Formule simplifiée : delta = gamma * sigma^2 * T + 2/gamma * ln(1 + gamma/k)
+        Avec k estimé à 1.0 (intensité d'arrivée des ordres, calibré empiriquement).
+        """
+        import math
+        sigma = max(0.001, min(0.10, sigma))
+        T = max(t_days, 0.001)
+        k = 1.0  # Paramètre d'intensité (à calibrer sur données réelles)
+        spread = self.gamma * (sigma ** 2) * T + (2.0 / self.gamma) * math.log(1.0 + self.gamma / k)
+        return max(1, round(spread / TICK_SIZE))
 
 
 # ─── Calcul OBI ──────────────────────────────────────────────────────────────
@@ -935,10 +964,14 @@ class OBIMarketMakingStrategy(BaseStrategy):
         # 2026 V6 SCALING : Avellaneda-Stoikov
         as_skew = 0
         if getattr(self, "as_skew_calc", None) is not None:
+            # Normaliser q en [-1, +1] : expo_usdc / max_expo_usdc
+            max_expo = (self._config.max_exposure_pct * 100) or 20.0  # USDC max
+            q_norm = (qty_held * mid - self._config.as_inventory_target) / max_expo if max_expo > 0 else 0.0
+            q_norm = max(-1.0, min(1.0, q_norm))
             as_skew = self.as_skew_calc.calculate_skew_ticks(
-                q=qty_held - self._config.as_inventory_target,
+                q=q_norm,
                 sigma=volatility,
-                t_days=days_to_expiry
+                t_days=days_to_expiry,
             )
             skew_final = round(obi_skew * 0.55 + as_skew * 0.45)
         else:

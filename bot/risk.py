@@ -132,6 +132,8 @@ class RiskManager:
         self._max_exposure_pct: float = getattr(config, "max_exposure_pct", 0.20)
         self._last_agg_level: str = ""
         self.trailing_stops = TrailingStopManager(db)
+        # R4: timestamps de skew en mémoire (évite 40+ appels DB/cycle)
+        self._skew_first_seen: dict[str, float] = {}
 
     # 2026 V8.0 OVERRIDE CONSTANTES DB — rechargement dynamique chaque cycle
     AGGRESSIVITY_MAP = {
@@ -436,26 +438,26 @@ class RiskManager:
         ))
         
         # V17.0: Kill Switch Skew (> 15% pendant > 60s)
+        # R4: timestamps en mémoire (plus de DB dans le hot path)
         import time
         skew_ratio = net_exposure / balance if balance > 0 else 0.0
-        ts_key = f"skew_ts_{signal.token_id}"
         if skew_ratio > 0.15:
             now = time.time()
-            first_skew = float(self.db.get_config(ts_key) or 0.0)
+            first_skew = self._skew_first_seen.get(signal.token_id, 0.0)
             if first_skew == 0.0:
-                self.db.set_config(ts_key, now)
+                self._skew_first_seen[signal.token_id] = now
             elif (now - first_skew) > 60.0:
                 logger.warning(
                     "[RiskManager] SKEW_WARNING: Skew > 15%% pendant >60s (%s). Ask-Only.", signal.token_id[:16]
                 )
                 if signal.side == "buy":
                     return RiskVerdict(
-                        False, 
-                        f"SKEW_WARNING: Skew {skew_ratio*100:.1f}% > 60s", 
+                        False,
+                        f"SKEW_WARNING: Skew {skew_ratio*100:.1f}% > 60s",
                         "cancel_bids"
                     )
         else:
-            self.db.set_config(ts_key, 0.0)
+            self._skew_first_seen.pop(signal.token_id, None)
             
         ratio         = net_exposure / max_exposure
 

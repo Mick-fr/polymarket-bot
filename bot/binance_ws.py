@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 import collections
-import concurrent.futures
+from queue import Queue, Full
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,10 @@ class BinanceWSClient(threading.Thread):
     def __init__(self, on_tick_callback: Optional[callable] = None):
         super().__init__(daemon=True, name="BinanceWS")
         self.on_tick_callback = on_tick_callback
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        # R6: Queue bornée remplace ThreadPoolExecutor unbounded
+        # maxsize=16 → drop silencieux si le callback est trop lent,
+        # on préfère être à jour que traiter des ticks obsolètes
+        self._tick_queue: Queue = Queue(maxsize=16)
         # Prix spot live
         self.btc_bid: float = 0.0
         self.btc_ask: float = 0.0
@@ -130,6 +133,19 @@ class BinanceWSClient(threading.Thread):
 
     def run(self):
         logger.info("[BinanceWS] Démarrage thread daemon")
+        # R6: Worker unique pour les callbacks (backpressure via queue bornée)
+        def _callback_worker():
+            while not self._stop_event.is_set():
+                try:
+                    symbol, mid = self._tick_queue.get(timeout=1.0)
+                except Exception:
+                    continue
+                try:
+                    self.on_tick_callback(symbol, mid)
+                except Exception as e:
+                    logger.debug("[BinanceWS] callback error: %s", e)
+        if self.on_tick_callback:
+            threading.Thread(target=_callback_worker, daemon=True, name="BinanceCB").start()
         # Lancer le polling funding rate dans un sous-thread
         funding_thread = threading.Thread(target=self._poll_funding, daemon=True, name="BinanceFunding")
         funding_thread.start()
@@ -202,10 +218,13 @@ class BinanceWSClient(threading.Thread):
                         self.eth_history.append((now, mid))
                 self._last_update_ts = now
             
-            # V13 Callback Asynchrone : Push Data Upstream Immediately
+            # R6: Queue bornée — drop silencieux si en retard
             if self.on_tick_callback and symbol in ["BTCUSDT", "ETHUSDT"]:
                 mid_signal = (self.btc_bid + self.btc_ask) / 2.0 if symbol == "BTCUSDT" else (self.eth_bid + self.eth_ask) / 2.0
-                self._executor.submit(self.on_tick_callback, symbol, mid_signal)
+                try:
+                    self._tick_queue.put_nowait((symbol, mid_signal))
+                except Full:
+                    pass  # Drop : on préfère être à jour
 
         except Exception as e:
             logger.debug("[BinanceWS] payload json error : %s", e)
@@ -249,9 +268,12 @@ class BinanceWSClient(threading.Thread):
                                     self.eth_history.append((now, mid))
                             self._last_update_ts = now
 
-                        # V13 Callback Asynchrone (Fallback)
+                        # R6: Queue bornée (Fallback REST)
                         if self.on_tick_callback and sym in ["BTCUSDT", "ETHUSDT"]:
-                            self._executor.submit(self.on_tick_callback, sym, mid)
+                            try:
+                                self._tick_queue.put_nowait((sym, mid))
+                            except Full:
+                                pass
                             
                     self._connected = True
             except Exception as e:
