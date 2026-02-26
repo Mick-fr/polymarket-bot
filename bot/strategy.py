@@ -1593,7 +1593,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 
                 if side:
                     print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.market_id[:6]}")
-                    max_edge_found = max(max_edge_found, 30.0)
+                    max_edge_found = max(max_edge_found, abs(edge_pct))
                     
                     sizing_penalty = 1.0
                     # V17.0: Filtre Anti-Streak
@@ -1631,6 +1631,8 @@ class InfoEdgeStrategy(BaseStrategy):
                             self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
                 
                 min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
+                daily_edge_scores.append(abs(edge_pct))  # inclure les sprints dans avg_edge
+                max_edge_found = max(max_edge_found, abs(edge_pct))
                 continue # Bypass complet
             # ----------------------------------------
 
