@@ -1454,10 +1454,11 @@ class InfoEdgeStrategy(BaseStrategy):
                     if hasattr(self, '_last_funding'):
                         self._telemetry_buffer["live_funding_rate"] = round(self._last_funding, 6)
 
-                # V15.5 Visual Checklist & V16.0 Logic Constraints
+                # V15.5 Visual Checklist — aligné sur les seuils du trading gate
+                # (tmom=0.010, tobi=0.05 = mêmes valeurs que la gate réelle ligne ~1568)
                 import json
-                tmom = 0.012
-                tobi = 0.12
+                tmom = 0.010
+                tobi = 0.05
                 tedge = 4.5
                 
                 mom_ok = bool(abs(m30) > tmom)
@@ -1592,7 +1593,8 @@ class InfoEdgeStrategy(BaseStrategy):
                     side = "sell"
                 
                 if side:
-                    print(f"🔥 [STRAT] !!! FIRE !!! {side.upper()} sur {market.market_id[:6]}")
+                    logger.info("🔥 [FIRE] %s | Mom=%.4f%% OBI=%.3f Edge=%.1f%% | market=%s",
+                                side.upper(), m30, o_val, edge_pct, market.market_id[:8])
                     max_edge_found = max(max_edge_found, abs(edge_pct))
                     
                     sizing_penalty = 1.0
@@ -1609,12 +1611,12 @@ class InfoEdgeStrategy(BaseStrategy):
                         token_id=token_yes if side == "buy" else token_no,
                         market_id=market.market_id,
                         market_question=market.question,
-                        side="buy",
+                        side=side,          # "buy" (YES) ou "sell" (buy NO)
                         order_type="market",
-                        price=0.99, # Ordre quasi au marché
-                        size=round(shares, 2) if side == "buy" else round(order_size, 2),
+                        price=0.99,         # Ordre quasi au marché
+                        size=round(shares, 2),
                         confidence=0.99,
-                        reason=f"V13 FIRE: M={m30:.4f} O={o_val:.2f}",
+                        reason=f"V13 FIRE: M={m30:.4f} O={o_val:.2f} E={edge_pct:.1f}%",
                         mid_price=0.50,
                         spread_at_signal=0.01,
                     ))
