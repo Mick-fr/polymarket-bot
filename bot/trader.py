@@ -1625,8 +1625,23 @@ class Trader:
 
     # 2026 TOP BOT UPGRADE WS
     def _on_ws_book_update(self, token_id: str):
-        """Callback déclenché par le WebSocket à chaque mise à jour de carnet."""
-        logger.debug("[WS] Book update reçu pour %s", token_id[:16])
+        """Callback déclenché par le WebSocket à chaque mise à jour de carnet.
+
+        Persiste le mid WS directement en DB et invalide le TTL HTTP pour ce token,
+        ce qui supprime les appels HTTP redondants dans _refresh_inventory_mids()
+        pour tous les tokens actifs sur le WebSocket.
+        """
+        mid = self.pm_client.ws_client.get_midpoint(token_id)
+        if mid is not None and 0.01 <= mid <= 0.99:
+            try:
+                self.db.update_position_mid(token_id, mid)
+            except Exception:
+                pass  # Position absente en DB : pas critique, sera créée au prochain fill
+            self._mid_last_fetched[token_id] = time.time()
+            self._mid_404_tokens.discard(token_id)
+            logger.debug("[WS] Book update %s — mid=%.4f persisté en DB", token_id[:16], mid)
+        else:
+            logger.debug("[WS] Book update reçu pour %s (mid indisponible)", token_id[:16])
 
     def _latency_trace(func):
         """V14: Deécorateur pour tracer la latence d'exécution depuis le tick Binance."""

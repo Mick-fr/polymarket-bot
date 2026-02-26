@@ -70,13 +70,15 @@ class PolymarketWSClient:
         self._lock = threading.Lock()
 
     def start(self, token_ids: list, on_update_callback=None):
-        if self.running: return
-        self.active_markets = set(token_ids)
-        self.on_book_update = on_update_callback
-        for t in self.active_markets:
-            self.orderbooks[t] = {"bids": {}, "asks": {}, "mid": 0.0}
-        
-        self.running = True
+        with self._lock:
+            if self.running:
+                return
+            self.active_markets = set(token_ids)
+            self.on_book_update = on_update_callback
+            for t in self.active_markets:
+                self.orderbooks[t] = {"bids": {}, "asks": {}, "mid": 0.0}
+            self.running = True
+        # WS créé hors du lock : run_forever est bloquant dans le thread daemon
         self.ws = websocket.WebSocketApp(
             self.endpoint,
             on_message=self._on_message,
@@ -93,20 +95,24 @@ class PolymarketWSClient:
         self.thread.start()
 
     def stop(self):
-        self.running = False
+        with self._lock:
+            self.running = False
         if self.ws:
             self.ws.close()
 
     def log_status(self):
-        # 2026 V6.4 ULTRA-SURGICAL
-        if self.running and getattr(self, "active_markets", None):
-            logger.info("[WS] Subscribed to %d active markets", len(self.active_markets))
+        with self._lock:
+            running = self.running
+            n = len(self.active_markets) if self.active_markets else 0
+        if running and n:
+            logger.info("[WS] Subscribed to %d active markets", n)
 
     def _on_open(self, ws):
-        msg = {"assets_ids": list(self.active_markets), "type": "market"}
+        with self._lock:
+            markets = list(self.active_markets)
+        msg = {"assets_ids": markets, "type": "market"}
         ws.send(json.dumps(msg))
-        # 2026 V6.4 ULTRA-SURGICAL
-        logger.info("[WS] Subscribed to %d active markets", len(self.active_markets))
+        logger.info("[WS] Subscribed to %d active markets", len(markets))
 
     def _on_message(self, ws, message):
         try:
