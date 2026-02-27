@@ -229,18 +229,34 @@ class MarketUniverse:
     def _evaluate(self, m: dict) -> Optional[EligibleMarket]:
         """Applique tous les filtres sur un marche brut. Retourne None si rejete."""
         if m.get('_is_direct_target'):
+            # Parse l'endDate réel pour avoir un countdown précis
+            _end_str = (m.get("endDate") or m.get("expiration") or m.get("end_date_iso") or "")
+            _days_left = 300 / 86400.0
+            _end_ts    = time.time() + 300
+            if _end_str:
+                try:
+                    _s = _end_str.replace("Z", "+00:00")
+                    if "T" not in _s:
+                        _s += "T00:00:00+00:00"
+                    _end_dt = datetime.fromisoformat(_s)
+                    if _end_dt.tzinfo is None:
+                        _end_dt = _end_dt.replace(tzinfo=timezone.utc)
+                    _days_left = (_end_dt - datetime.now(timezone.utc)).total_seconds() / 86400.0
+                    _end_ts    = _end_dt.timestamp()
+                except Exception:
+                    pass
             return EligibleMarket(
                 market_id=str(m.get("id") or m.get("conditionId") or ""),
                 question=m.get("question", ""),
                 yes_token_id=json.loads(m.get("clobTokenIds", "[]"))[0] if isinstance(m.get("clobTokenIds"), str) else (m.get("clobTokenIds", [])[0] if m.get("clobTokenIds") else ""),
                 no_token_id=json.loads(m.get("clobTokenIds", "[]"))[1] if isinstance(m.get("clobTokenIds"), str) else (m.get("clobTokenIds", [])[1] if len(m.get("clobTokenIds", []))>1 else ""),
-                mid_price=0.5, # Valeurs par défaut qui seront mises à jour en V10.0 / V11.0
+                mid_price=0.5,
                 best_bid=0.0,
                 best_ask=1.0,
                 spread=1.0,
                 volume_24h=0.0,
-                end_date_ts=time.time() + 300, 
-                days_to_expiry=300/86400.0,
+                end_date_ts=_end_ts,
+                days_to_expiry=_days_left,
             )
 
         question = m.get("question", "")
