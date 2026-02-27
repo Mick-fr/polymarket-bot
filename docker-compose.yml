@@ -9,6 +9,7 @@ services:
     env_file: .env
     volumes:
       - bot-data:/app/data
+      - bot-models:/app/bot/models
     logging:
       driver: json-file
       options:
@@ -36,4 +37,6 @@ services:
 
 volumes:
   bot-data:
+    driver: local
+  bot-models:
     driver: local
