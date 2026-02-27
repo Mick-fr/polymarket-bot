@@ -88,6 +88,15 @@ class Trader:
         self._sprint_pending_makers: dict = {}
         self._sprint_pending_lock = threading.Lock()
 
+        # Upgrade 5 — TP/SL sur tick WS Binance (sub-seconde).
+        # Cache positions sprint rafraîchi toutes les 10s depuis DB.
+        # SELL lancé en thread daemon → ne bloque pas le tick callback.
+        self._tpsl_sprint_cache:   list  = []
+        self._tpsl_cache_ts:       float = 0.0
+        self._tpsl_last_check_ts:  float = 0.0   # rate-limiter 200ms
+        self._tpsl_selling:        set   = set()  # tokens SELL en cours
+        self._tpsl_lock = threading.Lock()
+
     def start(self):
         """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
         # V15 Log Silencing
@@ -468,7 +477,15 @@ class Trader:
         bot_active = self.cached_bot_active
         if kill_switch or not bot_active:
             return
-            
+
+        # Upgrade 5 — TP/SL sprint sub-seconde (indépendant du mode stratégie)
+        # Tourne sur chaque tick BTCUSDT → latence ≤ 500ms vs 60s maintenance.
+        if not self.config.bot.paper_trading:
+            try:
+                self._check_sprint_tp_sl_fast()
+            except Exception as e_tpsl5:
+                logger.debug("[TP/SL FAST] Erreur: %s", e_tpsl5)
+
         strategy_mode = self.cached_strategy_mode
         if strategy_mode != "Info Edge Only":
             return # Le mode sniper event-driven n'est actif que sur Info Edge Only
@@ -906,6 +923,158 @@ class Trader:
             if self.risk._max_exposure_pct != base_pct:
                 self.risk._max_exposure_pct = base_pct
         return base_pct
+
+    def _check_sprint_tp_sl_fast(self) -> None:
+        """Upgrade 5 — TP/SL sprint sur tick Binance (~500ms).
+
+        Lit le mid depuis le WS Polymarket (zéro appel REST) puis déclenche
+        un SELL asynchrone si TP ou SL atteint.
+
+        Rate-limité à 200ms : même pendant une rafale de ticks, on ne fait
+        pas plus de 5 vérifications/s (vs une toutes les 60s avant).
+
+        La méthode _check_sprint_tp_sl() (60s) reste active comme filet de
+        sécurité pour les tokens sans WS mid disponible.
+        """
+        TP_RATIO      = 1.75
+        SL_RATIO      = 0.30
+        RATE_LIMIT_S  = 0.20   # max 5 checks/s
+        CACHE_TTL_S   = 10.0   # refresh positions DB toutes les 10s
+
+        now = time.time()
+
+        # Rate-limiter : ne pas tourner à chaque tick Binance
+        if now - self._tpsl_last_check_ts < RATE_LIMIT_S:
+            return
+        self._tpsl_last_check_ts = now
+
+        # Rafraîchir le cache positions sprint depuis DB (toutes les 10s)
+        with self._tpsl_lock:
+            if now - self._tpsl_cache_ts >= CACHE_TTL_S:
+                try:
+                    all_pos = self.db.get_all_positions()
+                    self._tpsl_sprint_cache = [
+                        p for p in all_pos
+                        if any(kw in (p.get("question") or "").lower()
+                               for kw in ("btc", "bitcoin"))
+                        and float(p.get("quantity") or 0) > 0.01
+                        and float(p.get("avg_price") or 0) > 0.01
+                    ]
+                    self._tpsl_cache_ts = now
+                except Exception:
+                    return
+            cache = list(self._tpsl_sprint_cache)
+
+        if not cache:
+            return
+
+        ws_client = getattr(self.pm_client, "ws_client", None)
+        if ws_client is None or not ws_client.running:
+            return  # WS Polymarket indispo → filet de sécurité 60s prend le relais
+
+        for p in cache:
+            token_id = p.get("token_id", "")
+            qty      = float(p.get("quantity") or 0)
+            avg      = float(p.get("avg_price") or 0)
+            if qty <= 0.01 or avg <= 0.01 or not token_id:
+                continue
+
+            # Skip si SELL déjà en cours pour ce token
+            with self._tpsl_lock:
+                if token_id in self._tpsl_selling:
+                    continue
+
+            # Éviter double-SELL : vérifier le carnet DB
+            if self.db.has_live_sell(token_id):
+                continue
+
+            # Mid temps réel depuis WS Polymarket (pas de REST — O(1))
+            mid_ws = ws_client.get_midpoint(token_id)
+            if mid_ws is None or not (0.01 <= mid_ws <= 0.99):
+                continue  # pas encore de données WS → 60s chrono prend le relais
+
+            ratio = mid_ws / avg
+            if ratio >= TP_RATIO:
+                reason = f"TP×{ratio:.2f}"
+            elif ratio <= SL_RATIO:
+                reason = f"SL×{ratio:.2f}"
+            else:
+                continue
+
+            # Marquer "SELL en cours" avant de lancer le thread
+            with self._tpsl_lock:
+                self._tpsl_selling.add(token_id)
+
+            logger.info(
+                "[TP/SL FAST] 🎯 %s déclenché | %s | mid_ws=%.3f avg=%.3f",
+                reason, token_id[:16], mid_ws, avg,
+            )
+
+            # SELL asynchrone — ne bloque pas le tick callback
+            def _do_sell(tid=token_id, q=qty, m=mid_ws, r=reason, a=avg):
+                try:
+                    # 1. Allowance ERC-1155 (NegRisk bypass identique au 60s chrono)
+                    try:
+                        allowance_ok = self._call_with_timeout(
+                            lambda: self.pm_client.ensure_conditional_allowance(tid),
+                            timeout=8.0,
+                            label=f"tpsl_fast_allow({tid[:16]})",
+                        )
+                        if not allowance_ok:
+                            if self.pm_client.is_neg_risk_token(tid):
+                                allowance_ok = True  # NegRisk bypass
+                    except Exception:
+                        allowance_ok = True  # on tente quand même
+
+                    if not allowance_ok:
+                        logger.debug("[TP/SL FAST] Allowance non confirmée %s → différé", tid[:16])
+                        return
+
+                    # 2. Quantité réelle CLOB
+                    try:
+                        _clob    = self.pm_client.get_conditional_allowance(tid)
+                        clob_qty = float(_clob.get("balance", "0") or "0") / 1e6
+                    except Exception:
+                        clob_qty = q
+                    sell_qty = round(min(clob_qty if clob_qty > 0.01 else q, q), 2)
+                    if sell_qty <= 0:
+                        return
+
+                    # 3. SELL market
+                    usdc_amount = round(sell_qty * m, 4)
+                    resp = self._call_with_timeout(
+                        lambda: self.pm_client.place_market_order(tid, usdc_amount, "sell"),
+                        timeout=12.0,
+                        label=f"tpsl_fast_sell({tid[:16]})",
+                    )
+                    status = resp.get("status", "?") if isinstance(resp, dict) else "?"
+                    logger.info(
+                        "[TP/SL FAST] ✅ SELL %s | qty=%.2f mid=%.3f avg=%.3f → %s",
+                        r, sell_qty, m, a, status,
+                    )
+                    self.db.add_log(
+                        "INFO", "trader",
+                        f"[TP/SL FAST] {r} SELL {tid[:16]} {sell_qty:.2f}sh @ {m:.3f}",
+                    )
+                    from bot.telegram import send_alert
+                    send_alert(
+                        f"[TP/SL] {r} SELL {sell_qty:.2f}sh @ {m:.3f} | {tid[:8]}"
+                    )
+                    # Invalider le cache pour forcer un re-fetch au prochain check
+                    with self._tpsl_lock:
+                        self._tpsl_cache_ts = 0.0
+
+                except Exception as e_sell:
+                    logger.error("[TP/SL FAST] Erreur SELL %s: %s", tid[:16], e_sell)
+                finally:
+                    with self._tpsl_lock:
+                        self._tpsl_selling.discard(tid)
+
+            threading.Thread(
+                target=_do_sell,
+                daemon=True,
+                name=f"TPSL_{token_id[:8]}",
+            ).start()
 
     def _check_sprint_tp_sl(self) -> None:
         """Take Profit / Stop Loss pour les positions sprint BTC/ETH.
