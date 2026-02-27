@@ -82,6 +82,12 @@ class Trader:
         # (orders WHERE side='sell' AND status='live' AND token a une position),
         # ce qui survit aux redémarrages. Plus de set en mémoire.
 
+        # Upgrade 3 — Limit maker cancel-replace watcher.
+        # {order_id: {token_id, market_id, market_question, ts_posted, local_db_id,
+        #             limit_price, shares, usdc_amount, requeue_count}}
+        self._sprint_pending_makers: dict = {}
+        self._sprint_pending_lock = threading.Lock()
+
     def start(self):
         """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
         # V15 Log Silencing
@@ -267,7 +273,23 @@ class Trader:
                     
         self._maintenance_thread = threading.Thread(target=_bg_maintenance, daemon=True, name="MaintenanceLoop")
         self._maintenance_thread.start()
-        
+
+        # Upgrade 3 — Sprint maker cancel-replace watcher (poll toutes les 5s)
+        def _bg_sprint_maker_watcher():
+            time.sleep(2.0)
+            while self._running:
+                try:
+                    self._check_sprint_pending_makers()
+                except Exception as e_sm:
+                    logger.debug("[SprintMaker] Watcher erreur: %s", e_sm)
+                time.sleep(5.0)
+
+        threading.Thread(
+            target=_bg_sprint_maker_watcher,
+            daemon=True,
+            name="SprintMakerWatcher",
+        ).start()
+
         while self._running:
             try:
                 time.sleep(1.0)
@@ -971,6 +993,165 @@ class Trader:
                 )
             except Exception as e:
                 logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
+
+    # ── Upgrade 3 — Sprint maker cancel-replace watcher ──────────────────────────
+
+    def _check_sprint_pending_makers(self) -> None:
+        """Surveille les limit maker orders sprint (5s poll).
+
+        Statechart par ordre :
+          live          → attend fill pendant FILL_TIMEOUT_S secondes
+          live + timeout → cancel + requote au mid WS  (requeue_count=1)
+          live + requeue timeout → cancel + fallback market FOK
+          matched/filled → enregistre position en DB, nettoie
+          cancelled/expired → nettoie
+        """
+        FILL_TIMEOUT_S    = 10.0  # délai avant premier requote
+        REQUOTE_TIMEOUT_S =  8.0  # délai avant fallback market après requote
+
+        with self._sprint_pending_lock:
+            pending = dict(self._sprint_pending_makers)
+        if not pending:
+            return
+
+        now = time.time()
+        for order_id, info in pending.items():
+            age = now - info["ts_posted"]
+            try:
+                order = self.pm_client.get_order(order_id)
+                if order is None:
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+                status = (order.get("status") or "").lower()
+
+                # ── Ordre annulé / expiré par Polymarket ─────────────────────
+                if status in ("cancelled", "canceled", "expired"):
+                    logger.info("[SprintMaker] Ordre %s %s → nettoyage.", order_id[:12], status)
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+                # ── Fill confirmé ─────────────────────────────────────────────
+                if status in ("matched", "filled"):
+                    taking = float(order.get("takingAmount") or info["shares"])
+                    making = float(order.get("makingAmount") or info["usdc_amount"])
+                    actual_price = (making / taking) if taking > 0 else info["limit_price"]
+                    self.db.update_position(
+                        token_id=info["token_id"],
+                        market_id=info["market_id"],
+                        question=info["market_question"],
+                        side="YES",
+                        quantity_delta=taking,
+                        fill_price=actual_price,
+                    )
+                    if info.get("local_db_id"):
+                        self.db.update_order_status(info["local_db_id"], "filled", order_id)
+                    self.db.add_log(
+                        "INFO", "trader",
+                        f"[SprintMaker] FILL {info['token_id'][:16]} "
+                        f"{taking:.2f}sh @ {actual_price:.4f} = {making:.2f}USDC",
+                    )
+                    logger.info(
+                        "[SprintMaker] ✅ Fill confirmé %s %.2fsh @ %.4f | age=%.1fs",
+                        info["token_id"][:16], taking, actual_price, age,
+                    )
+                    from bot.telegram import send_alert
+                    send_alert(
+                        f"[SprintMaker] FILL {taking:.2f}sh @ {actual_price:.4f} "
+                        f"= {making:.2f}USDC | {order_id[:8]}"
+                    )
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+                # ── Timeout premier essai → cancel + requote au mid ───────────
+                if age > FILL_TIMEOUT_S and info["requeue_count"] == 0:
+                    logger.info(
+                        "[SprintMaker] ⏱ Timeout %.1fs → cancel+requote mid | %s",
+                        age, info["token_id"][:16],
+                    )
+                    try:
+                        self.pm_client.cancel_order(order_id)
+                    except Exception as e_c:
+                        logger.debug("[SprintMaker] cancel err: %s", e_c)
+
+                    # Prix requote = mid depuis WS
+                    new_price = None
+                    if hasattr(self.pm_client, "ws_client") and self.pm_client.ws_client.running:
+                        mid_ws = self.pm_client.ws_client.get_midpoint(info["token_id"])
+                        if mid_ws and 0.02 <= mid_ws <= 0.98:
+                            new_price = round(mid_ws, 3)
+
+                    if new_price is None:
+                        logger.info(
+                            "[SprintMaker] Mid WS indispo → fallback market %s",
+                            info["token_id"][:16],
+                        )
+                        try:
+                            self.pm_client.place_market_order(
+                                info["token_id"], info["usdc_amount"], "buy"
+                            )
+                        except Exception as e_m:
+                            logger.warning("[SprintMaker] Fallback market err: %s", e_m)
+                        with self._sprint_pending_lock:
+                            self._sprint_pending_makers.pop(order_id, None)
+                        continue
+
+                    shares = max(5.0, round(info["usdc_amount"] / new_price, 2))
+                    try:
+                        resp2 = self.pm_client.place_limit_order(
+                            info["token_id"], new_price, shares, "buy"
+                        )
+                        new_oid = resp2.get("orderID") or resp2.get("id") or ""
+                        if new_oid:
+                            new_info = {
+                                **info,
+                                "ts_posted":    time.time(),
+                                "limit_price":  new_price,
+                                "shares":       shares,
+                                "requeue_count": 1,
+                            }
+                            with self._sprint_pending_lock:
+                                self._sprint_pending_makers.pop(order_id, None)
+                                self._sprint_pending_makers[new_oid] = new_info
+                            logger.info(
+                                "[SprintMaker] ♻ Requote @ %.3f (%s sh) | order=%s",
+                                new_price, shares, new_oid[:12],
+                            )
+                        else:
+                            with self._sprint_pending_lock:
+                                self._sprint_pending_makers.pop(order_id, None)
+                    except Exception as e_rq:
+                        logger.warning("[SprintMaker] Requote err: %s", e_rq)
+                        with self._sprint_pending_lock:
+                            self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+                # ── Timeout après requote → fallback market ───────────────────
+                if age > REQUOTE_TIMEOUT_S and info["requeue_count"] >= 1:
+                    logger.info(
+                        "[SprintMaker] ⏱ Requote timeout → fallback market %s",
+                        info["token_id"][:16],
+                    )
+                    try:
+                        self.pm_client.cancel_order(order_id)
+                    except Exception:
+                        pass
+                    try:
+                        self.pm_client.place_market_order(
+                            info["token_id"], info["usdc_amount"], "buy"
+                        )
+                        logger.info("[SprintMaker] 📈 Fallback market OK %s", info["token_id"][:16])
+                    except Exception as e_m2:
+                        logger.warning("[SprintMaker] Fallback market (req) err: %s", e_m2)
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+            except Exception as e:
+                logger.debug("[SprintMaker] Watcher err order %s: %s", order_id[:12], e)
 
     def _maybe_liquidate_partial(self, balance: float, portfolio_value: float) -> None:
         """Déclenche une liquidation partielle si le cash est trop bas vs l'inventaire.
@@ -1920,7 +2101,7 @@ class Trader:
         try:
             if self.config.bot.paper_trading:
                 resp = self._simulate_order(signal)
-            elif signal.order_type == "limit":
+            elif signal.order_type in ("limit", "sprint_maker"):
                 resp = self._call_with_timeout(
                     lambda: self.pm_client.place_limit_order(
                         token_id=signal.token_id,
@@ -2022,6 +2203,31 @@ class Trader:
                         "[Liquidation] SELL posé dans le carnet, sera préservé via DB: %s",
                         order_id[:16],
                     )
+
+                # Upgrade 3 — Sprint maker : enregistrer pour le cancel-replace watcher
+                if signal.order_type == "sprint_maker" and order_id:
+                    usdc_rsv = round(signal.size * (signal.price or 1.0), 4)
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers[order_id] = {
+                            "token_id":       signal.token_id,
+                            "market_id":      signal.market_id,
+                            "market_question": signal.market_question,
+                            "ts_posted":      time.time(),
+                            "local_db_id":    local_id,
+                            "limit_price":    signal.price or 0.99,
+                            "shares":         signal.size,
+                            "usdc_amount":    usdc_rsv,
+                            "requeue_count":  0,
+                        }
+                    logger.info(
+                        "[SprintMaker] ✅ Limit maker enregistré @ %.3f (%s sh ≈ %.2f USDC) | order=%s",
+                        signal.price or 0, signal.size, usdc_rsv, order_id[:12],
+                    )
+                    # 2026 V6
+                    from bot.telegram import send_alert
+                    send_alert(f"[SprintMaker] BUY {signal.size:.2f}sh @ {signal.price:.3f} | {order_id[:8]}")
+                    return True   # balance réservée dans _on_price_tick_internal
+
                 # 2026 V6
                 from bot.telegram import send_alert
                 send_alert(f"✅ {signal.side.upper()} {signal.size:.2f} @ {signal.price or 'market'} | {order_id[:8]} | PnL est. N/A")

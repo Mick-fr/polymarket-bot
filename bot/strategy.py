@@ -1925,14 +1925,39 @@ class InfoEdgeStrategy(BaseStrategy):
                             self._last_quote_ts[market.yes_token_id] = time.time()
                             continue
 
+                    # Upgrade 3 — Limit maker : ask−1tick depuis WS CLOB
+                    # Si le book WS est disponible, on poster un limit BUY à best_ask−0.001
+                    # (économise ~3-8% de spread vs FOK market). Sinon fallback market.
+                    _sm_limit_price = None
+                    _sm_shares      = None
+                    if hasattr(self.client, "ws_client") and self.client.ws_client.running:
+                        _ob = self.client.ws_client.get_order_book(signal_token)
+                        if _ob and _ob.get("asks"):
+                            _best_ask = float(_ob["asks"][0]["price"])
+                            _lp = round(max(0.01, _best_ask - 0.001), 3)
+                            _sh = round(usdc_amount / _lp, 2)
+                            if _sh >= 5.0:  # minimum Polymarket
+                                _sm_limit_price = _lp
+                                _sm_shares      = _sh
+
+                    if _sm_limit_price is not None:
+                        _order_type = "sprint_maker"
+                        _price      = _sm_limit_price
+                        _size       = _sm_shares
+                    else:
+                        # WS book vide ou shares < 5 → FOK market classique
+                        _order_type = "market"
+                        _price      = 0.99
+                        _size       = usdc_amount
+
                     signals.append(Signal(
                         token_id=signal_token,
                         market_id=market.market_id,
                         market_question=market.question,
                         side="buy",  # Toujours BUY (YES ou NO selon direction)
-                        order_type="market",
-                        price=0.99,
-                        size=usdc_amount,  # USDC — risk check + place_market_order l'attendent
+                        order_type=_order_type,
+                        price=_price,
+                        size=_size,
                         confidence=0.99,
                         reason=(
                             f"V22 {fire_reason} {direction}: "
