@@ -1067,6 +1067,11 @@ class Trader:
                     send_alert(
                         f"[TP/SL] {r} SELL {sell_qty:.2f}sh @ {m:.3f} | {tid[:8]}"
                     )
+                    # V24c: Zéro DB immédiatement après SELL réussi (fast path)
+                    try:
+                        self.db.set_position_quantity(tid, 0.0)
+                    except Exception as _ez:
+                        logger.debug("[TP/SL FAST] Erreur zero post-SELL: %s", _ez)
                     # Invalider le cache pour forcer un re-fetch au prochain check
                     with self._tpsl_lock:
                         self._tpsl_cache_ts = 0.0
@@ -1189,6 +1194,13 @@ class Trader:
                     (p.get("question") or "")[:35],
                     sell_qty, mid, avg, status,
                 )
+                # V24c: Zéro DB immédiatement après SELL réussi.
+                # Évite re-déclenchement TP/SL au cycle suivant (60s) sur position déjà vendue
+                # → sinon 400 "invalid amounts" car CLOB vide.
+                try:
+                    self.db.set_position_quantity(token_id, 0.0)
+                except Exception as _ez:
+                    logger.debug("[TP/SL] Erreur zero post-SELL: %s", _ez)
             except Exception as e:
                 err_s = str(e)
                 if "404" in err_s or "No orderbook" in err_s:
