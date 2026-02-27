@@ -1712,46 +1712,26 @@ class InfoEdgeStrategy(BaseStrategy):
                     is_sniper   = True
                     self._sniper_anti_spam[market.market_id] = now_ts
 
-                # ── PULSE LOG (throttled 2s) ──────────────────────────────
-                # Affiche la progression % de chaque signal vers son seuil.
+                # ── PULSE + SNIPER_EVAL LOG (throttled 30s par marché) ────────
+                # Un seul log par marché toutes les 30s pour éviter le spam.
+                # FIRE et COOLDOWN sont toujours loggués immédiatement.
                 now = time.time()
-                if not hasattr(self, '_last_pulse_ts'):
-                    self._last_pulse_ts = 0.0
-                if now - self._last_pulse_ts > 2.0:
+                if not hasattr(self, '_last_eval_log_ts'):
+                    self._last_eval_log_ts: dict = {}
+
+                will_fire = (sniper_a_pass or sniper_b_pass) and not sniper_already_fired
+                throttle_elapsed = now - self._last_eval_log_ts.get(market.market_id, 0.0) > 30.0
+
+                if will_fire or throttle_elapsed:
+                    def _sc(ok, label):
+                        return f"{label}✓" if ok else f"{label}✗"
                     spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                    # Progression vers chaque seuil (capped à 999 pour l'affichage)
                     e_std = min(999, abs_edge_v22 / conf["tedge_gate"]      * 100)
                     e_sa  = min(999, abs_edge_v22 / conf["sniper_edge_a"]   * 100)
                     e_sb  = min(999, abs_edge_v22 / conf["sniper_edge_b"]   * 100)
                     m_std = min(999, abs_mom_v22  / conf["tmom"]            * 100)
                     o_sa  = min(999, abs_obi_v22  / conf["sniper_obi_a"]    * 100)
                     o_sb  = min(999, abs_obi_v22  / conf["sniper_obi_b"]    * 100)
-                    logger.info(
-                        "[V22 PULSE] %-18s | Spot=%.0f$ t=%.0fs | "
-                        "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) | "
-                        "M=%+.4f%%(%3.0f%%) | OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) | "
-                        "p_poly=%.3f p_true=%.3f | "
-                        "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]",
-                        market.question[:18], spot, time_left_sec,
-                        edge_pct, e_std, e_sa, e_sb,
-                        m30, m_std,
-                        o_val, o_sa, o_sb,
-                        p_poly, p_true,
-                        "✓" if dir_ok_mom    else "✗",
-                        "✓" if dir_ok_obi    else "✗",
-                        "✓" if standard_pass else "✗",
-                        "✓" if sniper_a_pass else "✗",
-                        "✓" if sniper_b_pass else "✗",
-                    )
-                    self._last_pulse_ts = now
-
-                # ── SNIPER_EVAL LOG (chaque setup avec edge ≥ 4%) ─────────
-                # Non throttlé : chaque candidat sniper doit laisser une trace
-                # avec le détail de chaque sous-condition pass/fail.
-                # Indispensable pour diagnostiquer "pourquoi le sniper n'a pas tiré".
-                if abs_edge_v22 >= conf["sniper_edge_a"] / 2.0:
-                    def _sc(ok, label):
-                        return f"{label}✓" if ok else f"{label}✗"
                     sa_detail = " ".join([
                         _sc(abs_edge_v22  >= conf["sniper_edge_a"],       f"E≥{conf['sniper_edge_a']:.0f}%"),
                         _sc(abs_obi_v22   >= conf["sniper_obi_a"],        f"OBI≥{conf['sniper_obi_a']}"),
@@ -1764,15 +1744,26 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
                     ])
-                    spam_tag  = " ⛔COOLDOWN" if sniper_already_fired else ""
-                    fire_tag  = " → 🔥FIRE" if (sniper_a_pass or sniper_b_pass) and not sniper_already_fired else ""
+                    fire_tag = " → 🔥FIRE" if will_fire else ""
+                    spam_tag = " ⛔COOLDOWN" if sniper_already_fired else ""
                     logger.info(
-                        "[V22 SNIPER_EVAL] E=%+.2f%% M=%+.4f%% OBI=%+.3f "
-                        "t=%.0fs p_poly=%.3f%s%s | SA[%s] | SB[%s]",
-                        edge_pct, m30, o_val, time_left_sec, p_poly,
+                        "[V22 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
+                        "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) "
+                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) | "
+                        "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
+                        market.question[:18], spot, time_left_sec,
+                        edge_pct, e_std, e_sa, e_sb,
+                        m30, m_std,
+                        o_val, o_sa, o_sb,
+                        "✓" if dir_ok_mom    else "✗",
+                        "✓" if dir_ok_obi    else "✗",
+                        "✓" if standard_pass else "✗",
+                        "✓" if sniper_a_pass else "✗",
+                        "✓" if sniper_b_pass else "✗",
                         spam_tag, fire_tag,
                         sa_detail, sb_detail,
                     )
+                    self._last_eval_log_ts[market.market_id] = now
 
                 # ── FIRE ──────────────────────────────────────────────────
                 if side:
