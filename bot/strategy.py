@@ -1234,7 +1234,10 @@ class InfoEdgeStrategy(BaseStrategy):
         if self.binance_ws:
             ws_sym = f"{sym}USDT" if len(sym) <= 3 else sym
             mom = self.binance_ws.get_30s_momentum(ws_sym)
-            obi = self.binance_ws.get_binance_obi(ws_sym)
+            # Upgrade 4 — OBI depth5 anti-spoofing + CVD taker flow (70/30)
+            obi_d5 = self.binance_ws.get_obi_depth5(ws_sym)
+            cvd_n  = self.binance_ws.get_cvd(ws_sym, 60.0)
+            obi    = 0.70 * obi_d5 + 0.30 * cvd_n
 
         # ── Upgrade 2 : inférence XGBoost ────────────────────────────────────
         if self._sprint_model is not None and self.binance_ws is not None:
@@ -1398,10 +1401,10 @@ class InfoEdgeStrategy(BaseStrategy):
                     "[EDGE Level] S=%.2f K=%.2f T_min=%.2f vol=%.3f → p_true=%.4f p_poly=%.4f",
                     spot, strike, minutes_to_expiry, vol, p_true, p_poly
                 )
-                # V16.0 OBI Drift (extrêmes seulement)
+                # V16.0 OBI Drift (extrêmes seulement) — Upgrade 4: depth5
                 obi_drift = 0.0
                 if self.binance_ws and self.binance_ws.is_connected:
-                    obi_drift = self.binance_ws.get_binance_obi("BTCUSDT")
+                    obi_drift = self.binance_ws.get_obi_depth5("BTCUSDT")
                 if obi_drift > 0.90:
                     p_true = min(0.99, p_true + (p_true - 0.5) * 0.2)
                 elif obi_drift < -0.90:
@@ -1461,7 +1464,9 @@ class InfoEdgeStrategy(BaseStrategy):
         if self.binance_ws and self.binance_ws.is_connected:
             try:
                 live_spot = self.binance_ws.get_mid("BTCUSDT")
-                live_obi = self.binance_ws.get_binance_obi("BTCUSDT")
+                # Upgrade 4: OBI depth5 + CVD pour le dashboard
+                live_obi = (0.70 * self.binance_ws.get_obi_depth5("BTCUSDT")
+                            + 0.30 * self.binance_ws.get_cvd("BTCUSDT", 60.0))
                 live_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
                 # V19: Write to memory buffer instead of DB
                 with self._telemetry_lock:

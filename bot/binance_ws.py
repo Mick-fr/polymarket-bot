@@ -38,7 +38,13 @@ class BinanceWSClient(threading.Thread):
     met à jour les best bid/ask en mémoire.  Polling REST pour le funding rate.
     """
 
-    WS_URL = "wss://stream.binance.com:9443/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"
+    # Upgrade 4 — depth5 anti-spoofing + aggTrade CVD (BTC uniquement — focus sprint)
+    WS_URL = (
+        "wss://stream.binance.com:9443/stream?streams="
+        "btcusdt@bookTicker/ethusdt@bookTicker"
+        "/btcusdt@depth5@100ms"   # 5-niveau OBI anti-spoof
+        "/btcusdt@aggTrade"       # CVD taker flow
+    )
     FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
     FUNDING_POLL_SEC = 120  # polling interval pour funding rate
 
@@ -54,11 +60,16 @@ class BinanceWSClient(threading.Thread):
         self.btc_ask: float = 0.0
         self.eth_bid: float = 0.0
         self.eth_ask: float = 0.0
-        # V10.5 Momentum & OBI
+        # V10.5 Momentum & OBI (L1 — conservé pour compatibilité)
         self.btc_obi: float = 0.0
         self.btc_obi_ema: float = 0.0
         self.eth_obi: float = 0.0
         self.eth_obi_ema: float = 0.0
+        # Upgrade 4 — OBI depth5 (anti-spoofing) + CVD (taker flow)
+        self.btc_obi_d5:     float = 0.0   # OBI 5-niveau [-1, +1]
+        self.btc_obi_d5_ema: float = 0.0
+        # deque (ts, delta_usdc): maxlen couvre ~5 min à 100 trades/s
+        self.btc_cvd_history: collections.deque = collections.deque(maxlen=30_000)
         # Funding rate (polled)
         self.btc_funding: float = 0.0
         self.eth_funding: float = 0.0
@@ -94,6 +105,42 @@ class BinanceWSClient(threading.Thread):
         sym = symbol.upper()
         with self._lock:
             return self.btc_obi if "BTC" in sym else self.eth_obi
+
+    def get_obi_depth5(self, symbol: str) -> float:
+        """OBI 5-niveaux anti-spoofing pour BTC.
+
+        Utilise les données @depth5@100ms (EMA α=0.15).
+        Retourne l'OBI L1 standard si depth5 pas encore reçu.
+        """
+        sym = symbol.upper()
+        if "BTC" not in sym:
+            return self.get_binance_obi(symbol)
+        with self._lock:
+            d5 = self.btc_obi_d5
+        # Fallback L1 si depth5 indisponible (démarrage ou reconnexion)
+        return d5 if d5 != 0.0 else self.get_binance_obi(symbol)
+
+    def get_cvd(self, symbol: str, n_seconds: float = 60.0) -> float:
+        """CVD normalisé (Cumulative Volume Delta taker) sur n_seconds.
+
+        CVD = (buy_vol - sell_vol) / total_vol ∈ [-1, +1]
+        Positif → pression acheteuse, négatif → vendeuse.
+        Retourne 0.0 si historique insuffisant (<10 trades) ou symbole non BTC.
+        """
+        sym = symbol.upper()
+        if "BTC" not in sym:
+            return 0.0
+        cutoff = time.time() - n_seconds
+        # deque thread-safe pour lecture (pas de copie coûteuse)
+        window = [(ts, d) for ts, d in self.btc_cvd_history if ts >= cutoff]
+        if len(window) < 10:
+            return 0.0
+        buy_vol  = sum(d for _, d in window if d > 0)
+        sell_vol = sum(-d for _, d in window if d < 0)
+        total    = buy_vol + sell_vol
+        if total < 1.0:
+            return 0.0
+        return (buy_vol - sell_vol) / total  # ∈ [-1, +1]
 
     def get_30s_momentum(self, symbol: str) -> float:
         sym = symbol.upper()
@@ -241,7 +288,34 @@ class BinanceWSClient(threading.Thread):
     def _on_message(self, ws, message):
         try:
             outer = json.loads(message)
-            data = outer.get("data", outer)
+            stream = outer.get("stream", "")
+            data   = outer.get("data", outer)
+
+            # ── Upgrade 4a : OBI depth5 ──────────────────────────────────────
+            if "depth5" in stream:
+                bids = data.get("bids", [])
+                asks = data.get("asks", [])
+                bid_vol = sum(float(q) for _, q in bids[:5])
+                ask_vol = sum(float(q) for _, q in asks[:5])
+                raw_d5 = (bid_vol - ask_vol) / (bid_vol + ask_vol + 1e-8)
+                with self._lock:
+                    prev = self.btc_obi_d5_ema
+                    ema = 0.15 * raw_d5 + 0.85 * prev if prev != 0.0 else raw_d5
+                    self.btc_obi_d5_ema = ema
+                    self.btc_obi_d5 = ema
+                return
+
+            # ── Upgrade 4b : CVD aggTrade ─────────────────────────────────────
+            if "aggTrade" in stream:
+                qty   = float(data.get("q", 0))    # base qty (BTC)
+                price = float(data.get("p", 0))    # price (USDC)
+                is_buyer_maker = data.get("m", False)
+                # buyer_maker=True → taker est vendeur → delta négatif
+                delta = -(qty * price) if is_buyer_maker else (qty * price)
+                self.btc_cvd_history.append((time.time(), delta))
+                return
+
+            # ── bookTicker (prix + L1 OBI EMA) ───────────────────────────────
             symbol = data.get("s", "")
             bid = float(data.get("b", 0))
             ask = float(data.get("a", 0))
@@ -270,7 +344,7 @@ class BinanceWSClient(threading.Thread):
                     if not self.eth_history or now - self.eth_history[-1][0] >= 1.0:
                         self.eth_history.append((now, mid))
                 self._last_update_ts = now
-            
+
             # R6: Queue bornée — drop silencieux si en retard
             if self.on_tick_callback and symbol in ["BTCUSDT", "ETHUSDT"]:
                 mid_signal = (self.btc_bid + self.btc_ask) / 2.0 if symbol == "BTCUSDT" else (self.eth_bid + self.eth_ask) / 2.0
