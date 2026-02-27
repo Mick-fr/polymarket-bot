@@ -129,7 +129,15 @@ def create_app(config: AppConfig, db: Database) -> Flask:
     @login_required
     def api_v14_brain():
         """V14: Retourne les métriques live du marché et de l'alpha."""
+        import json
         try:
+            raw_pct = db.get_config_str("live_percentages", "{}") or "{}"
+            pct = json.loads(raw_pct)
+            raw_cl = db.get_config_str("live_checklist", "{}") or "{}"
+            checklist = json.loads(raw_cl)
+            ws_age = float(db.get_config("live_btc_ws_age", 999) or 999)
+            sprint_active = int(db.get_config("live_sprint_window_active", 0) or 0)
+            sprint_count  = int(db.get_config("live_sprint_count", 0) or 0)
             return jsonify({
                 "btc_spot": float(db.get_config("live_btc_spot", 0) or 0),
                 "momentum": float(db.get_config("live_btc_mom30s", 0) or 0),
@@ -140,15 +148,20 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 "p_true": float(db.get_config("live_sprint_ptrue", 0) or 0),
                 "p_poly": float(db.get_config("live_sprint_ppoly", 0) or 0),
                 "ai_bias": float(db.get_config("live_ai_sentiment_bias", 1.0) or 1.0),
-                "live_checklist": json.loads(db.get_config_str("live_checklist", "{}") or "{}"),
+                "ws_age": ws_age,
+                "ws_ok": ws_age < 5.0,
+                "sprint_active": sprint_active,
+                "sprint_count": sprint_count,
+                "live_checklist": checklist,
                 "live_percentages": {
-                    "mom_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("mom_pct", 0) / 100.0, 3),
-                    "obi_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("obi_pct", 0) / 100.0, 3),
-                    "edge_progress": round(json.loads(db.get_config_str("live_percentages", "{}") or "{}").get("edge_pct", 0) / 100.0, 3)
+                    "mom_progress": round(pct.get("mom_pct", 0) / 100.0, 3),
+                    "obi_progress": round(pct.get("obi_pct", 0) / 100.0, 3),
+                    "edge_progress": round(pct.get("edge_pct", 0) / 100.0, 3)
                 },
                 "price_gap_nominal": float(db.get_config("live_trigger_projection", 0) or 0)
             })
         except Exception as e:
+            logger.exception("[api_v14_brain] Erreur: %s", e)
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/sniper-near-misses")

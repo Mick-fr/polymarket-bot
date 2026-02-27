@@ -1827,7 +1827,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         spread_at_signal=0.01,
                     ))
 
-                    if self.db and not target_market_ids:
+                    if self.db:
                         spot_price = live_spot if "live_spot" in locals() else 0.0
                         sniper_tag = (
                             f" <span class='text-yellow-400 font-bold'>[{fire_reason}]</span>"
@@ -1843,7 +1843,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
                 else:
                     # PASS LOG — uniquement si edge > 2% (évite le spam sur setups triviaux)
-                    if abs_edge_v22 > 2.0 and self.db and not target_market_ids:
+                    if abs_edge_v22 > 2.0 and self.db:
                         spot_price = live_spot if "live_spot" in locals() else 0.0
 
                         # Raison de blocage la plus précise possible
@@ -1969,17 +1969,43 @@ class InfoEdgeStrategy(BaseStrategy):
                 self._telemetry_buffer["live_funnel_eligible"] = u._f_eligible
                 self._telemetry_buffer["live_funnel_sprint"]   = sprint_markets_count
                 self._telemetry_buffer["live_btc_ws_age"]      = round(self.binance_ws.age_seconds, 1) if self.binance_ws else 999.0
+                self._telemetry_buffer["live_sprint_window_active"] = 1 if sprint_markets_count > 0 else 0
+                self._telemetry_buffer["live_sprint_count"]    = sprint_markets_count
 
-        # --- V11.5 : Heartbeat pour le Live Scan Feed ---
-        if self.db and len(signals) == 0:
-            # Compter si on a vu des marchés sprint ce cycle
-            sprint_count = sum(1 for m in markets if ("btc" in m.question.lower() or "bitcoin" in m.question.lower()) and (m.days_to_expiry * 1440 <= 5.5))
-            if sprint_count == 0:
-                now = time.time()
-                if not hasattr(self, '_last_heartbeat_ts') or now - self._last_heartbeat_ts > 10.0:
-                    spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                    self.db.add_log("INFO", "sniper_feed", f"📡 Radar Actif | BTC Spot: {spot:.2f}$ | En recherche de cible 5-Min...")
-                    self._last_heartbeat_ts = now
+        # --- V22: Write default checklist/edge telemetry when no sprint markets ---
+        if sprint_markets_count == 0 and self.db:
+            import json as _json
+            with self._telemetry_lock:
+                iv_ready = bool(getattr(self, '_last_iv', 0) > 0)
+                mom_ok   = bool(abs(m30) >= 0.005)
+                obi_ok   = bool(abs(o_val) >= 0.05)
+                self._telemetry_buffer["live_sprint_edge"]  = 0.0
+                self._telemetry_buffer["live_sprint_ptrue"] = 0.0
+                self._telemetry_buffer["live_sprint_ppoly"] = 0.0
+                self._telemetry_buffer["live_checklist"] = _json.dumps({
+                    "mom_ok": mom_ok, "edge_ok": False,
+                    "direction_ok": False, "iv_ready": iv_ready, "obi_ok": obi_ok,
+                })
+                self._telemetry_buffer["live_percentages"] = _json.dumps({
+                    "mom_pct": round(min(150.0, abs(m30) / 0.005 * 100), 1),
+                    "obi_pct": round(min(150.0, abs(o_val) / 0.05 * 100), 1),
+                    "edge_pct": 0.0,
+                })
+
+        # --- V11.5/V22: Heartbeat pour le Live Scan Feed ---
+        if self.db:
+            now = time.time()
+            if not hasattr(self, '_last_heartbeat_ts') or now - self._last_heartbeat_ts > 10.0:
+                spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                eligible_count = len(markets)
+                if sprint_markets_count == 0:
+                    self.db.add_log("INFO", "sniper_feed",
+                        f"📡 Radar | BTC {spot:.0f}$ | Aucune fenêtre sprint ({eligible_count} mkts éligibles)")
+                elif len(signals) == 0:
+                    avg_e = sum(daily_edge_scores) / len(daily_edge_scores) if daily_edge_scores else 0.0
+                    self.db.add_log("INFO", "sniper_feed",
+                        f"⏱ Sprint Window | BTC {spot:.0f}$ | {sprint_markets_count} mkt(s) | Edge moy: {avg_e:+.1f}% | Gates en attente")
+                self._last_heartbeat_ts = now
 
         return signals
 

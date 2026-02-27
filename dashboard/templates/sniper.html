@@ -203,6 +203,11 @@
                     </div>
                 </div>
 
+                <!-- Sprint Window Status -->
+                <div id="sprint-status-bar" class="mb-3 px-3 py-2 rounded-lg border text-center text-[0.65rem] font-bold tracking-widest uppercase transition-all duration-500 border-slate-700 bg-slate-900/60 text-slate-500">
+                    CHARGEMENT...
+                </div>
+
                 <!-- AI Grok Bias -->
                 <div class="p-3 bg-slate-900/60 border border-slate-800/60 rounded-lg">
                     <div class="label-xs mb-2">AI Global Bias (Grok)</div>
@@ -457,7 +462,22 @@
         async function updateBrainPulse() {
             try {
                 const res = await fetch('/api/v14/brain');
+                if (!res.ok) return;  // silently skip on HTTP error
                 const data = await res.json();
+                if (data.error) return;  // skip on API error
+
+                // Sprint window status bar
+                const sprintBar = document.getElementById('sprint-status-bar');
+                if (data.ws_ok === false) {
+                    sprintBar.className = "mb-3 px-3 py-2 rounded-lg border text-center text-[0.65rem] font-bold tracking-widest uppercase transition-all duration-500 border-red-700 bg-red-900/30 text-red-400";
+                    sprintBar.innerText = "⚠ BTC WS DISCONNECTED";
+                } else if (data.sprint_active) {
+                    sprintBar.className = "mb-3 px-3 py-2 rounded-lg border text-center text-[0.65rem] font-bold tracking-widest uppercase transition-all duration-500 border-yellow-500/60 bg-yellow-900/30 text-yellow-400 animate-pulse";
+                    sprintBar.innerText = `⏱ SPRINT WINDOW — ${data.sprint_count} marché(s)`;
+                } else {
+                    sprintBar.className = "mb-3 px-3 py-2 rounded-lg border text-center text-[0.65rem] font-bold tracking-widest uppercase transition-all duration-500 border-slate-700 bg-slate-900/60 text-slate-500";
+                    sprintBar.innerText = "📡 EN ATTENTE FENÊTRE SPRINT";
+                }
 
                 // Update Gauges
                 document.getElementById('mom-val').innerText = (data.momentum > 0 ? '+' : '') + data.momentum.toFixed(3) + '%';
@@ -645,7 +665,7 @@
             } catch (e) { console.error("Error fetching execution stats", e); }
         }
 
-        setInterval(updateBrainPulse, 500);
+        setInterval(updateBrainPulse, 1000);
         setInterval(updateExecutionAndRisk, 3000);
 
         // Initial fetch
