@@ -1581,27 +1581,39 @@ class InfoEdgeStrategy(BaseStrategy):
                 # PARAMÈTRES V22 — Tuner uniquement ici
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 conf = {
-                    # Standard path
-                    "tedge_gate":          3.0,   # [2.0–4.0]   % edge min voie standard
-                    "tmom":                0.005, # [0.003–0.01] % mom_30s min pour confirmer
-                    "tmom_dir_min":        0.001, # [0.001–0.003] % sous ce seuil → direction mom = bruit
+                    # ── Standard path ──────────────────────────────────────
+                    "tedge_gate":           3.0,   # [2.0–4.0]   % edge min voie standard
+                    "tmom":                 0.005, # [0.003–0.01] % mom_30s min pour confirmer
+                    "tmom_dir_min":         0.001, # [0.001–0.003] % sous ce seuil → direction mom = bruit
 
-                    # Sniper A : haute conviction + fenêtre serrée (dernières 2.5 min)
-                    "sniper_edge_a":       8.0,   # [6.0–10.0]  % edge min
-                    "sniper_obi_a":        0.65,  # [0.50–0.80] OBI abs min
-                    "sniper_time_a_sec":   150,   # [90–200]    secondes restantes max
+                    # ── Sniper A : haute conviction + fenêtre serrée ───────
+                    "sniper_edge_a":        8.0,   # [6.0–10.0]  % edge min
+                    "sniper_obi_a":         0.65,  # [0.50–0.80] OBI abs min
+                    "sniper_time_a_sec":    150,   # [90–200]    secondes restantes max
 
-                    # Sniper B : ultra conviction + fenêtre large (quasi tout le sprint)
-                    # Capture les setups type edge=13.75% / OBI=0.85 bloqués par mom faible
-                    "sniper_edge_b":       12.0,  # [10.0–16.0] % edge min
-                    "sniper_obi_b":        0.50,  # [0.40–0.70] OBI abs min
-                    "sniper_time_b_sec":   300,   # [200–330]   secondes restantes max
+                    # ── Sniper B : ultra conviction + fenêtre large ────────
+                    # Capture les setups edge ≥ 12% / OBI fort bloqués par mom faible
+                    "sniper_edge_b":        12.0,  # [10.0–16.0] % edge min
+                    "sniper_obi_b":         0.55,  # [0.40–0.70] OBI abs min  (0.50 → 0.55)
+                    "sniper_time_b_sec":    240,   # [200–330]   secondes max  (300 → 240)
 
-                    # Sizing
-                    "sniper_sizing_mult":  0.80,  # [0.75–0.90] ×0.80 = −20% vs standard
+                    # ── Sizing sniper ──────────────────────────────────────
+                    "sniper_sizing_mult":   0.80,  # [0.75–0.90] ×0.80 = −20% vs standard
 
-                    # Anti-spam
-                    "sniper_cooldown_sec": 300,   # [180–600]   1 sniper max par market_id
+                    # ── Anti-spam sniper ───────────────────────────────────
+                    "sniper_cooldown_sec":  300,   # [180–600]   1 sniper max par market_id
+
+                    # ── Anti-Streak V17 ────────────────────────────────────
+                    # _check_market_streaks() utilise anti_streak_window (hardcodé à 3 en DB)
+                    "anti_streak_penalty":  0.5,   # [0.3–0.7]  facteur × sur sizing
+                    "anti_streak_window":   3,     # [2–5]      trades consécutifs BTC UP
+
+                    # ── Risk Manager (référence — enforcement via RiskManager) ──
+                    # Ces valeurs sont lues par risk.py ; centralisées ici pour visibilité
+                    "max_drawdown_pct":     10.0,  # [5–15]     % drawdown vs HWM → kill switch
+                    "max_daily_loss_usdc":  10.0,  # [5–20]     perte jour max USDC
+                    "max_net_exposure_pct": 25.0,  # [15–40]    % du solde expo nette max
+                    "max_order_usdc":       12.0,  # [6–20]     plafond USDC par ordre
                 }
 
                 # ── Variables locales ─────────────────────────────────────
@@ -1723,11 +1735,12 @@ class InfoEdgeStrategy(BaseStrategy):
                     # ── Sizing ────────────────────────────────────────────
                     sizing_penalty = 1.0
 
-                    # Anti-Streak V17 (inchangé, appliqué en premier)
+                    # Anti-Streak V17 : conf["anti_streak_penalty"] (défaut ×0.5)
                     if side == "buy" and is_btc and self._check_market_streaks():
-                        sizing_penalty *= 0.5
+                        sizing_penalty *= conf["anti_streak_penalty"]
                         logger.warning(
-                            "[V17.0] ANTI-STREAK: 3 BTC UP consécutifs → sizing ×0.5 | %s",
+                            "[V17.0] ANTI-STREAK: %d BTC UP consécutifs → sizing ×%.2f | %s",
+                            conf["anti_streak_window"], conf["anti_streak_penalty"],
                             market.market_id[:6],
                         )
 
@@ -1741,7 +1754,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         )
 
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
-                    order_size = min(base_order * 2.8, portfolio * 0.06, self.MAX_ORDER_USDC)
+                    order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
                     shares     = max(5.0, order_size / 0.50)
 
                     signals.append(Signal(
