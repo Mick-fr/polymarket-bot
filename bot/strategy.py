@@ -1808,23 +1808,30 @@ class InfoEdgeStrategy(BaseStrategy):
                         market.market_id[:8],
                     )
 
+                    # V23: BUY YES (bullish) ou BUY NO (bearish) — jamais SELL.
+                    # SELL requiert des tokens existants (clob_balance > 0).
+                    # Pour exprimer une vue baissière : acheter les tokens NO.
+                    signal_token = token_yes if side == "buy" else token_no
                     signals.append(Signal(
-                        token_id=token_yes if side == "buy" else token_no,
+                        token_id=signal_token,
                         market_id=market.market_id,
                         market_question=market.question,
-                        side=side,
+                        side="buy",  # Toujours BUY (YES ou NO selon direction)
                         order_type="market",
                         price=0.99,
                         size=round(shares, 2),
                         confidence=0.99,
                         reason=(
-                            f"V22 {fire_reason}: "
+                            f"V22 {fire_reason} {'YES' if side == 'buy' else 'NO'}: "
                             f"E={edge_pct:+.1f}% M={m30:+.4f}% O={o_val:+.3f} "
                             f"t={time_left_sec:.0f}s ${order_size:.1f}"
                         ),
                         mid_price=0.50,
                         spread_at_signal=0.01,
                     ))
+                    # V23: Cooldown post-FIRE — évite le re-fire sur chaque appel
+                    # d'analyze() dans la rapid-fire loop du trader.
+                    self._last_quote_ts[market.yes_token_id] = time.time()
 
                     if self.db:
                         spot_price = live_spot if "live_spot" in locals() else 0.0
