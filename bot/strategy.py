@@ -1446,9 +1446,9 @@ class InfoEdgeStrategy(BaseStrategy):
                 # V23: Track max_edge AVANT les filtres spread/cooldown
                 # (sinon max_edge_found reste 0 car les marchés sont toujours en cooldown)
                 max_edge_found = max(max_edge_found, abs(edge_pct))
-                logger.info(
-                    "[SPRINT_EDGE] %s | p_poly=%.3f p_true=%.3f edge=%+.2f%% vol=%.2f",
-                    market.question[:40], p_poly, p_true, edge_pct, vol_5m
+                logger.debug(
+                    "[SPRINT_EDGE] %s | p_poly=%.3f p_true=%.3f edge=%+.2f%%",
+                    market.question[:40], p_poly, p_true, edge_pct
                 )
                 # V19: Buffered DB writes — tout dans un seul bloc lock (atomic)
                 with self._telemetry_lock:
