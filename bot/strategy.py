@@ -1705,57 +1705,109 @@ class InfoEdgeStrategy(BaseStrategy):
                     self._sniper_anti_spam[market.market_id] = now_ts
 
                 # ── PULSE LOG (throttled 2s) ──────────────────────────────
+                # Affiche la progression % de chaque signal vers son seuil.
                 now = time.time()
                 if not hasattr(self, '_last_pulse_ts'):
                     self._last_pulse_ts = 0.0
                 if now - self._last_pulse_ts > 2.0:
                     spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
+                    # Progression vers chaque seuil (capped à 999 pour l'affichage)
+                    e_std = min(999, abs_edge_v22 / conf["tedge_gate"]      * 100)
+                    e_sa  = min(999, abs_edge_v22 / conf["sniper_edge_a"]   * 100)
+                    e_sb  = min(999, abs_edge_v22 / conf["sniper_edge_b"]   * 100)
+                    m_std = min(999, abs_mom_v22  / conf["tmom"]            * 100)
+                    o_sa  = min(999, abs_obi_v22  / conf["sniper_obi_a"]    * 100)
+                    o_sb  = min(999, abs_obi_v22  / conf["sniper_obi_b"]    * 100)
                     logger.info(
-                        "[PULSE V22] Spot=%.2f | Mom=%+.4f%% | OBI=%+.3f | Edge=%+.2f%% | "
-                        "t=%.0fs | Std=%s | SA=%s | SB=%s | dir_mom=%s | dir_obi=%s",
-                        spot, m30, o_val, edge_pct, time_left_sec,
-                        "✓" if standard_pass  else "✗",
-                        "✓" if sniper_a_pass  else "✗",
-                        "✓" if sniper_b_pass  else "✗",
-                        "✓" if dir_ok_mom     else "✗",
-                        "✓" if dir_ok_obi     else "✗",
+                        "[V22 PULSE] %-18s | Spot=%.0f$ t=%.0fs | "
+                        "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) | "
+                        "M=%+.4f%%(%3.0f%%) | OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) | "
+                        "p_poly=%.3f p_true=%.3f | "
+                        "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]",
+                        market.question[:18], spot, time_left_sec,
+                        edge_pct, e_std, e_sa, e_sb,
+                        m30, m_std,
+                        o_val, o_sa, o_sb,
+                        p_poly, p_true,
+                        "✓" if dir_ok_mom    else "✗",
+                        "✓" if dir_ok_obi    else "✗",
+                        "✓" if standard_pass else "✗",
+                        "✓" if sniper_a_pass else "✗",
+                        "✓" if sniper_b_pass else "✗",
                     )
                     self._last_pulse_ts = now
 
+                # ── SNIPER_EVAL LOG (chaque setup avec edge ≥ 4%) ─────────
+                # Non throttlé : chaque candidat sniper doit laisser une trace
+                # avec le détail de chaque sous-condition pass/fail.
+                # Indispensable pour diagnostiquer "pourquoi le sniper n'a pas tiré".
+                if abs_edge_v22 >= conf["sniper_edge_a"] / 2.0:
+                    def _sc(ok, label):
+                        return f"{label}✓" if ok else f"{label}✗"
+                    sa_detail = " ".join([
+                        _sc(abs_edge_v22  >= conf["sniper_edge_a"],       f"E≥{conf['sniper_edge_a']:.0f}%"),
+                        _sc(abs_obi_v22   >= conf["sniper_obi_a"],        f"OBI≥{conf['sniper_obi_a']}"),
+                        _sc(time_left_sec <= conf["sniper_time_a_sec"],   f"t≤{conf['sniper_time_a_sec']}s(={time_left_sec:.0f}s)"),
+                        _sc(dir_ok_obi,                                   "dirOBI"),
+                    ])
+                    sb_detail = " ".join([
+                        _sc(abs_edge_v22  >= conf["sniper_edge_b"],       f"E≥{conf['sniper_edge_b']:.0f}%"),
+                        _sc(abs_obi_v22   >= conf["sniper_obi_b"],        f"OBI≥{conf['sniper_obi_b']}"),
+                        _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
+                        _sc(dir_ok_obi,                                   "dirOBI"),
+                    ])
+                    spam_tag  = " ⛔COOLDOWN" if sniper_already_fired else ""
+                    fire_tag  = " → 🔥FIRE" if (sniper_a_pass or sniper_b_pass) and not sniper_already_fired else ""
+                    logger.info(
+                        "[V22 SNIPER_EVAL] E=%+.2f%% M=%+.4f%% OBI=%+.3f "
+                        "t=%.0fs p_poly=%.3f%s%s | SA[%s] | SB[%s]",
+                        edge_pct, m30, o_val, time_left_sec, p_poly,
+                        spam_tag, fire_tag,
+                        sa_detail, sb_detail,
+                    )
+
                 # ── FIRE ──────────────────────────────────────────────────
                 if side:
-                    logger.info(
-                        "🔥 [FIRE V22] %s | %s | Edge=%+.2f%% Mom=%+.4f%% OBI=%+.3f | "
-                        "t_left=%.0fs | market=%s",
-                        side.upper(), fire_reason,
-                        edge_pct, m30, o_val, time_left_sec, market.market_id[:8],
-                    )
                     max_edge_found = max(max_edge_found, abs_edge_v22)
 
-                    # ── Sizing ────────────────────────────────────────────
-                    sizing_penalty = 1.0
+                    # ── Sizing (calculé avant le log pour l'inclure) ───────
+                    sizing_penalty  = 1.0
+                    streak_applied  = False
+                    sniper_applied  = False
 
-                    # Anti-Streak V17 : conf["anti_streak_penalty"] (défaut ×0.5)
+                    # Anti-Streak V17
                     if side == "buy" and is_btc and self._check_market_streaks():
                         sizing_penalty *= conf["anti_streak_penalty"]
-                        logger.warning(
-                            "[V17.0] ANTI-STREAK: %d BTC UP consécutifs → sizing ×%.2f | %s",
-                            conf["anti_streak_window"], conf["anti_streak_penalty"],
-                            market.market_id[:6],
-                        )
+                        streak_applied  = True
 
-                    # Sniper sizing : pas de confirmation momentum → position réduite
-                    # S'applique en plus de l'anti-streak (multiplicatif)
+                    # Sniper : pas de confirmation momentum → position réduite
                     if is_sniper:
                         sizing_penalty *= conf["sniper_sizing_mult"]
-                        logger.info(
-                            "[V22] SNIPER sizing ×%.2f | penalty_total=×%.2f",
-                            conf["sniper_sizing_mult"], sizing_penalty,
-                        )
+                        sniper_applied  = True
 
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
                     order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
                     shares     = max(5.0, order_size / 0.50)
+
+                    # ── FIRE LOG (après sizing pour avoir les montants) ────
+                    penalty_detail = []
+                    if streak_applied:
+                        penalty_detail.append(f"streak×{conf['anti_streak_penalty']}")
+                    if sniper_applied:
+                        penalty_detail.append(f"sniper×{conf['sniper_sizing_mult']}")
+                    penalty_str = ("×".join([""] + penalty_detail) if penalty_detail else "×1.0")
+                    logger.info(
+                        "🔥 [V22 FIRE] %-8s | %-26s | "
+                        "E=%+.2f%% M=%+.4f%% OBI=%+.3f | "
+                        "p_poly=%.3f p_true=%.3f | "
+                        "t=%.0fs | $%.2f USDC (%.0f sh) penalty=%s | mkt=%s",
+                        side.upper(), fire_reason,
+                        edge_pct, m30, o_val,
+                        p_poly, p_true,
+                        time_left_sec,
+                        order_size, shares, penalty_str,
+                        market.market_id[:8],
+                    )
 
                     signals.append(Signal(
                         token_id=token_yes if side == "buy" else token_no,
@@ -1768,7 +1820,8 @@ class InfoEdgeStrategy(BaseStrategy):
                         confidence=0.99,
                         reason=(
                             f"V22 {fire_reason}: "
-                            f"E={edge_pct:+.1f}% M={m30:+.4f}% O={o_val:+.3f} t={time_left_sec:.0f}s"
+                            f"E={edge_pct:+.1f}% M={m30:+.4f}% O={o_val:+.3f} "
+                            f"t={time_left_sec:.0f}s ${order_size:.1f}"
                         ),
                         mid_price=0.50,
                         spread_at_signal=0.01,
@@ -1782,8 +1835,9 @@ class InfoEdgeStrategy(BaseStrategy):
                         )
                         self.db.add_log(
                             "INFO", "sniper_feed",
-                            f"{market.question[:25]}... | Spot:{spot_price:.0f}$ | "
-                            f"Edge:{edge_pct:+.1f}% Mom:{m30:+.3f}% | "
+                            f"{market.question[:22]}… | "
+                            f"Spot:{spot_price:.0f}$ t:{time_left_sec:.0f}s | "
+                            f"E:{edge_pct:+.1f}% ${order_size:.1f}USDC | "
                             f"<span class='text-green-400 font-bold'>{side.upper()}</span>{sniper_tag}"
                         )
 
@@ -1815,8 +1869,9 @@ class InfoEdgeStrategy(BaseStrategy):
 
                         self.db.add_log(
                             "INFO", "sniper_feed",
-                            f"{market.question[:25]}... | Spot:{spot_price:.0f}$ | "
-                            f"Edge:{edge_pct:+.1f}% Mom:{m30:+.3f}% OBI:{o_val:+.3f} | "
+                            f"{market.question[:22]}… | "
+                            f"Spot:{spot_price:.0f}$ t:{time_left_sec:.0f}s | "
+                            f"E:{edge_pct:+.1f}% M:{m30:+.3f}% O:{o_val:+.3f} | "
                             f"<span class='text-slate-500'>PASS [{block}]</span>"
                         )
 
