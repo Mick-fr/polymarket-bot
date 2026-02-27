@@ -951,8 +951,8 @@ class Trader:
         La méthode _check_sprint_tp_sl() (60s) reste active comme filet de
         sécurité pour les tokens sans WS mid disponible.
         """
-        TP_RATIO      = 1.75
-        SL_RATIO      = 0.30
+        TP_RATIO_BASE = 1.75   # TP de base (cappé dynamiquement si avg élevé)
+        SL_RATIO_BASE = 0.30   # SL de base (durci dynamiquement à t<60s)
         RATE_LIMIT_S  = 0.20   # max 5 checks/s
         CACHE_TTL_S   = 10.0   # refresh positions DB toutes les 10s
 
@@ -1003,22 +1003,41 @@ class Trader:
             if self.db.has_live_sell(token_id):
                 continue
 
-            # Mid temps réel depuis WS Polymarket (pas de REST — O(1))
+            # Mid temps réel depuis WS Polymarket (O(1))
             mid_ws = ws_client.get_midpoint(token_id)
+
+            # V26: fallback REST CLOB cache si WS pas encore warm pour ce token
             if mid_ws is None or not (0.01 <= mid_ws <= 0.99):
-                continue  # pas encore de données WS → 60s chrono prend le relais
+                _ies = getattr(self, "info_edge_strategy", None)
+                _rc  = getattr(_ies, "_rest_clob_mid_cache", {})
+                _re  = _rc.get(token_id)
+                if _re and (now - _re[1]) < 15.0:
+                    mid_ws = _re[0]
+                    logger.debug("[TP/SL FAST] REST mid fallback %.4f pour %s",
+                                 mid_ws, token_id[:16])
+                else:
+                    continue  # aucune source de mid → 60s chrono prend le relais
 
             ratio = mid_ws / avg
 
-            # V25: exit forcé à t<12s — liquider avant expiration (spread OK encore)
-            _exp_ts  = self._sprint_expiry_cache.get(token_id, 0.0)
+            # V26: TP dynamique — cappé à 0.97/avg pour les positions à fort avg.
+            # Bug V25: TP_RATIO=1.75 jamais atteint quand avg>0.57 (seuil >1.0).
+            # Exemple: avg=0.69 → tp_ratio = min(1.75, 0.97/0.69) = 1.406
+            #          → TP se déclenche à mid=0.97 au lieu de jamais.
+            tp_ratio = min(TP_RATIO_BASE, 0.97 / max(avg, 0.01))
+
+            # V26: SL dynamique — plus serré à l'approche de l'expiration.
+            # t<60s: SL=0.45× (exit à -55%) | t<30s: SL=0.55× (exit à -45%)
+            _exp_ts    = self._sprint_expiry_cache.get(token_id, 0.0)
             _secs_left = (_exp_ts - now) if _exp_ts > 0 else 9999.0
+            sl_ratio   = 0.55 if _secs_left < 30.0 else (0.45 if _secs_left < 60.0 else SL_RATIO_BASE)
+
             if _secs_left < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left:.0f}s)"
-            elif ratio >= TP_RATIO:
-                reason = f"TP×{ratio:.2f}"
-            elif ratio <= SL_RATIO:
-                reason = f"SL×{ratio:.2f}"
+            elif ratio >= tp_ratio:
+                reason = f"TP×{ratio:.2f}(th={tp_ratio:.2f})"
+            elif ratio <= sl_ratio:
+                reason = f"SL_DYN×{ratio:.2f}(th={sl_ratio:.2f})"
             else:
                 continue
 
@@ -1135,8 +1154,8 @@ class Trader:
         Ne touche pas aux positions déjà couvertes par un SELL live.
         Utilise le current_mid DB mis à jour par _refresh_inventory_mids().
         """
-        TP_RATIO = 1.75   # prendre profit si position gagne +75%
-        SL_RATIO = 0.30   # couper la perte si position perd -70%
+        TP_RATIO_BASE = 1.75   # TP base (cappé dynamiquement si avg élevé)
+        SL_RATIO_BASE = 0.30   # SL base (durci dynamiquement à t<60s)
 
         try:
             positions = self.db.get_all_positions()
@@ -1162,15 +1181,20 @@ class Trader:
 
             ratio = mid / avg
 
-            # V25: exit forcé à t<12s — liquider avant expiration
+            # V26: TP dynamique (identique fast path)
+            tp_ratio_slow = min(TP_RATIO_BASE, 0.97 / max(avg, 0.01))
+
+            # V26: SL dynamique + V25 expiry exit
             _exp_ts_slow    = self._sprint_expiry_cache.get(token_id, 0.0)
             _secs_left_slow = (_exp_ts_slow - time.time()) if _exp_ts_slow > 0 else 9999.0
+            sl_ratio_slow   = 0.55 if _secs_left_slow < 30.0 else (0.45 if _secs_left_slow < 60.0 else SL_RATIO_BASE)
+
             if _secs_left_slow < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left_slow:.0f}s)"
-            elif ratio >= TP_RATIO:
-                reason = f"TP×{ratio:.2f}"
-            elif ratio <= SL_RATIO:
-                reason = f"SL×{ratio:.2f}"
+            elif ratio >= tp_ratio_slow:
+                reason = f"TP×{ratio:.2f}(th={tp_ratio_slow:.2f})"
+            elif ratio <= sl_ratio_slow:
+                reason = f"SL_DYN×{ratio:.2f}(th={sl_ratio_slow:.2f})"
             else:
                 continue
 

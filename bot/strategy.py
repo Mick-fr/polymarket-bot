@@ -1545,15 +1545,17 @@ class InfoEdgeStrategy(BaseStrategy):
         
         # Récupération sécurisée des données Binance
         live_spot = 0.0
-        live_mom = 0.0
-        live_obi = 0.0
+        live_mom  = 0.0
+        live_obi  = 0.0
+        live_cvd30 = 0.0   # V26: CVD 30s pour confirmation directionnelle snipers
         if self.binance_ws and self.binance_ws.is_connected:
             try:
-                live_spot = self.binance_ws.get_mid("BTCUSDT")
+                live_spot  = self.binance_ws.get_mid("BTCUSDT")
                 # Upgrade 4: OBI depth5 + CVD pour le dashboard
-                live_obi = (0.70 * self.binance_ws.get_obi_depth5("BTCUSDT")
-                            + 0.30 * self.binance_ws.get_cvd("BTCUSDT", 60.0))
-                live_mom = self.binance_ws.get_30s_momentum("BTCUSDT")
+                live_obi   = (0.70 * self.binance_ws.get_obi_depth5("BTCUSDT")
+                              + 0.30 * self.binance_ws.get_cvd("BTCUSDT", 60.0))
+                live_mom   = self.binance_ws.get_30s_momentum("BTCUSDT")
+                live_cvd30 = self.binance_ws.get_cvd("BTCUSDT", 30.0)
                 # V19: Write to memory buffer instead of DB
                 with self._telemetry_lock:
                     self._telemetry_buffer["live_btc_spot"] = round(live_spot, 2)
@@ -1846,6 +1848,15 @@ class InfoEdgeStrategy(BaseStrategy):
                     (edge_pct > 0 and o_val > 0) or (edge_pct < 0 and o_val < 0)
                 )
 
+                # V26: dir_ok_cvd — flux taker 30s confirme la direction.
+                # CVD_30s mesure les véritables takers (ordres marché exécutés),
+                # plus fiable que OBI (qui peut être spoofé par des ordres limite annulés).
+                # Seuil 0.08 = 8% de déséquilibre buy/sell sur 30s (bruit < 5%).
+                cvd30_val = live_cvd30  # scalaire [-1, +1] déjà calculé plus haut
+                dir_ok_cvd = (abs(cvd30_val) >= 0.08) and (
+                    (edge_pct > 0 and cvd30_val > 0) or (edge_pct < 0 and cvd30_val < 0)
+                )
+
                 # ── Évaluation des 3 paths (hiérarchique) ─────────────────
 
                 # Path 1 — Standard : momentum + direction cohérente + fenêtre temporelle
@@ -1858,21 +1869,25 @@ class InfoEdgeStrategy(BaseStrategy):
 
                 # Path 2 — Sniper A : haute conviction, fenêtre temporelle serrée
                 # OBI confirme la direction à la place du momentum.
+                # V26: CVD_30s requis EN PLUS de OBI pour filtrer le spoofing.
                 sniper_a_pass = (
                     abs_edge_v22     >= conf["sniper_edge_a"]
                     and abs_obi_v22  >= conf["sniper_obi_a"]
                     and time_left_sec <= conf["sniper_time_a_sec"]
                     and dir_ok_obi
+                    and dir_ok_cvd   # V26: taker flow confirme (filtre anti-spoof)
                 )
 
                 # Path B — Sniper B : ultra conviction, fenêtre large.
                 # Cible les setups edge ≥ 12% + OBI fort bloqués uniquement
                 # par mom faible (ex: near-miss 08:01:45 edge=+13.75% OBI=+0.85).
+                # V26: CVD_30s requis pour confirmer la conviction directionnelle.
                 sniper_b_pass = (
                     abs_edge_v22     >= conf["sniper_edge_b"]
                     and abs_obi_v22  >= conf["sniper_obi_b"]
                     and time_left_sec <= conf["sniper_time_b_sec"]
                     and dir_ok_obi
+                    and dir_ok_cvd   # V26: taker flow confirme
                 )
 
                 # ── Anti-spam Sniper ──────────────────────────────────────
@@ -1938,26 +1953,29 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(abs_obi_v22   >= conf["sniper_obi_a"],        f"OBI≥{conf['sniper_obi_a']}"),
                         _sc(time_left_sec <= conf["sniper_time_a_sec"],   f"t≤{conf['sniper_time_a_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
+                        _sc(dir_ok_cvd,                                   f"CVD30={cvd30_val:+.2f}"),
                     ])
                     sb_detail = " ".join([
                         _sc(abs_edge_v22  >= conf["sniper_edge_b"],       f"E≥{conf['sniper_edge_b']:.0f}%"),
                         _sc(abs_obi_v22   >= conf["sniper_obi_b"],        f"OBI≥{conf['sniper_obi_b']}"),
                         _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
+                        _sc(dir_ok_cvd,                                   f"CVD30={cvd30_val:+.2f}"),
                     ])
                     fire_tag = " → 🔥FIRE" if will_fire else ""
                     spam_tag = " ⛔COOLDOWN" if sniper_already_fired else ""
                     logger.info(
-                        "[V22 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
+                        "[V26 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
                         "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) "
-                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) | "
-                        "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
+                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) CVD30=%+.2f | "
+                        "dir[M=%s O=%s C=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
                         market.question[:18], spot, time_left_sec,
                         edge_pct, e_std, e_sa, e_sb,
                         m30, m_std,
-                        o_val, o_sa, o_sb,
+                        o_val, o_sa, o_sb, cvd30_val,
                         "✓" if dir_ok_mom    else "✗",
                         "✓" if dir_ok_obi    else "✗",
+                        "✓" if dir_ok_cvd    else "✗",
                         "✓" if standard_pass else "✗",
                         "✓" if sniper_a_pass else "✗",
                         "✓" if sniper_b_pass else "✗",
