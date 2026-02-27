@@ -574,6 +574,13 @@ class Trader:
             except Exception as e_ac:
                 logger.error("[SAFE MODE] Erreur check_auto_close_copied: %s", e_ac)
 
+        # 4.c TP/SL positions sprint BTC/ETH
+        if not self.config.bot.paper_trading:
+            try:
+                self._check_sprint_tp_sl()
+            except Exception as e_tpsl:
+                logger.error("[TP/SL] Erreur inattendue: %s", e_tpsl)
+
         # 5. Purge DB
         self._cycles_since_purge += 1
         if self._cycles_since_purge >= self._DB_PURGE_INTERVAL_CYCLES:
@@ -877,6 +884,93 @@ class Trader:
             if self.risk._max_exposure_pct != base_pct:
                 self.risk._max_exposure_pct = base_pct
         return base_pct
+
+    def _check_sprint_tp_sl(self) -> None:
+        """Take Profit / Stop Loss pour les positions sprint BTC/ETH.
+
+        Déclenche un SELL market total sur les positions dont le ratio
+        current_mid / avg_price dépasse les seuils configurés :
+          - TP_RATIO = 1.75 : mid >= avg × 1.75  (gain ≥ +75%)
+          - SL_RATIO = 0.30 : mid <= avg × 0.30  (perte ≥ -70%)
+
+        Ne touche pas aux positions déjà couvertes par un SELL live.
+        Utilise le current_mid DB mis à jour par _refresh_inventory_mids().
+        """
+        TP_RATIO = 1.75   # prendre profit si position gagne +75%
+        SL_RATIO = 0.30   # couper la perte si position perd -70%
+
+        try:
+            positions = self.db.get_all_positions()
+        except Exception as e:
+            logger.warning("[TP/SL] Erreur lecture positions: %s", e)
+            return
+
+        for p in positions:
+            question = (p.get("question") or "").lower()
+            if not any(kw in question for kw in ("btc", "bitcoin", "eth", "ethereum")):
+                continue
+
+            token_id = p.get("token_id", "")
+            qty      = float(p.get("quantity") or 0)
+            avg      = float(p.get("avg_price") or 0)
+            mid      = float(p.get("current_mid") or 0)
+
+            if qty <= 0.01 or avg <= 0.01 or not (0.01 <= mid <= 0.99):
+                continue
+
+            if self.db.has_live_sell(token_id):
+                continue
+
+            ratio = mid / avg
+            if ratio >= TP_RATIO:
+                reason = f"TP×{ratio:.2f}"
+            elif ratio <= SL_RATIO:
+                reason = f"SL×{ratio:.2f}"
+            else:
+                continue
+
+            # Vérification allowance on-chain avant SELL
+            try:
+                allowance_ok = self._call_with_timeout(
+                    lambda tid=token_id: self.pm_client.ensure_conditional_allowance(tid),
+                    timeout=8.0,
+                    label=f"tp_sl_allowance({token_id[:16]})",
+                )
+            except Exception as e:
+                logger.warning("[TP/SL] Allowance check échoué %s: %s → ignoré", token_id[:16], e)
+                continue
+            if not allowance_ok:
+                logger.debug("[TP/SL] %s: allowance non confirmée → différé", token_id[:16])
+                continue
+
+            # Quantité réelle du CLOB (source de vérité)
+            try:
+                _clob = self.pm_client.get_conditional_allowance(token_id)
+                clob_qty = float(_clob.get("balance", "0") or "0") / 1e6
+            except Exception:
+                clob_qty = qty
+            sell_qty = round(min(clob_qty if clob_qty > 0.01 else qty, qty), 2)
+            if sell_qty <= 0:
+                continue
+
+            usdc_amount = round(sell_qty * mid, 4)
+            try:
+                resp = self._call_with_timeout(
+                    lambda tid=token_id, amt=usdc_amount: self.pm_client.place_market_order(
+                        token_id=tid, amount=amt, side="sell"
+                    ),
+                    timeout=12.0,
+                    label=f"tp_sl_sell({token_id[:16]})",
+                )
+                status = resp.get("status", "?") if isinstance(resp, dict) else "?"
+                logger.info(
+                    "[TP/SL] 🎯 SELL %s | %s | qty=%.2f mid=%.3f avg=%.3f → %s",
+                    reason,
+                    (p.get("question") or "")[:35],
+                    sell_qty, mid, avg, status,
+                )
+            except Exception as e:
+                logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
 
     def _maybe_liquidate_partial(self, balance: float, portfolio_value: float) -> None:
         """Déclenche une liquidation partielle si le cash est trop bas vs l'inventaire.
