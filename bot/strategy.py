@@ -1795,7 +1795,9 @@ class InfoEdgeStrategy(BaseStrategy):
                 fire_reason = None
                 is_sniper   = False
 
-                if standard_pass:
+                # V24: Standard bloqué si un sniper a déjà firé sur ce marché (300s)
+                # Évite le pyramidage : sniper + standard = double exposition non désirée
+                if standard_pass and not sniper_already_fired:
                     side        = "buy" if edge_pct > 0 else "sell"
                     fire_reason = "STANDARD_MOM_FLOW"
                     is_sniper   = False
@@ -1820,7 +1822,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 if not hasattr(self, '_last_eval_log_ts'):
                     self._last_eval_log_ts: dict = {}
 
-                will_fire = (sniper_a_pass or sniper_b_pass) and not sniper_already_fired
+                will_fire = (standard_pass or sniper_a_pass or sniper_b_pass) and not sniper_already_fired
                 throttle_elapsed = now - self._last_eval_log_ts.get(market.market_id, 0.0) > 30.0
 
                 if will_fire or throttle_elapsed:
@@ -1972,9 +1974,11 @@ class InfoEdgeStrategy(BaseStrategy):
                         mid_price=0.50,
                         spread_at_signal=0.01,
                     ))
-                    # V23: Cooldown post-FIRE — évite le re-fire sur chaque appel
-                    # d'analyze() dans la rapid-fire loop du trader.
-                    self._last_quote_ts[market.yes_token_id] = time.time()
+                    # V24: Cooldown post-FIRE prolongé pour sprints (90s effectifs)
+                    # Formule : _last_quote_ts = T + (90 - quote_cooldown)
+                    # → check (T+now - last < 16) bloque jusqu'à T+now = last + 16 = T_fire + 90
+                    # Évite pyramidage (3 fires en 90s sur même marché → 1 seul max)
+                    self._last_quote_ts[market.yes_token_id] = time.time() + (90.0 - self._quote_cooldown)
 
                     if self.db:
                         spot_price = live_spot if "live_spot" in locals() else 0.0

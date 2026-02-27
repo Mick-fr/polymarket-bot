@@ -96,6 +96,9 @@ class Trader:
         self._tpsl_last_check_ts:  float = 0.0   # rate-limiter 200ms
         self._tpsl_selling:        set   = set()  # tokens SELL en cours
         self._tpsl_lock = threading.Lock()
+        # Compteur d'erreurs 404 consécutives par token_id.
+        # Après 3×404, la position est zeroed en DB (zombie detection).
+        self._tpsl_zombie_errors:  dict  = {}     # token_id → int
 
     def start(self):
         """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
@@ -1065,7 +1068,29 @@ class Trader:
                         self._tpsl_cache_ts = 0.0
 
                 except Exception as e_sell:
-                    logger.error("[TP/SL FAST] Erreur SELL %s: %s", tid[:16], e_sell)
+                    err_s = str(e_sell)
+                    if "404" in err_s or "No orderbook" in err_s:
+                        with self._tpsl_lock:
+                            cnt = self._tpsl_zombie_errors.get(tid, 0) + 1
+                            self._tpsl_zombie_errors[tid] = cnt
+                        if cnt >= 3:
+                            logger.warning(
+                                "[TP/SL FAST] 🧟 Zombie %s (%d×404) → zeroed en DB",
+                                tid[:16], cnt,
+                            )
+                            try:
+                                self.db.set_position_quantity(tid, 0.0)
+                            except Exception as ez:
+                                logger.debug("[TP/SL FAST] Erreur zero zombie: %s", ez)
+                        else:
+                            logger.error(
+                                "[TP/SL FAST] Erreur SELL %s: %s (%d/3)",
+                                tid[:16], e_sell, cnt,
+                            )
+                    else:
+                        with self._tpsl_lock:
+                            self._tpsl_zombie_errors.pop(tid, None)
+                        logger.error("[TP/SL FAST] Erreur SELL %s: %s", tid[:16], e_sell)
                 finally:
                     with self._tpsl_lock:
                         self._tpsl_selling.discard(tid)
@@ -1161,7 +1186,27 @@ class Trader:
                     sell_qty, mid, avg, status,
                 )
             except Exception as e:
-                logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
+                err_s = str(e)
+                if "404" in err_s or "No orderbook" in err_s:
+                    cnt = self._tpsl_zombie_errors.get(token_id, 0) + 1
+                    self._tpsl_zombie_errors[token_id] = cnt
+                    if cnt >= 3:
+                        logger.warning(
+                            "[TP/SL] 🧟 Zombie %s (%d×404) → zeroed en DB",
+                            token_id[:16], cnt,
+                        )
+                        try:
+                            self.db.set_position_quantity(token_id, 0.0)
+                        except Exception as ez:
+                            logger.debug("[TP/SL] Erreur zero zombie: %s", ez)
+                    else:
+                        logger.error(
+                            "[TP/SL] Erreur SELL %s sur %s: %s (%d/3)",
+                            reason, token_id[:16], e, cnt,
+                        )
+                else:
+                    self._tpsl_zombie_errors.pop(token_id, None)
+                    logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
 
     # ── Upgrade 3 — Sprint maker cancel-replace watcher ──────────────────────────
 
