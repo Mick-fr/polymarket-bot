@@ -1832,6 +1832,21 @@ class InfoEdgeStrategy(BaseStrategy):
 
                     # V23: BUY YES (bullish) ou BUY NO (bearish) — jamais SELL.
                     signal_token = token_yes if side == "buy" else token_no
+                    opposite_token = token_no if side == "buy" else token_yes
+
+                    # Guard anti-hedging : bloquer si position adverse déjà ouverte
+                    # sur CE marché (UP+DOWN = argent perdu en spread garanti).
+                    if self.db:
+                        opp_qty = self.db.get_position(opposite_token)
+                        if opp_qty and opp_qty > 0.01:
+                            logger.warning(
+                                "⛔ [V22 ANTI-HEDGE] BUY %s bloqué sur %s — position adverse %.2f %s déjà ouverte",
+                                direction, market.market_id[:8],
+                                opp_qty, "NO" if side == "buy" else "YES",
+                            )
+                            self._last_quote_ts[market.yes_token_id] = time.time()
+                            continue
+
                     signals.append(Signal(
                         token_id=signal_token,
                         market_id=market.market_id,
