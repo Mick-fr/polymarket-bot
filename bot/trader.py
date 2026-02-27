@@ -1936,16 +1936,33 @@ class Trader:
             # Mise à jour de l'inventaire après fill confirmé (matched ou paper filled)
 
             if status in ("filled", "matched"):
+                # ── Calcul de la quantité et du prix réel de fill ─────────────
+                # Pour les market orders : la réponse CLOB contient takingAmount
+                # (shares reçus) et makingAmount (USDC dépensés).
+                # signal.size = USDC pour market orders (convention V23).
+                # signal.size = shares pour limit orders.
+                if signal.order_type == "market":
+                    taking = float(resp.get("takingAmount") or 0)
+                    making = float(resp.get("makingAmount") or 0)
+                    if taking > 0 and making > 0:
+                        actual_size   = taking
+                        actual_price  = making / taking
+                    else:
+                        actual_size   = signal.size
+                        actual_price  = signal.price or 0.5
+                else:
+                    actual_size   = signal.size
+                    actual_price  = signal.price or 0.5
+
                 # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
                 if signal.side == "sell":
                     qty_held = self.db.get_position(signal.token_id)
-                    actual_size = min(signal.size, max(0.0, qty_held))
+                    actual_size = min(actual_size, max(0.0, qty_held))
                     if actual_size <= 0:
                         logger.debug("SELL ignoré pour inventaire: qty_held=%.2f", qty_held)
                         self.db.update_order_status(local_id, "rejected", error="qty_held=0")
                         return
-                else:
-                    actual_size = signal.size
+
                 qty_delta = actual_size if signal.side == "buy" else -actual_size
                 self.db.update_position(
                     token_id=signal.token_id,
@@ -1953,11 +1970,11 @@ class Trader:
                     question=signal.market_question,
                     side="YES",
                     quantity_delta=qty_delta,
-                    fill_price=signal.price or 0.5,
+                    fill_price=actual_price,
                 )
                 logger.info(
                     "Position mise à jour: %s %+.2f shares @ %.4f",
-                    signal.token_id[:16], qty_delta, signal.price or 0.5,
+                    signal.token_id[:16], qty_delta, actual_price,
                 )
                 pnl_str = "N/A"
                 if signal.side == "sell":
