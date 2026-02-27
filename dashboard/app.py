@@ -161,33 +161,56 @@ def create_app(config: AppConfig, db: Database) -> Flask:
             history = json.loads(history_str)
         except:
             history = []
+
+        # V20 gate thresholds (must match strategy.py)
+        TMOM = 0.005
+        TEDGE = 3.0
+
+        def _pill(label, ok):
+            if ok:
+                return (f"<span class='inline-block px-1 py-0.5 rounded text-[0.6rem] font-bold "
+                        f"bg-green-500/20 text-green-400 border border-green-500/30 mr-0.5'>{label}</span>")
+            else:
+                return (f"<span class='inline-block px-1 py-0.5 rounded text-[0.6rem] font-bold "
+                        f"bg-red-500/20 text-red-400 border border-red-500/30 mr-0.5'>{label}</span>")
+
         html = ""
         # Render in reverse chronological order (newest first assuming appended to end)
         for rev in reversed(history):
             ts = rev.get("timestamp", "--:--:--")
             mom = rev.get("mom", 0.0)
             obi = rev.get("obi", 0.0)
+            iv = rev.get("iv", 0.0)
             edge = rev.get("edge", 0.0)
-            reason = rev.get("missing_condition", "?")
-            synergy = rev.get("synergy", False)
-            
+
             # Formatting
             mom_str = f"{mom:+.4f}%"
             edge_str = f"{edge:+.2f}%"
-            edge_color = "text-orange-400 font-bold" if edge >= 10.0 else "text-slate-400"
-            syn_html = "🟢" if synergy else "🔴"
-            
+            edge_color = "text-orange-400 font-bold" if abs(edge) >= 10.0 else "text-slate-400"
+
+            # Recompute V20 gate conditions from stored values
+            mom_ok = abs(mom) >= TMOM
+            edge_ok = abs(edge) >= TEDGE
+            direction_ok = (edge > 0 and mom > 0) or (edge < 0 and mom < 0)
+            iv_ok = iv > 0
+
+            conditions_html = (
+                _pill("MOM", mom_ok) +
+                _pill("EDGE", edge_ok) +
+                _pill("DIR", direction_ok) +
+                _pill("IV", iv_ok)
+            )
+
             html += f"<tr class='border-b border-slate-700 hover:bg-slate-800/50 transition-colors'>"
             html += f"<td class='py-2 px-3 text-slate-500 font-terminal'>{ts}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{mom_str}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-slate-300'>{obi:.2f}</td>"
             html += f"<td class='py-2 px-3 font-terminal {edge_color}'>{edge_str}</td>"
-            html += f"<td class='py-2 px-3 text-center text-[0.65rem]'>{syn_html}</td>"
-            html += f"<td class='py-2 px-3 font-terminal text-red-500/80 uppercase text-[0.65rem] tracking-wider'>{reason}</td>"
+            html += f"<td class='py-2 px-3'>{conditions_html}</td>"
             html += f"<td class='py-2 px-3 font-terminal text-slate-500 text-right text-[0.65rem]'>Pending (5m)</td>"
             html += "</tr>"
-            
-        return html or "<tr><td colspan='7' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
+
+        return html or "<tr><td colspan='6' class='py-4 text-center text-slate-500 text-[0.7rem] uppercase tracking-widest'>Aucun near miss récent</td></tr>"
 
     @app.route("/api/v18/performance")
     @login_required
