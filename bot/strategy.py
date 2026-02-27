@@ -1786,31 +1786,33 @@ class InfoEdgeStrategy(BaseStrategy):
 
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
                     order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
-                    shares     = max(5.0, order_size / 0.50)
+                    # V23: market orders → size = USDC (pas shares).
+                    # place_market_order(amount=signal.size) attend des USDC.
+                    # risk._compute_order_cost retourne signal.size pour market orders.
+                    usdc_amount = round(order_size, 2)
 
-                    # ── FIRE LOG (après sizing pour avoir les montants) ────
+                    # ── FIRE LOG ──────────────────────────────────────────────
                     penalty_detail = []
                     if streak_applied:
                         penalty_detail.append(f"streak×{conf['anti_streak_penalty']}")
                     if sniper_applied:
                         penalty_detail.append(f"sniper×{conf['sniper_sizing_mult']}")
                     penalty_str = ("×".join([""] + penalty_detail) if penalty_detail else "×1.0")
+                    direction = "YES" if side == "buy" else "NO"
                     logger.info(
-                        "🔥 [V22 FIRE] %-8s | %-26s | "
+                        "🔥 [V22 FIRE] BUY %-3s | %-26s | "
                         "E=%+.2f%% M=%+.4f%% OBI=%+.3f | "
                         "p_poly=%.3f p_true=%.3f | "
-                        "t=%.0fs | $%.2f USDC (%.0f sh) penalty=%s | mkt=%s",
-                        side.upper(), fire_reason,
+                        "t=%.0fs | $%.2f USDC penalty=%s | mkt=%s",
+                        direction, fire_reason,
                         edge_pct, m30, o_val,
                         p_poly, p_true,
                         time_left_sec,
-                        order_size, shares, penalty_str,
+                        usdc_amount, penalty_str,
                         market.market_id[:8],
                     )
 
                     # V23: BUY YES (bullish) ou BUY NO (bearish) — jamais SELL.
-                    # SELL requiert des tokens existants (clob_balance > 0).
-                    # Pour exprimer une vue baissière : acheter les tokens NO.
                     signal_token = token_yes if side == "buy" else token_no
                     signals.append(Signal(
                         token_id=signal_token,
@@ -1819,12 +1821,12 @@ class InfoEdgeStrategy(BaseStrategy):
                         side="buy",  # Toujours BUY (YES ou NO selon direction)
                         order_type="market",
                         price=0.99,
-                        size=round(shares, 2),
+                        size=usdc_amount,  # USDC — risk check + place_market_order l'attendent
                         confidence=0.99,
                         reason=(
-                            f"V22 {fire_reason} {'YES' if side == 'buy' else 'NO'}: "
+                            f"V22 {fire_reason} {direction}: "
                             f"E={edge_pct:+.1f}% M={m30:+.4f}% O={o_val:+.3f} "
-                            f"t={time_left_sec:.0f}s ${order_size:.1f}"
+                            f"t={time_left_sec:.0f}s ${usdc_amount:.1f}"
                         ),
                         mid_price=0.50,
                         spread_at_signal=0.01,
