@@ -1949,7 +1949,20 @@ class InfoEdgeStrategy(BaseStrategy):
         if not hasattr(self, '_last_v106_log_ts'):
             self._last_v106_log_ts = 0.0
         if now - self._last_v106_log_ts > 5.0 or signals:
-            logger.info("[V10.6] Info Edge Only optimisé | 5-MIN SCALPER ENABLED | %d signal(s) | avg_edge=%.1f%%", len(signals), avg_edge)
+            ws_status = "WS✓" if (self.binance_ws and self.binance_ws.is_connected) else "WS✗"
+            eligible_n = len(markets)
+            spot_str = f"${live_spot:,.0f}" if live_spot > 0 else "?$"
+            if sprint_markets_count > 0:
+                logger.info(
+                    "[RADAR] %s BTC %s Mom%+.3f%% OBI%+.3f | Sprint %d/%d | EdgeMax %.1f%% | %d signal(s)",
+                    ws_status, spot_str, live_mom, live_obi,
+                    sprint_markets_count, eligible_n, max_edge_found, len(signals)
+                )
+            else:
+                logger.info(
+                    "[RADAR] %s BTC %s Mom%+.3f%% OBI%+.3f | %d éligibles | Aucun sprint — en attente",
+                    ws_status, spot_str, live_mom, live_obi, eligible_n
+                )
             self._last_v106_log_ts = now
         if self.db:
             with self._telemetry_lock:
