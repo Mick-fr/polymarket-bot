@@ -1429,8 +1429,8 @@ class InfoEdgeStrategy(BaseStrategy):
             q_lower = market.question.lower()
             is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
             
-            # Sprint = BTC + expire dans moins de 5.5 minutes
-            is_sprint = is_btc and (minutes_to_expiry <= 5.5)
+            # Sprint = BTC + expire dans moins de 5.5 minutes (et pas déjà expiré)
+            is_sprint = is_btc and (0 < minutes_to_expiry <= 5.5)
             
             # ── V15.2 Real Edge Score computed for EVERY sprint tick ────
             edge_pct, p_true, p_poly, vol_5m = 0.0, 0.0, 0.0, 0.0
