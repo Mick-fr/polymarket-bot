@@ -23,3 +23,7 @@ requests>=2.31.0
 pyyaml>=6.0.1
 pandas>=2.0.0
 plotly>=5.15.0
+
+# Upgrade 2 — Modèle ML sprint (XGBoost + calibration)
+xgboost>=2.0.0
+scikit-learn>=1.3.0

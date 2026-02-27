@@ -1132,6 +1132,32 @@ class InfoEdgeStrategy(BaseStrategy):
         self._telemetry_buffer: dict[str, any] = {}
         self._telemetry_lock = threading.Lock()
 
+        # ── Upgrade 2 : chargement du modèle XGBoost sprint ─────────────────
+        self._sprint_model        = None   # CalibratedClassifierCV ou None
+        self._sprint_feature_cols = []
+        self._load_sprint_model()
+
+    def _load_sprint_model(self) -> None:
+        """Charge le modèle XGBoost depuis bot/models/sprint_xgb.pkl (si présent).
+
+        Silencieux si le fichier n'existe pas — le bot utilise alors le modèle
+        linéaire de secours (_compute_p_true_updown legacy).
+        """
+        import os, pickle
+        model_path = os.path.join(os.path.dirname(__file__), "models", "sprint_xgb.pkl")
+        if not os.path.exists(model_path):
+            logger.info("[XGB] Modèle sprint absent (%s) — fallback linéaire actif.", model_path)
+            return
+        try:
+            with open(model_path, "rb") as f:
+                payload = pickle.load(f)
+            self._sprint_model        = payload["model"]
+            self._sprint_feature_cols = payload["features"]
+            logger.info("[XGB] Modèle sprint chargé: %d features — %s",
+                        len(self._sprint_feature_cols), self._sprint_feature_cols)
+        except Exception as e:
+            logger.warning("[XGB] Échec chargement modèle sprint: %s — fallback linéaire.", e)
+
     def _check_market_streaks(self) -> bool:
         """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
         if not self.db: return False
@@ -1188,27 +1214,63 @@ class InfoEdgeStrategy(BaseStrategy):
     def _compute_p_true_updown(self, sym: str, funding: float) -> tuple[float, float, float]:
         """Modèle directionnel pour marchés 'Bitcoin/ETH Up or Down'.
 
-        YES = l'actif finit plus haut qu'à l'ouverture du créneau.
-        p_true_up = 0.5 + contrib_momentum + contrib_OBI + contrib_funding
+        Upgrade 2 : utilise le modèle XGBoost calibré si bot/models/sprint_xgb.pkl
+        est présent. Fallback automatique vers le modèle linéaire si absent ou erreur.
 
-        Calibration (m30 en %, OBI en [-1,+1]) :
-          m30 = 0.012% →  +3.6%  |  m30 = 0.05% → +15%  |  m30 = 0.10% → +30%
-          OBI = 0.12   →  +2.4%  |  OBI = 0.50  → +10%  |  OBI = 1.0  → +20%
-          fund > 0 (longs paient) → légère pression haussière (+max 5%)
+        Features XGBoost (doivent correspondre exactement à scripts/train_sprint_model.py) :
+          mom_30s   : momentum 30s depuis binance_ws.get_30s_momentum()
+          mom_60s   : momentum 60s depuis binance_ws.get_ns_momentum(60)
+          mom_300s  : momentum 300s depuis binance_ws.get_ns_momentum(300)
+          vol_60s   : vol réalisée 60s depuis binance_ws.get_ns_vol(60)
+          hour_sin  : encodage cyclique heure UTC (sin)
+          hour_cos  : encodage cyclique heure UTC (cos)
 
-        Returns: (p_true_up, mom, obi)
+        Returns: (p_true_up, mom_30s, obi)
         """
+        import datetime
         mom = 0.0
         obi = 0.0
+
         if self.binance_ws:
             ws_sym = f"{sym}USDT" if len(sym) <= 3 else sym
             mom = self.binance_ws.get_30s_momentum(ws_sym)
             obi = self.binance_ws.get_binance_obi(ws_sym)
 
+        # ── Upgrade 2 : inférence XGBoost ────────────────────────────────────
+        if self._sprint_model is not None and self.binance_ws is not None:
+            try:
+                import math, numpy as _np
+                ws_sym = f"{sym}USDT" if len(sym) <= 3 else sym
+                mom_30s  = mom   # déjà calculé ci-dessus
+                mom_60s  = self.binance_ws.get_ns_momentum(ws_sym, 60.0)
+                mom_300s = self.binance_ws.get_ns_momentum(ws_sym, 300.0)
+                vol_60s  = self.binance_ws.get_ns_vol(ws_sym, 60.0)
+                now_utc  = datetime.datetime.now(datetime.timezone.utc)
+                hour     = now_utc.hour + now_utc.minute / 60.0
+                hour_sin = math.sin(2 * math.pi * hour / 24.0)
+                hour_cos = math.cos(2 * math.pi * hour / 24.0)
+
+                X = _np.array([[
+                    mom_30s, mom_60s, mom_300s, vol_60s, hour_sin, hour_cos,
+                ]], dtype=_np.float32)
+
+                p_up = float(self._sprint_model.predict_proba(X)[0, 1])
+                p_up = max(0.05, min(0.95, p_up))
+
+                logger.debug(
+                    "[XGB] p_true=%.4f | mom30=%.4f mom60=%.4f mom300=%.4f "
+                    "vol60=%.3f h_sin=%.3f h_cos=%.3f",
+                    p_up, mom_30s, mom_60s, mom_300s, vol_60s, hour_sin, hour_cos,
+                )
+                return p_up, mom, obi
+
+            except Exception as e:
+                logger.debug("[XGB] Inférence échouée: %s — fallback linéaire", e)
+
+        # ── Fallback : modèle linéaire (legacy) ──────────────────────────────
         mom_contrib  = min(0.35, max(-0.35, mom  * 3.0))
         obi_contrib  = min(0.20, max(-0.20, obi  * 0.20))
         fund_contrib = min(0.05, max(-0.05, funding * 500.0))
-
         p_up = 0.50 + mom_contrib + obi_contrib + fund_contrib
         return min(0.95, max(0.05, p_up)), mom, obi
 

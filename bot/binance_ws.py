@@ -62,8 +62,9 @@ class BinanceWSClient(threading.Thread):
         # Funding rate (polled)
         self.btc_funding: float = 0.0
         self.eth_funding: float = 0.0
-        self.btc_history = collections.deque(maxlen=90)
-        self.eth_history = collections.deque(maxlen=90)
+        # Upgrade 2: étendu 90→400 pour couvrir 5min de 1s samples (XGBoost features)
+        self.btc_history = collections.deque(maxlen=400)
+        self.eth_history = collections.deque(maxlen=400)
         # Metadata
         self._last_update_ts: float = 0.0
         self._connected = False
@@ -117,6 +118,58 @@ class BinanceWSClient(threading.Thread):
             if oldest_mid > 0:
                 return (current_mid - oldest_mid) / oldest_mid * 100.0
             return 0.0
+
+    def get_ns_momentum(self, symbol: str, n_seconds: float) -> float:
+        """Momentum % sur une fenêtre de n_seconds.
+
+        Retourne (price_now - price_n_sec_ago) / price_n_sec_ago * 100.
+        Retourne 0.0 si l'historique est insuffisant (< n_seconds).
+        Utilisé par le modèle XGBoost : n=60, n=300.
+        """
+        sym = symbol.upper()
+        with self._lock:
+            history = self.btc_history if "BTC" in sym else self.eth_history
+            if not history or len(history) < 2:
+                return 0.0
+            current_ts, current_mid = history[-1]
+            target_ts = current_ts - n_seconds
+            if history[0][0] > target_ts:
+                return 0.0  # pas assez d'historique
+            ref_mid = history[0][1]
+            for ts, mid in history:
+                if ts >= target_ts:
+                    ref_mid = mid
+                    break
+            return (current_mid - ref_mid) / ref_mid * 100.0 if ref_mid > 0 else 0.0
+
+    def get_ns_vol(self, symbol: str, n_seconds: float) -> float:
+        """Volatilité réalisée annualisée sur une fenêtre de n_seconds.
+
+        Std des log-returns 1s × sqrt(31_536_000) — borné [0.10, 3.0].
+        Utilisé par le modèle XGBoost : n=60 (vol courte).
+        """
+        import math
+        sym = symbol.upper()
+        with self._lock:
+            history = self.btc_history if "BTC" in sym else self.eth_history
+            if not history or len(history) < 5:
+                return 0.60
+            current_ts = history[-1][0]
+            cutoff_ts  = current_ts - n_seconds
+            window = [(ts, mid) for ts, mid in history if ts >= cutoff_ts]
+        if len(window) < 5:
+            return 0.60
+        log_rets = []
+        for i in range(1, len(window)):
+            p0, p1 = window[i-1][1], window[i][1]
+            if p0 > 0 and p1 > 0:
+                log_rets.append(math.log(p1 / p0))
+        if not log_rets:
+            return 0.60
+        mean = sum(log_rets) / len(log_rets)
+        var  = sum((r - mean) ** 2 for r in log_rets) / len(log_rets)
+        ann  = math.sqrt(var) * math.sqrt(31_536_000)
+        return max(0.10, min(3.0, ann))
 
     @property
     def is_connected(self) -> bool:
