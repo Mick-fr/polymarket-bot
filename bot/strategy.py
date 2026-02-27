@@ -1443,6 +1443,13 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.warning("[V10.0 EDGE] Erreur pricing: %s — skip", e)
 
             if is_sprint and self.db:
+                # V23: Track max_edge AVANT les filtres spread/cooldown
+                # (sinon max_edge_found reste 0 car les marchés sont toujours en cooldown)
+                max_edge_found = max(max_edge_found, abs(edge_pct))
+                logger.info(
+                    "[SPRINT_EDGE] %s | p_poly=%.3f p_true=%.3f edge=%+.2f%% vol=%.2f",
+                    market.question[:40], p_poly, p_true, edge_pct, vol_5m
+                )
                 # V19: Buffered DB writes — tout dans un seul bloc lock (atomic)
                 with self._telemetry_lock:
                     self._telemetry_buffer["live_sprint_edge"] = round(edge_pct, 2)
@@ -1567,7 +1574,8 @@ class InfoEdgeStrategy(BaseStrategy):
                     logger.debug("[V10.3] %s ignoré (%.1fmin hors [%.1f,%.1f])", market.question[:20], minutes_to_expiry, min_minutes, self.MAX_MINUTES)
                 continue
 
-            if market.mid_price > 0 and (market.spread / market.mid_price) > 0.06:
+            # V23: Sprint markets exemptés du spread check (déjà force-inclus dans l'univers)
+            if not is_sprint and market.mid_price > 0 and (market.spread / market.mid_price) > 0.06:
                 logger.debug("[V10.3] %s ignoré (spread > 6%%)", market.question[:20])
                 continue
 
