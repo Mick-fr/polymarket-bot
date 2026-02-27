@@ -1288,7 +1288,17 @@ class InfoEdgeStrategy(BaseStrategy):
         Returns: (edge_pct, p_true, p_poly, vol_estimate)
         """
         sym = self._get_asset_symbol(market.question)
-        p_poly = market.mid_price  # probabilité Polymarket
+
+        # ── Upgrade 1 : p_poly depuis le CLOB WebSocket (temps réel) ────────────
+        # Fallback sur market.mid_price (Gamma API) si le WS n'a pas encore de book.
+        # Priorité : WS yes_token_id → WS no_token_id (inversé) → Gamma API stale.
+        p_poly = market.mid_price
+        if hasattr(self.client, 'ws_client') and self.client.ws_client.running:
+            _ws_mid = self.client.ws_client.get_midpoint(market.yes_token_id)
+            if _ws_mid is not None and 0.01 <= _ws_mid <= 0.99:
+                p_poly = _ws_mid
+                logger.debug("[CLOB_WS] p_poly live %.4f (vs Gamma %.4f) pour %s",
+                             _ws_mid, market.mid_price, market.yes_token_id[:16])
 
         # Prix spot Binance live
         spot = 0.0
@@ -1447,7 +1457,13 @@ class InfoEdgeStrategy(BaseStrategy):
             
             # Sprint = BTC + expire dans moins de 5.5 minutes (et pas déjà expiré)
             is_sprint = is_btc and (0 < minutes_to_expiry <= 5.5)
-            
+
+            # ── Upgrade 1 : abonnement dynamique CLOB WS pour les sprints ──────
+            # Les sprint markets apparaissent en cours de session via fetch_sprint_targets().
+            # Ils ne sont pas dans active_markets au démarrage → subscribe maintenant.
+            if is_sprint and hasattr(self.client, 'ws_client'):
+                self.client.ws_client.subscribe_tokens([token_yes, token_no])
+
             # ── V15.2 Real Edge Score computed for EVERY sprint tick ────
             edge_pct, p_true, p_poly, vol_5m = 0.0, 0.0, 0.0, 0.0
             try:

@@ -94,6 +94,30 @@ class PolymarketWSClient:
         )
         self.thread.start()
 
+    def subscribe_tokens(self, token_ids: list[str]) -> None:
+        """Souscrit dynamiquement de nouveaux tokens sans redémarrer le WS.
+
+        Envoie un message de souscription supplémentaire si la connexion est
+        active. Les tokens déjà suivis sont ignorés (idempotent).
+        Utilisé pour les sprint markets qui apparaissent en cours de session.
+        """
+        with self._lock:
+            new_tokens = [t for t in token_ids if t and t not in self.active_markets]
+            if not new_tokens:
+                return
+            for t in new_tokens:
+                self.orderbooks[t] = {"bids": {}, "asks": {}, "mid": 0.0}
+            self.active_markets.update(new_tokens)
+            ws_alive = self.running and self.ws is not None
+
+        if ws_alive:
+            try:
+                self.ws.send(json.dumps({"assets_ids": new_tokens, "type": "market"}))
+                logger.info("[PolyWS] +%d token(s) subscribés dynamiquement: %s…",
+                            len(new_tokens), new_tokens[0][:16])
+            except Exception as e:
+                logger.warning("[PolyWS] subscribe_tokens envoi échoué: %s", e)
+
     def stop(self):
         with self._lock:
             self.running = False
