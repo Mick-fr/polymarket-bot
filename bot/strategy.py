@@ -1356,7 +1356,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
         # ── Upgrade 1 : p_poly depuis le CLOB WebSocket (temps réel) ────────────
         # Fallback sur market.mid_price (Gamma API) si le WS n'a pas encore de book.
-        # Priorité : WS yes_token_id → WS no_token_id (inversé) → Gamma API stale.
+        # Priorité : WS yes_token_id → WS no_token_id (inversé) → DB NO token → Gamma API stale.
         p_poly = market.mid_price
         if hasattr(self.client, 'ws_client') and self.client.ws_client.running:
             _ws_mid = self.client.ws_client.get_midpoint(market.yes_token_id)
@@ -1364,6 +1364,26 @@ class InfoEdgeStrategy(BaseStrategy):
                 p_poly = _ws_mid
                 logger.debug("[CLOB_WS] p_poly live %.4f (vs Gamma %.4f) pour %s",
                              _ws_mid, market.mid_price, market.yes_token_id[:16])
+
+        # V24b: si p_poly est encore au défaut 0.5 (stale Gamma), essayer le DB
+        # current_mid du token NO pour déduite le mid YES (1 - mid_NO).
+        # Cas typique : marché sprint nouveau, WS book pas encore reçu, mais position NO
+        # déjà suivie par _refresh_inventory_mids() avec un mid API frais.
+        if abs(p_poly - 0.5) < 1e-6 and self.db:
+            _no_tid = getattr(market, "no_token_id", "")
+            if _no_tid:
+                try:
+                    _pos = self.db.get_position_row(_no_tid)
+                    if _pos and _pos.get("current_mid"):
+                        _no_mid = float(_pos["current_mid"])
+                        if 0.01 <= _no_mid <= 0.99:
+                            p_poly = 1.0 - _no_mid
+                            logger.debug(
+                                "[P_POLY] DB fallback NO-token %.4f → p_poly(YES)=%.4f %s",
+                                _no_mid, p_poly, _no_tid[:16],
+                            )
+                except Exception:
+                    pass
 
         # Prix spot Binance live
         spot = 0.0

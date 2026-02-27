@@ -1210,6 +1210,13 @@ class Trader:
                         )
                 else:
                     self._tpsl_zombie_errors.pop(token_id, None)
+                    # V24b: FOK 400 → bloquer re-entrée strategy 10 min
+                    # Évite de pyramider sur une position en SL qu'on ne peut pas vendre.
+                    if "400" in err_s and self.strategy and hasattr(self.strategy, "_last_quote_ts"):
+                        self.strategy._last_quote_ts[token_id] = time.time() + 600.0
+                        logger.warning(
+                            "[TP/SL] FOK 400 → re-entrée bloquée 10min %s", token_id[:16]
+                        )
                     logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
 
     # ── Upgrade 3 — Sprint maker cancel-replace watcher ──────────────────────────
