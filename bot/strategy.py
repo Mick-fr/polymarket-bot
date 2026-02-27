@@ -1137,6 +1137,15 @@ class InfoEdgeStrategy(BaseStrategy):
         self._sprint_feature_cols = []
         self._load_sprint_model()
 
+        # ── V25: REST CLOB poll pour p_poly frais sur sprints frais ──────────
+        # WS book vide pendant ~30-60s après l'ouverture d'un sprint → stale 0.5.
+        # Un thread daemon poll GET /book?token_id=X toutes les 5s et met à jour
+        # ce cache. _calculate_edge_score l'utilise en priorité 2 (après WS).
+        self._rest_clob_mid_cache: dict   = {}   # token_id → (mid, timestamp)
+        self._rest_clob_poll_tokens: set  = set()
+        self._rest_clob_running:    bool  = False
+        self._start_rest_clob_poller()
+
     def _load_sprint_model(self) -> None:
         """Charge le modèle XGBoost depuis bot/models/sprint_xgb.pkl (si présent).
 
@@ -1157,6 +1166,52 @@ class InfoEdgeStrategy(BaseStrategy):
                         len(self._sprint_feature_cols), self._sprint_feature_cols)
         except Exception as e:
             logger.warning("[XGB] Échec chargement modèle sprint: %s — fallback linéaire.", e)
+
+    def _start_rest_clob_poller(self) -> None:
+        """V25: Lance un thread daemon qui poll le book REST CLOB toutes les 5s.
+
+        Objectif : obtenir un p_poly frais pour les sprints qui viennent d'ouvrir
+        (WS book vide pendant les 30-60 premières secondes).
+        Endpoint utilisé : GET https://clob.polymarket.com/book?token_id=<id>
+        Auth non requise pour la lecture du book.
+        """
+        import threading as _threading
+        self._rest_clob_running = True
+
+        def _loop():
+            while self._rest_clob_running:
+                try:
+                    tokens = list(self._rest_clob_poll_tokens)
+                    for token_id in tokens:
+                        self._poll_rest_clob_one(token_id)
+                except Exception:
+                    pass
+                time.sleep(5.0)
+
+        t = _threading.Thread(target=_loop, daemon=True, name="RestClobPoller")
+        t.start()
+        logger.debug("[V25 RestPoller] Démarré — poll 5s des tokens sprint actifs")
+
+    def _poll_rest_clob_one(self, token_id: str) -> None:
+        """Fetche le mid REST CLOB pour un token et met à jour le cache."""
+        try:
+            url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            resp = requests.get(url, timeout=3.0)
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            if bids and asks:
+                best_bid = float(bids[0]["price"])
+                best_ask = float(asks[0]["price"])
+                mid = (best_bid + best_ask) / 2.0
+                if 0.01 <= mid <= 0.99:
+                    self._rest_clob_mid_cache[token_id] = (mid, time.time())
+                    logger.debug("[V25 RestPoller] %s mid=%.4f (bid=%.3f ask=%.3f)",
+                                 token_id[:16], mid, best_bid, best_ask)
+        except Exception:
+            pass
 
     def _check_market_streaks(self) -> bool:
         """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
@@ -1365,6 +1420,17 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.debug("[CLOB_WS] p_poly live %.4f (vs Gamma %.4f) pour %s",
                              _ws_mid, market.mid_price, market.yes_token_id[:16])
 
+        # V25: REST CLOB cache — warm-up sprints frais (WS pas encore warm, TTL 10s)
+        # Priorité : WS live → REST poll 5s → DB NO fallback → Gamma stale
+        if abs(p_poly - 0.5) < 1e-6:
+            _rest_entry = self._rest_clob_mid_cache.get(market.yes_token_id)
+            if _rest_entry:
+                _rest_mid, _rest_ts = _rest_entry
+                if time.time() - _rest_ts <= 10.0:
+                    p_poly = _rest_mid
+                    logger.debug("[V25 P_POLY] REST cache %.4f pour %s",
+                                 p_poly, market.yes_token_id[:16])
+
         # V24b: si p_poly est encore au défaut 0.5 (stale Gamma), essayer le DB
         # current_mid du token NO pour déduite le mid YES (1 - mid_NO).
         # Cas typique : marché sprint nouveau, WS book pas encore reçu, mais position NO
@@ -1550,6 +1616,11 @@ class InfoEdgeStrategy(BaseStrategy):
             # Ils ne sont pas dans active_markets au démarrage → subscribe maintenant.
             if is_sprint and hasattr(self.client, 'ws_client'):
                 self.client.ws_client.subscribe_tokens([token_yes, token_no])
+
+            # V25: enregistrer pour REST CLOB poll (p_poly frais dès t=0)
+            if is_sprint and token_yes and token_no:
+                self._rest_clob_poll_tokens.add(token_yes)
+                self._rest_clob_poll_tokens.add(token_no)
 
             # ── V15.2 Real Edge Score computed for EVERY sprint tick ────
             edge_pct, p_true, p_poly, vol_5m = 0.0, 0.0, 0.0, 0.0
@@ -1750,6 +1821,13 @@ class InfoEdgeStrategy(BaseStrategy):
                 abs_obi_v22   = abs(o_val)
                 time_left_sec = minutes_to_expiry * 60.0  # min → secondes
 
+                # V25: plancher d'entrée — pas d'entrée avec < 25s restantes.
+                # Avec < 25s : spread large, p_poly figé à 0.99/0.01, book quasi vide.
+                # On ne peut pas sortir profitablement → risque asymétrique total.
+                if time_left_sec < 25.0:
+                    logger.debug("[V25] Entrée rejetée: t=%.0fs < 25s min", time_left_sec)
+                    continue
+
                 # ── Direction helpers ─────────────────────────────────────
                 #
                 # Bug V20 corrigé : dir_ok_mom n'a de sens que si mom dépasse
@@ -1907,7 +1985,12 @@ class InfoEdgeStrategy(BaseStrategy):
                         sizing_penalty *= conf["sniper_sizing_mult"]
                         sniper_applied  = True
 
-                    base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
+                    # V25: Kelly dynamique — proportionnel à l'edge
+                    # edge = 1×tedge_gate (3%) → kelly_mult 0.5×
+                    # edge = 2×tedge_gate (6%) → kelly_mult 1.0×
+                    # edge ≥ 4×tedge_gate (12%) → kelly_mult 1.5× (cap)
+                    kelly_mult = min(1.5, max(0.5, abs_edge_v22 / (conf["tedge_gate"] * 2.0)))
+                    base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty * kelly_mult
                     order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
                     # V23: market orders → size = USDC (pas shares).
                     # place_market_order(amount=signal.size) attend des USDC.
@@ -1920,6 +2003,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         penalty_detail.append(f"streak×{conf['anti_streak_penalty']}")
                     if sniper_applied:
                         penalty_detail.append(f"sniper×{conf['sniper_sizing_mult']}")
+                    penalty_detail.append(f"kelly×{kelly_mult:.2f}")
                     penalty_str = ("×".join([""] + penalty_detail) if penalty_detail else "×1.0")
                     direction = "YES" if side == "buy" else "NO"
                     logger.info(

@@ -104,6 +104,10 @@ class Trader:
         # arrive avant que start() ait chargé la stratégie info_edge.
         self.info_edge_strategy = None
 
+        # V25: cache end_date_ts des tokens sprint pour le exit forcé pré-expiration.
+        # {token_id: end_date_ts} — peuplé par _maintenance_loop depuis universe cache.
+        self._sprint_expiry_cache: dict = {}
+
     def start(self):
         """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
         # V15 Log Silencing
@@ -600,6 +604,10 @@ class Trader:
                 is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
                 if is_btc and minutes_to_expiry <= 5.5:
                     sprint_ids.append(m.market_id)
+                    # V25: cache end_date_ts pour exit forcé pré-expiration
+                    if m.end_date_ts > 0:
+                        self._sprint_expiry_cache[m.yes_token_id] = m.end_date_ts
+                        self._sprint_expiry_cache[m.no_token_id]  = m.end_date_ts
             self.active_targets = sprint_ids
 
         # 4.a V14.0 Anti-Stale AI Sentiment isolation
@@ -1001,7 +1009,13 @@ class Trader:
                 continue  # pas encore de données WS → 60s chrono prend le relais
 
             ratio = mid_ws / avg
-            if ratio >= TP_RATIO:
+
+            # V25: exit forcé à t<12s — liquider avant expiration (spread OK encore)
+            _exp_ts  = self._sprint_expiry_cache.get(token_id, 0.0)
+            _secs_left = (_exp_ts - now) if _exp_ts > 0 else 9999.0
+            if _secs_left < 12.0:
+                reason = f"EXPIRY_EXIT(t={_secs_left:.0f}s)"
+            elif ratio >= TP_RATIO:
                 reason = f"TP×{ratio:.2f}"
             elif ratio <= SL_RATIO:
                 reason = f"SL×{ratio:.2f}"
@@ -1147,7 +1161,13 @@ class Trader:
                 continue
 
             ratio = mid / avg
-            if ratio >= TP_RATIO:
+
+            # V25: exit forcé à t<12s — liquider avant expiration
+            _exp_ts_slow    = self._sprint_expiry_cache.get(token_id, 0.0)
+            _secs_left_slow = (_exp_ts_slow - time.time()) if _exp_ts_slow > 0 else 9999.0
+            if _secs_left_slow < 12.0:
+                reason = f"EXPIRY_EXIT(t={_secs_left_slow:.0f}s)"
+            elif ratio >= TP_RATIO:
                 reason = f"TP×{ratio:.2f}"
             elif ratio <= SL_RATIO:
                 reason = f"SL×{ratio:.2f}"
