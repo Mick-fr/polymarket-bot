@@ -1593,6 +1593,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     "tedge_gate":           3.0,   # [2.0–4.0]   % edge min voie standard
                     "tmom":                 0.005, # [0.003–0.01] % mom_30s min pour confirmer
                     "tmom_dir_min":         0.001, # [0.001–0.003] % sous ce seuil → direction mom = bruit
+                    "standard_max_time_sec": 180,  # [120–250]   entrée standard max 3 min avant ref price
 
                     # ── Sniper A : haute conviction + fenêtre serrée ───────
                     "sniper_edge_a":        8.0,   # [6.0–10.0]  % edge min
@@ -1650,11 +1651,12 @@ class InfoEdgeStrategy(BaseStrategy):
 
                 # ── Évaluation des 3 paths (hiérarchique) ─────────────────
 
-                # Path 1 — Standard : momentum + direction cohérente
+                # Path 1 — Standard : momentum + direction cohérente + fenêtre temporelle
                 standard_pass = (
                     abs_edge_v22 >= conf["tedge_gate"]
                     and abs_mom_v22  >= conf["tmom"]
                     and dir_ok_mom
+                    and time_left_sec <= conf["standard_max_time_sec"]
                 )
 
                 # Path 2 — Sniper A : haute conviction, fenêtre temporelle serrée
