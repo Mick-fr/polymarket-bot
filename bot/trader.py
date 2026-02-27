@@ -100,6 +100,10 @@ class Trader:
         # Après 3×404, la position est zeroed en DB (zombie detection).
         self._tpsl_zombie_errors:  dict  = {}     # token_id → int
 
+        # Pré-initialisé à None pour éviter AttributeError si un tick WS Binance
+        # arrive avant que start() ait chargé la stratégie info_edge.
+        self.info_edge_strategy = None
+
     def start(self):
         """Lance la boucle principale et bloque le thread (jusqu'a CTRL-C)."""
         # V15 Log Silencing
