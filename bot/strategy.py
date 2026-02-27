@@ -1574,79 +1574,245 @@ class InfoEdgeStrategy(BaseStrategy):
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
 
-            # --- Trading Gate Sprint (V20) : Edge-primary + Mom direction ---
+            # --- Trading Gate Sprint (V22) : Standard + Sniper Override ---
             if is_sprint:
-                # Gate V20 : le modèle directionnel (edge) incorpore DÉJÀ OBI.
-                # Exiger un OBI indépendant > seuil est un double-comptage qui bloque.
-                # Nouveau critère :
-                #   1. abs(edge_pct) >= tedge_gate → signal combiné mom+OBI suffisamment fort
-                #   2. abs(m30) >= tmom            → momentum non-nul confirme le mouvement
-                #   3. sign(edge) == sign(m30)     → les deux signaux s'accordent sur la direction
-                tmom = 0.005       # 0.5 bps en 30s (~$3 sur BTC $67k) — minimum non-nul
-                tedge_gate = 3.0   # 3% edge — distribution observée cluster 2-4%, 4% trop haut
 
-                side = None
-                if abs(edge_pct) >= tedge_gate and abs(m30) >= tmom:
-                    if edge_pct > 0 and m30 > 0:
-                        side = "buy"   # modèle dit UP, momentum confirme UP
-                    elif edge_pct < 0 and m30 < 0:
-                        side = "sell"  # modèle dit DOWN, momentum confirme DOWN
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # PARAMÈTRES V22 — Tuner uniquement ici
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                conf = {
+                    # Standard path
+                    "tedge_gate":          3.0,   # [2.0–4.0]   % edge min voie standard
+                    "tmom":                0.005, # [0.003–0.01] % mom_30s min pour confirmer
+                    "tmom_dir_min":        0.001, # [0.001–0.003] % sous ce seuil → direction mom = bruit
 
-                # V14.1 Radar Log Consolidation
+                    # Sniper A : haute conviction + fenêtre serrée (dernières 2.5 min)
+                    "sniper_edge_a":       8.0,   # [6.0–10.0]  % edge min
+                    "sniper_obi_a":        0.65,  # [0.50–0.80] OBI abs min
+                    "sniper_time_a_sec":   150,   # [90–200]    secondes restantes max
+
+                    # Sniper B : ultra conviction + fenêtre large (quasi tout le sprint)
+                    # Capture les setups type edge=13.75% / OBI=0.85 bloqués par mom faible
+                    "sniper_edge_b":       12.0,  # [10.0–16.0] % edge min
+                    "sniper_obi_b":        0.50,  # [0.40–0.70] OBI abs min
+                    "sniper_time_b_sec":   300,   # [200–330]   secondes restantes max
+
+                    # Sizing
+                    "sniper_sizing_mult":  0.80,  # [0.75–0.90] ×0.80 = −20% vs standard
+
+                    # Anti-spam
+                    "sniper_cooldown_sec": 300,   # [180–600]   1 sniper max par market_id
+                }
+
+                # ── Variables locales ─────────────────────────────────────
+                abs_edge_v22  = abs(edge_pct)
+                abs_mom_v22   = abs(m30)
+                abs_obi_v22   = abs(o_val)
+                time_left_sec = minutes_to_expiry * 60.0  # min → secondes
+
+                # ── Direction helpers ─────────────────────────────────────
+                #
+                # Bug V20 corrigé : dir_ok_mom n'a de sens que si mom dépasse
+                # le seuil de bruit tmom_dir_min. En dessous, le signe est
+                # aléatoire (microstructure noise). On l'invalide explicitement.
+                #
+                mom_is_meaningful = abs_mom_v22 >= conf["tmom_dir_min"]
+                dir_ok_mom = mom_is_meaningful and (
+                    (edge_pct > 0 and m30 > 0) or (edge_pct < 0 and m30 < 0)
+                )
+
+                # dir_ok_obi : OBI remplace mom pour la confirmation directionnelle
+                # dans les voies sniper. OBI < 0.01 = bruit de microstructure.
+                obi_is_meaningful = abs_obi_v22 >= 0.01
+                dir_ok_obi = obi_is_meaningful and (
+                    (edge_pct > 0 and o_val > 0) or (edge_pct < 0 and o_val < 0)
+                )
+
+                # ── Évaluation des 3 paths (hiérarchique) ─────────────────
+
+                # Path 1 — Standard : momentum + direction cohérente
+                standard_pass = (
+                    abs_edge_v22 >= conf["tedge_gate"]
+                    and abs_mom_v22  >= conf["tmom"]
+                    and dir_ok_mom
+                )
+
+                # Path 2 — Sniper A : haute conviction, fenêtre temporelle serrée
+                # OBI confirme la direction à la place du momentum.
+                sniper_a_pass = (
+                    abs_edge_v22     >= conf["sniper_edge_a"]
+                    and abs_obi_v22  >= conf["sniper_obi_a"]
+                    and time_left_sec <= conf["sniper_time_a_sec"]
+                    and dir_ok_obi
+                )
+
+                # Path B — Sniper B : ultra conviction, fenêtre large.
+                # Cible les setups edge ≥ 12% + OBI fort bloqués uniquement
+                # par mom faible (ex: near-miss 08:01:45 edge=+13.75% OBI=+0.85).
+                sniper_b_pass = (
+                    abs_edge_v22     >= conf["sniper_edge_b"]
+                    and abs_obi_v22  >= conf["sniper_obi_b"]
+                    and time_left_sec <= conf["sniper_time_b_sec"]
+                    and dir_ok_obi
+                )
+
+                # ── Anti-spam Sniper ──────────────────────────────────────
+                # Limite à 1 sniper par market_id sur toute sa durée de vie.
+                # Lazy-init cohérent avec le reste de la classe.
+                now_ts = time.time()
+                if not hasattr(self, '_sniper_anti_spam'):
+                    self._sniper_anti_spam: dict = {}
+                # Purge des entrées expirées (évite la fuite mémoire sur longue session)
+                self._sniper_anti_spam = {
+                    k: v for k, v in self._sniper_anti_spam.items()
+                    if now_ts - v < conf["sniper_cooldown_sec"]
+                }
+                sniper_already_fired = market.market_id in self._sniper_anti_spam
+
+                # ── Décision finale (hiérarchique : Standard > Sniper B > Sniper A) ──
+                side        = None
+                fire_reason = None
+                is_sniper   = False
+
+                if standard_pass:
+                    side        = "buy" if edge_pct > 0 else "sell"
+                    fire_reason = "STANDARD_MOM_FLOW"
+                    is_sniper   = False
+
+                elif sniper_b_pass and not sniper_already_fired:
+                    # Sniper B évalué avant A (conviction plus haute = prioritaire)
+                    side        = "buy" if edge_pct > 0 else "sell"
+                    fire_reason = "SNIPER_B_ULTRA_TRIGGERED"
+                    is_sniper   = True
+                    self._sniper_anti_spam[market.market_id] = now_ts
+
+                elif sniper_a_pass and not sniper_already_fired:
+                    side        = "buy" if edge_pct > 0 else "sell"
+                    fire_reason = "SNIPER_A_HIGH_TRIGGERED"
+                    is_sniper   = True
+                    self._sniper_anti_spam[market.market_id] = now_ts
+
+                # ── PULSE LOG (throttled 2s) ──────────────────────────────
                 now = time.time()
                 if not hasattr(self, '_last_pulse_ts'):
                     self._last_pulse_ts = 0.0
                 if now - self._last_pulse_ts > 2.0:
                     spot = self.binance_ws.get_mid("BTCUSDT") if self.binance_ws else 0.0
-                    logger.info("PULSE | Spot: %.2f | Mom: %.4f%% | OBI: %.3f | Edge: %.2f%%",
-                                spot, m30, o_val, edge_pct)
+                    logger.info(
+                        "[PULSE V22] Spot=%.2f | Mom=%+.4f%% | OBI=%+.3f | Edge=%+.2f%% | "
+                        "t=%.0fs | Std=%s | SA=%s | SB=%s | dir_mom=%s | dir_obi=%s",
+                        spot, m30, o_val, edge_pct, time_left_sec,
+                        "✓" if standard_pass  else "✗",
+                        "✓" if sniper_a_pass  else "✗",
+                        "✓" if sniper_b_pass  else "✗",
+                        "✓" if dir_ok_mom     else "✗",
+                        "✓" if dir_ok_obi     else "✗",
+                    )
                     self._last_pulse_ts = now
-                
+
+                # ── FIRE ──────────────────────────────────────────────────
                 if side:
-                    logger.info("🔥 [FIRE] %s | Mom=%.4f%% OBI=%.3f Edge=%.1f%% | market=%s",
-                                side.upper(), m30, o_val, edge_pct, market.market_id[:8])
-                    max_edge_found = max(max_edge_found, abs(edge_pct))
-                    
+                    logger.info(
+                        "🔥 [FIRE V22] %s | %s | Edge=%+.2f%% Mom=%+.4f%% OBI=%+.3f | "
+                        "t_left=%.0fs | market=%s",
+                        side.upper(), fire_reason,
+                        edge_pct, m30, o_val, time_left_sec, market.market_id[:8],
+                    )
+                    max_edge_found = max(max_edge_found, abs_edge_v22)
+
+                    # ── Sizing ────────────────────────────────────────────
                     sizing_penalty = 1.0
-                    # V17.0: Filtre Anti-Streak
+
+                    # Anti-Streak V17 (inchangé, appliqué en premier)
                     if side == "buy" and is_btc and self._check_market_streaks():
-                        sizing_penalty = 0.5
-                        logger.warning("[V17.0] ANTI-STREAK: 3 derniers BTC UP -> Sizing -50% sur %s", market.market_id[:6])
-                        
+                        sizing_penalty *= 0.5
+                        logger.warning(
+                            "[V17.0] ANTI-STREAK: 3 BTC UP consécutifs → sizing ×0.5 | %s",
+                            market.market_id[:6],
+                        )
+
+                    # Sniper sizing : pas de confirmation momentum → position réduite
+                    # S'applique en plus de l'anti-streak (multiplicatif)
+                    if is_sniper:
+                        sizing_penalty *= conf["sniper_sizing_mult"]
+                        logger.info(
+                            "[V22] SNIPER sizing ×%.2f | penalty_total=×%.2f",
+                            conf["sniper_sizing_mult"], sizing_penalty,
+                        )
+
                     base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty
                     order_size = min(base_order * 2.8, portfolio * 0.06, self.MAX_ORDER_USDC)
-                    shares = max(5.0, order_size / 0.50)
+                    shares     = max(5.0, order_size / 0.50)
 
                     signals.append(Signal(
                         token_id=token_yes if side == "buy" else token_no,
                         market_id=market.market_id,
                         market_question=market.question,
-                        side=side,          # "buy" (YES) ou "sell" (buy NO)
+                        side=side,
                         order_type="market",
-                        price=0.99,         # Ordre quasi au marché
+                        price=0.99,
                         size=round(shares, 2),
                         confidence=0.99,
-                        reason=f"V13 FIRE: M={m30:.4f} O={o_val:.2f} E={edge_pct:.1f}%",
+                        reason=(
+                            f"V22 {fire_reason}: "
+                            f"E={edge_pct:+.1f}% M={m30:+.4f}% O={o_val:+.3f} t={time_left_sec:.0f}s"
+                        ),
                         mid_price=0.50,
                         spread_at_signal=0.01,
                     ))
-                    
-                    # V13 Optimization: Only log to DB if we are not in rapid-fire mode to save MS
+
                     if self.db and not target_market_ids:
-                        spot_price = live_spot if 'live_spot' in locals() else 0.0
-                        self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Mom: {m30:+.3f}% | Dec: <span class='text-green-400 font-bold'>{side.upper()}</span>")
+                        spot_price = live_spot if "live_spot" in locals() else 0.0
+                        sniper_tag = (
+                            f" <span class='text-yellow-400 font-bold'>[{fire_reason}]</span>"
+                            if is_sniper else ""
+                        )
+                        self.db.add_log(
+                            "INFO", "sniper_feed",
+                            f"{market.question[:25]}... | Spot:{spot_price:.0f}$ | "
+                            f"Edge:{edge_pct:+.1f}% Mom:{m30:+.3f}% | "
+                            f"<span class='text-green-400 font-bold'>{side.upper()}</span>{sniper_tag}"
+                        )
+
                 else:
-                    if self.db and not target_market_ids:
-                        spot_price = live_spot if 'live_spot' in locals() else 0.0
-                        # V16.0 Only log interesting PASSes into GUI (edge > 2%) to reduce spam
-                        if abs(edge_pct) > 2.0:
-                            self.db.add_log("INFO", "sniper_feed", f"{market.question[:25]}... | Spot: {spot_price:.2f}$ | Poly BP | Mom: {m30:+.3f}% | Dec: <span class='text-slate-500'>PASS</span>")
-                
+                    # PASS LOG — uniquement si edge > 2% (évite le spam sur setups triviaux)
+                    if abs_edge_v22 > 2.0 and self.db and not target_market_ids:
+                        spot_price = live_spot if "live_spot" in locals() else 0.0
+
+                        # Raison de blocage la plus précise possible
+                        if abs_edge_v22 < conf["tedge_gate"]:
+                            block = f"EDGE_LOW({abs_edge_v22:.1f}%)"
+                        elif abs_mom_v22 < conf["tmom"] and abs_edge_v22 < conf["sniper_edge_a"]:
+                            block = f"MOM_WEAK({abs_mom_v22:.4f}%)"
+                        elif not dir_ok_mom and not dir_ok_obi:
+                            e_dir = "UP" if edge_pct > 0 else "DN"
+                            m_dir = "UP" if m30 > 0 else ("DN" if m30 < 0 else "FLAT")
+                            o_dir = "UP" if o_val > 0 else ("DN" if o_val < 0 else "FLAT")
+                            block = f"DIR_CONFLICT(E={e_dir},M={m_dir},O={o_dir})"
+                        elif sniper_already_fired:
+                            block = "SNIPER_COOLDOWN"
+                        elif abs_edge_v22 >= conf["sniper_edge_a"] and not dir_ok_obi:
+                            block = f"SNIPER_DIR_OBI_FAIL(obi={o_val:+.3f})"
+                        elif abs_edge_v22 >= conf["sniper_edge_a"] and time_left_sec > conf["sniper_time_b_sec"]:
+                            block = f"SNIPER_TOO_EARLY(t={time_left_sec:.0f}s)"
+                        elif abs_edge_v22 >= conf["sniper_edge_a"] and abs_obi_v22 < conf["sniper_obi_b"]:
+                            block = f"SNIPER_OBI_LOW({abs_obi_v22:.3f}<{conf['sniper_obi_b']})"
+                        else:
+                            block = f"MOM_WEAK({abs_mom_v22:.4f}%)"
+
+                        self.db.add_log(
+                            "INFO", "sniper_feed",
+                            f"{market.question[:25]}... | Spot:{spot_price:.0f}$ | "
+                            f"Edge:{edge_pct:+.1f}% Mom:{m30:+.3f}% OBI:{o_val:+.3f} | "
+                            f"<span class='text-slate-500'>PASS [{block}]</span>"
+                        )
+
+                # ── Bookkeeping (inchangé) ────────────────────────────────
                 min_spread_found = min(min_spread_found, market.spread if market.spread > 0 else 0.01)
-                daily_edge_scores.append(abs(edge_pct))  # inclure les sprints dans avg_edge
-                max_edge_found = max(max_edge_found, abs(edge_pct))
-                continue # Bypass complet
-            # ----------------------------------------
+                daily_edge_scores.append(abs_edge_v22)
+                max_edge_found = max(max_edge_found, abs_edge_v22)
+                continue  # bypass complet du pipeline MM standard
+            # ---------------------------------------------------------------
 
             abs_edge = abs(edge_pct)
 
