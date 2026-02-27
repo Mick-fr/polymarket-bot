@@ -271,8 +271,8 @@ class RiskManager:
                     btc_eth_expo += qty * mid
             
             new_expo = btc_eth_expo + order_cost
-            if cb_value > 0 and (new_expo / cb_value) > 0.12:
-                 return RiskVerdict(False, f"BTC/ETH Limit reached: {new_expo:.2f} USDC > 12%", "cancel_bids")
+            if cb_value > 0 and (new_expo / cb_value) > 0.20:
+                 return RiskVerdict(False, f"BTC/ETH Limit reached: {new_expo:.2f} USDC > 20%", "cancel_bids")
 
         logger.debug(
             "Risque OK: %s %s @ %s – coût %.2f USDC, perte jour %.2f",
