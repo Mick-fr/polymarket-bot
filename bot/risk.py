@@ -266,8 +266,8 @@ class RiskManager:
             for p in positions:
                 pq_lo = p.get("question", "").lower()
                 if "btc" in pq_lo or "bitcoin" in pq_lo or "eth" in pq_lo or "ethereum" in pq_lo:
-                    qty = p.get("quantity", 0.0)
-                    mid = p.get("current_mid", p.get("avg_price", 0.0))
+                    qty = float(p.get("quantity") or 0.0)
+                    mid = float(p.get("current_mid") or p.get("avg_price") or 0.0)
                     btc_eth_expo += qty * mid
             
             new_expo = btc_eth_expo + order_cost
