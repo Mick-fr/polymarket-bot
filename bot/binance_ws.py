@@ -131,8 +131,9 @@ class BinanceWSClient(threading.Thread):
         if "BTC" not in sym:
             return 0.0
         cutoff = time.time() - n_seconds
-        # deque thread-safe pour lecture (pas de copie coûteuse)
-        window = [(ts, d) for ts, d in self.btc_cvd_history if ts >= cutoff]
+        # Copie atomique avant itération — évite RuntimeError: deque mutated during iteration
+        _snap = list(self.btc_cvd_history)
+        window = [(ts, d) for ts, d in _snap if ts >= cutoff]
         if len(window) < 10:
             return 0.0
         buy_vol  = sum(d for _, d in window if d > 0)

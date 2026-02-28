@@ -1212,20 +1212,29 @@ class InfoEdgeStrategy(BaseStrategy):
             url = f"https://clob.polymarket.com/book?token_id={token_id}"
             resp = requests.get(url, timeout=3.0)
             if resp.status_code != 200:
+                logger.warning("[RestPoller] HTTP %d pour token %s — CLOB inaccessible?",
+                               resp.status_code, token_id[:16])
                 return
             data = resp.json()
             bids = data.get("bids", [])
             asks = data.get("asks", [])
-            if bids and asks:
-                best_bid = float(bids[0]["price"])
-                best_ask = float(asks[0]["price"])
-                mid = (best_bid + best_ask) / 2.0
-                if 0.01 <= mid <= 0.99:
-                    self._rest_clob_mid_cache[token_id] = (mid, time.time())
-                    logger.debug("[V25 RestPoller] %s mid=%.4f (bid=%.3f ask=%.3f)",
-                                 token_id[:16], mid, best_bid, best_ask)
-        except Exception:
-            pass
+            if not bids or not asks:
+                logger.debug("[RestPoller] Book vide pour %s (bids=%d asks=%d)",
+                             token_id[:16], len(bids), len(asks))
+                return
+            best_bid = float(bids[0]["price"])
+            best_ask = float(asks[0]["price"])
+            mid = (best_bid + best_ask) / 2.0
+            if 0.01 <= mid <= 0.99:
+                self._rest_clob_mid_cache[token_id] = (mid, time.time())
+                logger.debug("[V25 RestPoller] %s mid=%.4f (bid=%.3f ask=%.3f)",
+                             token_id[:16], mid, best_bid, best_ask)
+            else:
+                logger.debug("[RestPoller] mid hors range [%.3f] pour %s", mid, token_id[:16])
+        except requests.exceptions.Timeout:
+            logger.warning("[RestPoller] Timeout 3s pour token %s", token_id[:16])
+        except Exception as e:
+            logger.warning("[RestPoller] Erreur inattendue pour %s: %s", token_id[:16], e)
 
     def _check_market_streaks(self) -> bool:
         """V17.0 Anti-Streak: Check if the last 3 BTC sprint trades resolved as UP."""
@@ -1459,16 +1468,28 @@ class InfoEdgeStrategy(BaseStrategy):
                 logger.debug("[CLOB_WS] p_poly live %.4f (vs Gamma %.4f) pour %s",
                              _ws_mid, market.mid_price, market.yes_token_id[:16])
 
-        # V25: REST CLOB cache — warm-up sprints frais (WS pas encore warm, TTL 10s)
+        # V25: REST CLOB cache — warm-up sprints frais (WS pas encore warm, TTL 30s)
         # Priorité : WS live → REST poll 5s → DB NO fallback → Gamma stale
         if abs(p_poly - 0.5) < 1e-6:
-            _rest_entry = self._rest_clob_mid_cache.get(market.yes_token_id)
+            _rest_entry = (self._rest_clob_mid_cache.get(market.yes_token_id)
+                           or self._rest_clob_mid_cache.get(
+                               getattr(market, "no_token_id", "")))
             if _rest_entry:
-                _rest_mid, _rest_ts = _rest_entry
-                if time.time() - _rest_ts <= 10.0:
+                _rest_mid_raw, _rest_ts = _rest_entry
+                # Si c'est le cache NO token, inverser
+                _no_tid = getattr(market, "no_token_id", "")
+                _is_no_cache = (
+                    _no_tid
+                    and self._rest_clob_mid_cache.get(_no_tid) is _rest_entry
+                    and not self._rest_clob_mid_cache.get(market.yes_token_id)
+                )
+                _rest_mid = (1.0 - _rest_mid_raw) if _is_no_cache else _rest_mid_raw
+                if time.time() - _rest_ts <= 30.0 and 0.01 <= _rest_mid <= 0.99:
                     p_poly = _rest_mid
-                    logger.debug("[V25 P_POLY] REST cache %.4f pour %s",
-                                 p_poly, market.yes_token_id[:16])
+                    logger.debug("[V25 P_POLY] REST cache %.4f (%s) pour %s",
+                                 p_poly,
+                                 "NO↔" if _is_no_cache else "YES",
+                                 market.yes_token_id[:16])
 
         # V24b: si p_poly est encore au défaut 0.5 (stale Gamma), essayer le DB
         # current_mid du token NO pour déduite le mid YES (1 - mid_NO).
@@ -2048,21 +2069,39 @@ class InfoEdgeStrategy(BaseStrategy):
                 # Cause du bug 2026-02-28 : restart → REST CLOB pas encore warm →
                 # p_poly = 0.500 (défaut Gamma API stale) → edge fictif → fallback
                 # market exécuté au vrai prix CLOB (~0.97) → edge réel négatif.
-                # On annule le signal ; l'EVAL log affiche le vrai état des gates.
                 if side and abs(p_poly - 0.500) < 0.005:
-                    # Throttle : log au plus 1 fois par marché toutes les 30s
-                    if not hasattr(self, '_stale_blocked_ts'):
-                        self._stale_blocked_ts: dict = {}
-                    _now_sb = time.time()
-                    if _now_sb - self._stale_blocked_ts.get(market.market_id, 0.0) > 30.0:
-                        logger.warning(
-                            "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
-                            "REST CLOB pas encore warm, signal ignoré",
-                            p_poly, market.market_id,
-                        )
-                        self._stale_blocked_ts[market.market_id] = _now_sb
-                    side        = None
-                    fire_reason = None
+                    # Dernier recours : appel REST synchrone (≤1.5s) pour récupérer le vrai mid
+                    try:
+                        _sync_url = f"https://clob.polymarket.com/book?token_id={market.yes_token_id}"
+                        _sync_r = requests.get(_sync_url, timeout=1.5)
+                        if _sync_r.status_code == 200:
+                            _sd = _sync_r.json()
+                            _sb, _sa = _sd.get("bids", []), _sd.get("asks", [])
+                            if _sb and _sa:
+                                _smid = (float(_sb[0]["price"]) + float(_sa[0]["price"])) / 2.0
+                                if 0.01 <= _smid <= 0.99 and abs(_smid - 0.500) >= 0.005:
+                                    p_poly = _smid
+                                    self._rest_clob_mid_cache[market.yes_token_id] = (_smid, time.time())
+                                    edge_pct = (p_true - p_poly) * 100.0
+                                    logger.info("[FIRE BLOCKED] p_poly rescuée via sync REST: %.3f → edge recalc %+.2f%%",
+                                                p_poly, edge_pct)
+                    except Exception:
+                        pass
+
+                    if abs(p_poly - 0.500) < 0.005:
+                        # p_poly toujours stale après rescue → bloquer
+                        if not hasattr(self, '_stale_blocked_ts'):
+                            self._stale_blocked_ts: dict = {}
+                        _now_sb = time.time()
+                        if _now_sb - self._stale_blocked_ts.get(market.market_id, 0.0) > 30.0:
+                            logger.warning(
+                                "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
+                                "sync REST aussi vide, signal ignoré",
+                                p_poly, market.market_id,
+                            )
+                            self._stale_blocked_ts[market.market_id] = _now_sb
+                        side        = None
+                        fire_reason = None
 
                 # ── PULSE + SNIPER_EVAL LOG (throttled 30s par marché) ────────
                 # Un seul log par marché toutes les 30s pour éviter le spam.
