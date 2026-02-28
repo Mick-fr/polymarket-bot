@@ -2133,23 +2133,27 @@ class InfoEdgeStrategy(BaseStrategy):
                 # p_poly = 0.500 (défaut Gamma API stale) → edge fictif → fallback
                 # market exécuté au vrai prix CLOB (~0.97) → edge réel négatif.
                 if side and abs(p_poly - 0.500) < 0.005:
-                    # Dernier recours : appel REST synchrone (≤1.5s) pour récupérer le vrai mid
-                    try:
-                        _sync_url = f"https://clob.polymarket.com/book?token_id={market.yes_token_id}"
-                        _sync_r = requests.get(_sync_url, timeout=1.5)
-                        if _sync_r.status_code == 200:
-                            _sd = _sync_r.json()
-                            _sb, _sa = _sd.get("bids", []), _sd.get("asks", [])
-                            if _sb and _sa:
-                                _smid = (float(_sb[0]["price"]) + float(_sa[0]["price"])) / 2.0
-                                if 0.01 <= _smid <= 0.99 and abs(_smid - 0.500) >= 0.005:
-                                    p_poly = _smid
-                                    self._rest_clob_mid_cache[market.yes_token_id] = (_smid, time.time())
-                                    edge_pct = (p_true - p_poly) * 100.0
-                                    logger.info("[FIRE BLOCKED] p_poly rescuée via sync REST: %.3f → edge recalc %+.2f%%",
-                                                p_poly, edge_pct)
-                    except Exception:
-                        pass
+                    # Fix Bug1: UP/DOWN markets CLOB toujours vide → skip sync rescue (évite timeout blocking)
+                    # Pour marchés avec strike fixe seulement : UP/DOWN = CLOB vide par nature.
+                    _no_strike_rescue = ("$" not in market.question)
+                    if not _no_strike_rescue:
+                        # Dernier recours : appel REST synchrone (≤0.4s réduit vs ancien 1.5s)
+                        try:
+                            _sync_url = f"https://clob.polymarket.com/book?token_id={market.yes_token_id}"
+                            _sync_r = requests.get(_sync_url, timeout=0.4)
+                            if _sync_r.status_code == 200:
+                                _sd = _sync_r.json()
+                                _sb, _sa = _sd.get("bids", []), _sd.get("asks", [])
+                                if _sb and _sa:
+                                    _smid = (float(_sb[0]["price"]) + float(_sa[0]["price"])) / 2.0
+                                    if 0.01 <= _smid <= 0.99 and abs(_smid - 0.500) >= 0.005:
+                                        p_poly = _smid
+                                        self._rest_clob_mid_cache[market.yes_token_id] = (_smid, time.time())
+                                        edge_pct = (p_true - p_poly) * 100.0
+                                        logger.info("[FIRE BLOCKED] p_poly rescuée via sync REST: %.3f → edge recalc %+.2f%%",
+                                                    p_poly, edge_pct)
+                        except Exception:
+                            pass
 
                     if abs(p_poly - 0.500) < 0.005:
                         # Relaxation pour marchés UP/DOWN (sans strike $) :

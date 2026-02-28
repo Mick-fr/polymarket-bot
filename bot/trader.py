@@ -1377,6 +1377,13 @@ class Trader:
             _t_left    = (_tid_exp - now) if _tid_exp > 0 else 9999.0
             FILL_TIMEOUT_S    = max(2.0, min(8.0, _t_left / 25.0))
             REQUOTE_TIMEOUT_S = max(1.5, min(3.0, FILL_TIMEOUT_S / 2.5))
+
+            # Fix Bug2: UP/DOWN markets CLOB user-to-user (pas d'AMM maker dans le carnet).
+            # FOK échoue car liquidity insuffisante. Garder le limit vivant jusqu'à t-20s.
+            _is_up_down = ("$" not in info.get("market_question", ""))
+            if _is_up_down and _t_left > 22.0:
+                FILL_TIMEOUT_S    = _t_left - 20.0   # vivant jusqu'à 20s avant expiry
+                REQUOTE_TIMEOUT_S = _t_left - 20.0   # inaccessible (= FILL, pas de double timeout)
             try:
                 order = self.pm_client.get_order(order_id)
                 if order is None:
@@ -1460,6 +1467,24 @@ class Trader:
                                          new_price, info["token_id"][:16])
 
                     if new_price is None:
+                        # Fix Bug2+3: UP/DOWN sans mid → abandon sans FOK + libère anti-spam
+                        if ("$" not in info.get("market_question", "")):
+                            logger.warning(
+                                "[SprintMaker] UP/DOWN t<20s → abandon limit sans FOK %s",
+                                info["token_id"][:16],
+                            )
+                            try:
+                                self.pm_client.cancel_order(order_id)
+                            except Exception:
+                                pass
+                            with self._sprint_pending_lock:
+                                self._sprint_pending_makers.pop(order_id, None)
+                            _st3 = getattr(self, "info_edge_strategy", None)
+                            if _st3 and hasattr(_st3, "_sniper_anti_spam"):
+                                _st3._sniper_anti_spam.pop(info.get("market_id", ""), None)
+                                logger.info("[SprintMaker] Anti-spam cleared %s (UP/DOWN zero fill)",
+                                            info.get("market_id", "?")[:12])
+                            continue
                         logger.info(
                             "[SprintMaker] Aucun mid (WS+REST indispos) → fallback market %s",
                             info["token_id"][:16],
@@ -1522,6 +1547,24 @@ class Trader:
 
                 # ── Timeout après requote → fallback market ───────────────────
                 if age > REQUOTE_TIMEOUT_S and info["requeue_count"] >= 1:
+                    # Fix Bug2+3: UP/DOWN → pas de FOK (AMM thin), abandon + libère anti-spam
+                    if ("$" not in info.get("market_question", "")):
+                        logger.warning(
+                            "[SprintMaker] UP/DOWN requote timeout → abandon sans FOK %s",
+                            info["token_id"][:16],
+                        )
+                        try:
+                            self.pm_client.cancel_order(order_id)
+                        except Exception:
+                            pass
+                        with self._sprint_pending_lock:
+                            self._sprint_pending_makers.pop(order_id, None)
+                        _st4 = getattr(self, "info_edge_strategy", None)
+                        if _st4 and hasattr(_st4, "_sniper_anti_spam"):
+                            _st4._sniper_anti_spam.pop(info.get("market_id", ""), None)
+                            logger.info("[SprintMaker] Anti-spam cleared %s (UP/DOWN requote timeout)",
+                                        info.get("market_id", "?")[:12])
+                        continue
                     logger.info(
                         "[SprintMaker] ⏱ Requote timeout → fallback market %s",
                         info["token_id"][:16],
