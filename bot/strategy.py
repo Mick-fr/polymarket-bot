@@ -1192,8 +1192,16 @@ class InfoEdgeStrategy(BaseStrategy):
                         # Déterminer l'intervalle souhaité selon le temps restant
                         exp_ts = self._rest_clob_poll_expiry.get(token_id, 0.0)
                         t_left = (exp_ts - now) if exp_ts > 0 else 9999.0
-                        desired_interval = 1.0 if t_left < 120.0 else 5.0
 
+                        # Purge tokens expirés depuis > 30s (évite 404 en boucle)
+                        if exp_ts > 0 and t_left < -30.0:
+                            self._rest_clob_poll_tokens.discard(token_id)
+                            self._rest_clob_poll_expiry.pop(token_id, None)
+                            self._rest_clob_last_poll.pop(token_id, None)
+                            self._rest_clob_mid_cache.pop(token_id, None)
+                            continue
+
+                        desired_interval = 1.0 if t_left < 120.0 else 5.0
                         last = self._rest_clob_last_poll.get(token_id, 0.0)
                         if now - last >= desired_interval:
                             self._poll_rest_clob_one(token_id)
@@ -1211,6 +1219,10 @@ class InfoEdgeStrategy(BaseStrategy):
         try:
             url = f"https://clob.polymarket.com/book?token_id={token_id}"
             resp = requests.get(url, timeout=3.0)
+            if resp.status_code == 404:
+                logger.debug("[RestPoller] 404 pour token %s (marché expiré, sera purgé)",
+                             token_id[:16])
+                return
             if resp.status_code != 200:
                 logger.warning("[RestPoller] HTTP %d pour token %s — CLOB inaccessible?",
                                resp.status_code, token_id[:16])
