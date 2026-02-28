@@ -1986,6 +1986,20 @@ class InfoEdgeStrategy(BaseStrategy):
                     is_sniper   = True
                     self._sniper_anti_spam[market.market_id] = now_ts
 
+                # ── Guard p_poly stale : bloquer FIRE si p_poly = défaut 0.500 ──
+                # Cause du bug 2026-02-28 : restart → REST CLOB pas encore warm →
+                # p_poly = 0.500 (défaut Gamma API stale) → edge fictif → fallback
+                # market exécuté au vrai prix CLOB (~0.97) → edge réel négatif.
+                # On annule le signal ; l'EVAL log affiche le vrai état des gates.
+                if side and abs(p_poly - 0.500) < 0.005:
+                    logger.warning(
+                        "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
+                        "REST CLOB pas encore warm, signal ignoré",
+                        p_poly, market.market_id,
+                    )
+                    side        = None
+                    fire_reason = None
+
                 # ── PULSE + SNIPER_EVAL LOG (throttled 30s par marché) ────────
                 # Un seul log par marché toutes les 30s pour éviter le spam.
                 # FIRE et COOLDOWN sont toujours loggués immédiatement.
@@ -1993,7 +2007,7 @@ class InfoEdgeStrategy(BaseStrategy):
                 if not hasattr(self, '_last_eval_log_ts'):
                     self._last_eval_log_ts: dict = {}
 
-                will_fire = (standard_pass or sniper_a_pass or sniper_b_pass) and not sniper_already_fired
+                will_fire = (standard_pass or sniper_a_pass or sniper_b_pass) and not sniper_already_fired and (side is not None)
                 throttle_elapsed = now - self._last_eval_log_ts.get(market.market_id, 0.0) > 30.0
 
                 if will_fire or throttle_elapsed:

@@ -1472,9 +1472,25 @@ class Trader:
                             info["token_id"][:16],
                         )
                         try:
-                            self.pm_client.place_market_order(
+                            _fm_resp = self.pm_client.place_market_order(
                                 info["token_id"], info["usdc_amount"], "buy"
                             )
+                            if isinstance(_fm_resp, dict) and _fm_resp.get("status") == "matched":
+                                _taking = float(_fm_resp.get("takingAmount") or 0)
+                                _making = float(_fm_resp.get("makingAmount") or info["usdc_amount"])
+                                _fp = (_making / _taking) if _taking > 0 else info["limit_price"]
+                                self.db.update_position(
+                                    token_id=info["token_id"],
+                                    market_id=info["market_id"],
+                                    question=info["market_question"],
+                                    qty_delta=_taking,
+                                    fill_price=_fp,
+                                )
+                                logger.info(
+                                    "[SprintMaker] 📈 Fallback market (no-mid) OK %s "
+                                    "%.2f sh @ %.4f",
+                                    info["token_id"][:16], _taking, _fp,
+                                )
                         except Exception as e_m:
                             logger.warning("[SprintMaker] Fallback market err: %s", e_m)
                         with self._sprint_pending_lock:
@@ -1522,10 +1538,29 @@ class Trader:
                     except Exception:
                         pass
                     try:
-                        self.pm_client.place_market_order(
+                        _fm2_resp = self.pm_client.place_market_order(
                             info["token_id"], info["usdc_amount"], "buy"
                         )
-                        logger.info("[SprintMaker] 📈 Fallback market OK %s", info["token_id"][:16])
+                        if isinstance(_fm2_resp, dict) and _fm2_resp.get("status") == "matched":
+                            _taking2 = float(_fm2_resp.get("takingAmount") or 0)
+                            _making2 = float(_fm2_resp.get("makingAmount") or info["usdc_amount"])
+                            _fp2 = (_making2 / _taking2) if _taking2 > 0 else info["limit_price"]
+                            self.db.update_position(
+                                token_id=info["token_id"],
+                                market_id=info["market_id"],
+                                question=info["market_question"],
+                                qty_delta=_taking2,
+                                fill_price=_fp2,
+                            )
+                            logger.info(
+                                "[SprintMaker] 📈 Fallback market OK %s %.2f sh @ %.4f",
+                                info["token_id"][:16], _taking2, _fp2,
+                            )
+                        else:
+                            logger.warning(
+                                "[SprintMaker] Fallback market non matchée %s: %s",
+                                info["token_id"][:16], _fm2_resp,
+                            )
                     except Exception as e_m2:
                         logger.warning("[SprintMaker] Fallback market (req) err: %s", e_m2)
                     with self._sprint_pending_lock:
