@@ -191,27 +191,24 @@ class Trader:
             # Corrige les phantoms (DB qty >> CLOB qty) qui gonflent la valorisation.
             self._sync_positions_from_clob()
 
-        # V18.1 Cleanup de l'etat
+        # V18.1 Cleanup de l'etat (garde le flag, supprime le HWM hardcodé 106.13)
         if self.db.get_config("v18_1_cleaned") != "true":
             with self.db._cursor() as cur:
                 cur.execute("DELETE FROM bot_state WHERE key IN ('high_water_mark', 'max_drawdown')")
                 cur.execute("DELETE FROM balance_history")
-            self.db.set_config("high_water_mark", "106.13")
             self.db.set_config("max_drawdown", "0.0")
             self.db.set_config("v18_1_cleaned", "true")
-            logger.info("[V18.1] DB nettoyée. high_water_mark forcé à 106.13.")
+            logger.info("[V18.1] DB nettoyée.")
 
-        # Reset HWM au démarrage pour éviter un circuit breaker immédiat
-        # (le solde peut avoir changé entre deux sessions via fills ou dépôts)
+        # HWM = solde live au démarrage → nouvelle baseline (drawdown remis à 0).
+        # Reset volontaire 2026-02-28 : l'ancien HWM forcé 106.13 était périmé.
         balance = self._fetch_balance()
         if balance is not None:
-            old_hwm = float(self.db.get_high_water_mark() or 106.13)
-            # On conserve la valeur 106.13 si on vient juste de la setter
-            # et que le solde est similaire
-            self.db.update_high_water_mark(balance)
+            self.db.set_config("high_water_mark", str(round(balance, 4)))
+            self.db.set_config("kill_switch", "false")  # reset kill switch si actif
             self.db.record_balance(balance)
-            logger.info("HWM réévalué: %.2f → max(%.2f, %.2f) USDC", old_hwm, old_hwm, balance)
-            self.db.add_log("INFO", "trader", f"HWM check: {old_hwm:.2f} → {max(old_hwm, balance):.2f}")
+            logger.info("[RESET HWM] Baseline = %.2f USDC — drawdown remis à 0, kill switch off", balance)
+            self.db.add_log("INFO", "trader", f"RESET HWM: nouvelle baseline {balance:.2f} USDC")
 
         # Stratégie OBI avec accès à la DB pour cooldowns et inventaire
         self.strategy = OBIMarketMakingStrategy(
