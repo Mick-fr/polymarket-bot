@@ -95,6 +95,7 @@ class Trader:
         self._tpsl_cache_ts:       float = 0.0
         self._tpsl_last_check_ts:  float = 0.0   # rate-limiter 200ms
         self._tpsl_selling:        set   = set()  # tokens SELL en cours
+        self._tpsl_partial_exited: set   = set()  # V30: tokens ayant déjà eu un partial exit
         self._tpsl_lock = threading.Lock()
         # Compteur d'erreurs 404 consécutives par token_id.
         # Après 3×404, la position est zeroed en DB (zombie detection).
@@ -951,10 +952,12 @@ class Trader:
         La méthode _check_sprint_tp_sl() (60s) reste active comme filet de
         sécurité pour les tokens sans WS mid disponible.
         """
-        TP_RATIO_BASE = 1.75   # TP de base (cappé dynamiquement si avg élevé)
-        SL_RATIO_BASE = 0.30   # SL de base (durci dynamiquement à t<60s)
-        RATE_LIMIT_S  = 0.20   # max 5 checks/s
-        CACHE_TTL_S   = 10.0   # refresh positions DB toutes les 10s
+        TP_RATIO_BASE    = 1.75   # TP de base (cappé dynamiquement si avg élevé)
+        SL_RATIO_BASE    = 0.30   # SL de base (durci dynamiquement à t<60s)
+        TP_PARTIAL_RATIO = 1.40   # V30: seuil sortie partielle 50%
+        TP_PARTIAL_PCT   = 0.50   # V30: fraction vendue au premier palier
+        RATE_LIMIT_S     = 0.20   # max 5 checks/s
+        CACHE_TTL_S      = 10.0   # refresh positions DB toutes les 10s
 
         now = time.time()
 
@@ -1032,10 +1035,18 @@ class Trader:
             _secs_left = (_exp_ts - now) if _exp_ts > 0 else 9999.0
             sl_ratio   = 0.55 if _secs_left < 30.0 else (0.45 if _secs_left < 60.0 else SL_RATIO_BASE)
 
+            # V30: Partial exit — vendre 50% à ratio 1.40, laisser courir 50%
+            with self._tpsl_lock:
+                _is_partial_done = token_id in self._tpsl_partial_exited
+
+            sell_fraction = 1.0
             if _secs_left < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left:.0f}s)"
             elif ratio >= tp_ratio:
                 reason = f"TP×{ratio:.2f}(th={tp_ratio:.2f})"
+            elif ratio >= TP_PARTIAL_RATIO and not _is_partial_done:
+                reason        = f"PARTIAL_TP×{ratio:.2f}(50%→hold)"
+                sell_fraction = TP_PARTIAL_PCT
             elif ratio <= sl_ratio:
                 reason = f"SL_DYN×{ratio:.2f}(th={sl_ratio:.2f})"
             else:
@@ -1051,7 +1062,7 @@ class Trader:
             )
 
             # SELL asynchrone — ne bloque pas le tick callback
-            def _do_sell(tid=token_id, q=qty, m=mid_ws, r=reason, a=avg):
+            def _do_sell(tid=token_id, q=qty, m=mid_ws, r=reason, a=avg, sf=sell_fraction):
                 try:
                     # 1. Allowance ERC-1155 (NegRisk bypass identique au 60s chrono)
                     try:
@@ -1070,13 +1081,14 @@ class Trader:
                         logger.debug("[TP/SL FAST] Allowance non confirmée %s → différé", tid[:16])
                         return
 
-                    # 2. Quantité réelle CLOB
+                    # 2. Quantité réelle CLOB (× fraction si partial exit)
                     try:
                         _clob    = self.pm_client.get_conditional_allowance(tid)
                         clob_qty = float(_clob.get("balance", "0") or "0") / 1e6
                     except Exception:
                         clob_qty = q
-                    sell_qty = round(min(clob_qty if clob_qty > 0.01 else q, q), 2)
+                    base_qty = clob_qty if clob_qty > 0.01 else q
+                    sell_qty = round(min(base_qty, q) * sf, 2)
                     if sell_qty <= 0:
                         return
 
@@ -1089,8 +1101,8 @@ class Trader:
                     )
                     status = resp.get("status", "?") if isinstance(resp, dict) else "?"
                     logger.info(
-                        "[TP/SL FAST] ✅ SELL %s | qty=%.2f mid=%.3f avg=%.3f → %s",
-                        r, sell_qty, m, a, status,
+                        "[TP/SL FAST] ✅ SELL %s | qty=%.2f(×%.0f%%) mid=%.3f avg=%.3f → %s",
+                        r, sell_qty, sf * 100, m, a, status,
                     )
                     self.db.add_log(
                         "INFO", "trader",
@@ -1100,14 +1112,25 @@ class Trader:
                     send_alert(
                         f"[TP/SL] {r} SELL {sell_qty:.2f}sh @ {m:.3f} | {tid[:8]}"
                     )
-                    # V24c: Zéro DB immédiatement après SELL réussi (fast path)
-                    try:
-                        self.db.set_position_quantity(tid, 0.0)
-                    except Exception as _ez:
-                        logger.debug("[TP/SL FAST] Erreur zero post-SELL: %s", _ez)
-                    # Invalider le cache pour forcer un re-fetch au prochain check
-                    with self._tpsl_lock:
-                        self._tpsl_cache_ts = 0.0
+                    # V30: Partial exit → mettre à jour la quantité résiduelle en DB
+                    #       Full exit   → zéro DB (comportement précédent)
+                    if sf < 1.0:
+                        remaining_qty = round(q * (1.0 - sf), 2)
+                        try:
+                            self.db.set_position_quantity(tid, remaining_qty)
+                        except Exception as _ez:
+                            logger.debug("[TP/SL FAST] Erreur partial update qty: %s", _ez)
+                        with self._tpsl_lock:
+                            self._tpsl_partial_exited.add(tid)
+                            self._tpsl_cache_ts = 0.0   # forcer refresh cache
+                    else:
+                        try:
+                            self.db.set_position_quantity(tid, 0.0)
+                        except Exception as _ez:
+                            logger.debug("[TP/SL FAST] Erreur zero post-SELL: %s", _ez)
+                        with self._tpsl_lock:
+                            self._tpsl_partial_exited.discard(tid)
+                            self._tpsl_cache_ts = 0.0
 
                 except Exception as e_sell:
                     err_s = str(e_sell)
@@ -1154,8 +1177,10 @@ class Trader:
         Ne touche pas aux positions déjà couvertes par un SELL live.
         Utilise le current_mid DB mis à jour par _refresh_inventory_mids().
         """
-        TP_RATIO_BASE = 1.75   # TP base (cappé dynamiquement si avg élevé)
-        SL_RATIO_BASE = 0.30   # SL base (durci dynamiquement à t<60s)
+        TP_RATIO_BASE    = 1.75   # TP base (cappé dynamiquement si avg élevé)
+        SL_RATIO_BASE    = 0.30   # SL base (durci dynamiquement à t<60s)
+        TP_PARTIAL_RATIO = 1.40   # V30: seuil sortie partielle 50%
+        TP_PARTIAL_PCT   = 0.50   # V30: fraction vendue au premier palier
 
         try:
             positions = self.db.get_all_positions()
@@ -1189,10 +1214,18 @@ class Trader:
             _secs_left_slow = (_exp_ts_slow - time.time()) if _exp_ts_slow > 0 else 9999.0
             sl_ratio_slow   = 0.55 if _secs_left_slow < 30.0 else (0.45 if _secs_left_slow < 60.0 else SL_RATIO_BASE)
 
+            # V30: Partial exit — vendre 50% à ratio 1.40, laisser courir 50%
+            with self._tpsl_lock:
+                _is_partial_done_slow = token_id in self._tpsl_partial_exited
+
+            sell_fraction_slow = 1.0
             if _secs_left_slow < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left_slow:.0f}s)"
             elif ratio >= tp_ratio_slow:
                 reason = f"TP×{ratio:.2f}(th={tp_ratio_slow:.2f})"
+            elif ratio >= TP_PARTIAL_RATIO and not _is_partial_done_slow:
+                reason             = f"PARTIAL_TP×{ratio:.2f}(50%→hold)"
+                sell_fraction_slow = TP_PARTIAL_PCT
             elif ratio <= sl_ratio_slow:
                 reason = f"SL_DYN×{ratio:.2f}(th={sl_ratio_slow:.2f})"
             else:
@@ -1212,13 +1245,14 @@ class Trader:
                 logger.debug("[TP/SL] %s: allowance non confirmée → différé", token_id[:16])
                 continue
 
-            # Quantité réelle du CLOB (source de vérité)
+            # Quantité réelle du CLOB × fraction (partial ou full)
             try:
                 _clob = self.pm_client.get_conditional_allowance(token_id)
                 clob_qty = float(_clob.get("balance", "0") or "0") / 1e6
             except Exception:
                 clob_qty = qty
-            sell_qty = round(min(clob_qty if clob_qty > 0.01 else qty, qty), 2)
+            base_qty_slow = clob_qty if clob_qty > 0.01 else qty
+            sell_qty = round(min(base_qty_slow, qty) * sell_fraction_slow, 2)
             if sell_qty <= 0:
                 continue
 
@@ -1233,18 +1267,28 @@ class Trader:
                 )
                 status = resp.get("status", "?") if isinstance(resp, dict) else "?"
                 logger.info(
-                    "[TP/SL] 🎯 SELL %s | %s | qty=%.2f mid=%.3f avg=%.3f → %s",
+                    "[TP/SL] 🎯 SELL %s | %s | qty=%.2f(×%.0f%%) mid=%.3f avg=%.3f → %s",
                     reason,
                     (p.get("question") or "")[:35],
-                    sell_qty, mid, avg, status,
+                    sell_qty, sell_fraction_slow * 100, mid, avg, status,
                 )
-                # V24c: Zéro DB immédiatement après SELL réussi.
-                # Évite re-déclenchement TP/SL au cycle suivant (60s) sur position déjà vendue
-                # → sinon 400 "invalid amounts" car CLOB vide.
-                try:
-                    self.db.set_position_quantity(token_id, 0.0)
-                except Exception as _ez:
-                    logger.debug("[TP/SL] Erreur zero post-SELL: %s", _ez)
+                # V30: Partial → mettre à jour quantité résiduelle | Full → zéro DB
+                if sell_fraction_slow < 1.0:
+                    remaining_qty = round(qty * (1.0 - sell_fraction_slow), 2)
+                    try:
+                        self.db.set_position_quantity(token_id, remaining_qty)
+                    except Exception as _ez:
+                        logger.debug("[TP/SL] Erreur partial update qty: %s", _ez)
+                    with self._tpsl_lock:
+                        self._tpsl_partial_exited.add(token_id)
+                else:
+                    # V24c: Zéro DB immédiatement après SELL réussi.
+                    try:
+                        self.db.set_position_quantity(token_id, 0.0)
+                    except Exception as _ez:
+                        logger.debug("[TP/SL] Erreur zero post-SELL: %s", _ez)
+                    with self._tpsl_lock:
+                        self._tpsl_partial_exited.discard(token_id)
             except Exception as e:
                 err_s = str(e)
                 if "404" in err_s or "No orderbook" in err_s:
