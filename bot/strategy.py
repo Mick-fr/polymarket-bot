@@ -1531,7 +1531,12 @@ class InfoEdgeStrategy(BaseStrategy):
             funding = self.binance_ws.get_funding(sym)
 
         self._last_funding = funding  # Cache for DB push
-        minutes_to_expiry = market.days_to_expiry * 1440
+        # V33: t réel depuis end_date_ts pour le pricing BS + time_in_cycle XGBoost
+        _end_ts_edge = getattr(market, "end_date_ts", 0.0)
+        if _end_ts_edge > 0:
+            minutes_to_expiry = max(0.0, _end_ts_edge - time.time()) / 60.0
+        else:
+            minutes_to_expiry = market.days_to_expiry * 1440
 
         # V14.0 : Volatilité Dynamique (utilisée par les deux branches)
         base_vol = self._get_dynamic_vol(sym)
@@ -1542,7 +1547,7 @@ class InfoEdgeStrategy(BaseStrategy):
             # ── Branche A : marché directionnel "Up or Down" ──────────────────
             # Modèle momentum + OBI — pas de strike fixe
             # V31: time_in_cycle = minutes écoulées depuis l'ouverture de la fenêtre
-            _minutes_left    = market.days_to_expiry * 1440.0
+            _minutes_left    = minutes_to_expiry  # déjà calculé précisément ci-dessus
             _time_in_cycle   = max(0.0, min(4.0, 5.0 - _minutes_left))
             p_true, _mom, _obi = self._compute_p_true_updown(sym, funding, _time_in_cycle)
             logger.debug(
@@ -1685,10 +1690,18 @@ class InfoEdgeStrategy(BaseStrategy):
             if not self._is_btc_eth(market.question):
                 continue
 
-            minutes_to_expiry = market.days_to_expiry * 1440
+            # V33: t réel depuis end_date_ts (Unix ts) — précis à la seconde.
+            # Gamma API days_to_expiry se rafraîchit ~toutes les 60s → stale jusqu'à
+            # 60s → fenêtres sniper manquées (ex: t=283s Gamma vs t=236s réel).
+            _end_ts_mkt = getattr(market, "end_date_ts", 0.0)
+            if _end_ts_mkt > 0:
+                _t_real_sec   = max(0.0, _end_ts_mkt - time.time())
+                minutes_to_expiry = _t_real_sec / 60.0
+            else:
+                minutes_to_expiry = market.days_to_expiry * 1440
             q_lower = market.question.lower()
             is_btc = ("bitcoin" in q_lower or "btc" in q_lower)
-            
+
             # Sprint = BTC + expire dans moins de 5.5 minutes (et pas déjà expiré)
             is_sprint = is_btc and (0 < minutes_to_expiry <= 5.5)
 
