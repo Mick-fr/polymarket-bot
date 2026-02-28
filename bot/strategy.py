@@ -1843,6 +1843,11 @@ class InfoEdgeStrategy(BaseStrategy):
                     "sniper_obi_b":         0.55,  # [0.40–0.70] OBI abs min  (0.50 → 0.55)
                     "sniper_time_b_sec":    240,   # [200–330]   secondes max  (300 → 240)
 
+                    # ── Garde basse snipers : évite les entrées trop tardives ──
+                    # En dessous de 60s, le risque d'expiration avant sortie est trop élevé
+                    # (latence ordre ~500-1000ms + EXPIRY_EXIT à t<12s)
+                    "sniper_min_time_sec":   60,   # [30–90]     secondes restantes min
+
                     # ── Sizing sniper ──────────────────────────────────────
                     "sniper_sizing_mult":   0.80,  # [0.75–0.90] ×0.80 = −20% vs standard
 
@@ -1927,6 +1932,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     abs_edge_v22     >= conf["sniper_edge_a"]
                     and abs_obi_v22  >= conf["sniper_obi_a"]
                     and time_left_sec <= conf["sniper_time_a_sec"]
+                    and time_left_sec >= conf["sniper_min_time_sec"]
                     and dir_ok_obi
                 )
 
@@ -1938,6 +1944,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     abs_edge_v22     >= conf["sniper_edge_b"]
                     and abs_obi_v22  >= conf["sniper_obi_b"]
                     and time_left_sec <= conf["sniper_time_b_sec"]
+                    and time_left_sec >= conf["sniper_min_time_sec"]
                     and dir_ok_obi
                 )
 
@@ -1999,10 +2006,12 @@ class InfoEdgeStrategy(BaseStrategy):
                     m_std = min(999, abs_mom_v22  / conf["tmom"]            * 100)
                     o_sa  = min(999, abs_obi_v22  / conf["sniper_obi_a"]    * 100)
                     o_sb  = min(999, abs_obi_v22  / conf["sniper_obi_b"]    * 100)
+                    _min_t = conf["sniper_min_time_sec"]
                     sa_detail = " ".join([
                         _sc(abs_edge_v22  >= conf["sniper_edge_a"],       f"E≥{conf['sniper_edge_a']:.0f}%"),
                         _sc(abs_obi_v22   >= conf["sniper_obi_a"],        f"OBI≥{conf['sniper_obi_a']}"),
                         _sc(time_left_sec <= conf["sniper_time_a_sec"],   f"t≤{conf['sniper_time_a_sec']}s(={time_left_sec:.0f}s)"),
+                        _sc(time_left_sec >= _min_t,                      f"t≥{_min_t}s"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
                         f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
                     ])
@@ -2010,6 +2019,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(abs_edge_v22  >= conf["sniper_edge_b"],       f"E≥{conf['sniper_edge_b']:.0f}%"),
                         _sc(abs_obi_v22   >= conf["sniper_obi_b"],        f"OBI≥{conf['sniper_obi_b']}"),
                         _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
+                        _sc(time_left_sec >= _min_t,                      f"t≥{_min_t}s"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
                         f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
                     ])

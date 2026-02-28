@@ -1134,7 +1134,20 @@ class Trader:
 
                 except Exception as e_sell:
                     err_s = str(e_sell)
-                    if "404" in err_s or "No orderbook" in err_s:
+                    if "no match" in err_s.lower():
+                        # Marché expiré ou fermé → zéro DB immédiat, pas d'erreur
+                        logger.warning(
+                            "[TP/SL FAST] Marché expiré (no match) %s → position zeroed DB",
+                            tid[:16],
+                        )
+                        try:
+                            self.db.set_position_quantity(tid, 0.0)
+                        except Exception as ez:
+                            logger.debug("[TP/SL FAST] Erreur zero no-match: %s", ez)
+                        with self._tpsl_lock:
+                            self._tpsl_partial_exited.discard(tid)
+                            self._tpsl_zombie_errors.pop(tid, None)
+                    elif "404" in err_s or "No orderbook" in err_s:
                         with self._tpsl_lock:
                             cnt = self._tpsl_zombie_errors.get(tid, 0) + 1
                             self._tpsl_zombie_errors[tid] = cnt
@@ -1291,7 +1304,20 @@ class Trader:
                         self._tpsl_partial_exited.discard(token_id)
             except Exception as e:
                 err_s = str(e)
-                if "404" in err_s or "No orderbook" in err_s:
+                if "no match" in err_s.lower():
+                    # Marché expiré ou fermé → zéro DB immédiat, pas d'erreur
+                    logger.warning(
+                        "[TP/SL] Marché expiré (no match) %s → position zeroed DB",
+                        token_id[:16],
+                    )
+                    try:
+                        self.db.set_position_quantity(token_id, 0.0)
+                    except Exception as ez:
+                        logger.debug("[TP/SL] Erreur zero no-match: %s", ez)
+                    with self._tpsl_lock:
+                        self._tpsl_partial_exited.discard(token_id)
+                        self._tpsl_zombie_errors.pop(token_id, None)
+                elif "404" in err_s or "No orderbook" in err_s:
                     cnt = self._tpsl_zombie_errors.get(token_id, 0) + 1
                     self._tpsl_zombie_errors[token_id] = cnt
                     if cnt >= 3:
