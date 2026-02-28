@@ -1287,8 +1287,17 @@ class Trader:
           matched/filled → enregistre position en DB, nettoie
           cancelled/expired → nettoie
         """
-        FILL_TIMEOUT_S    = 10.0  # délai avant premier requote
-        REQUOTE_TIMEOUT_S =  8.0  # délai avant fallback market après requote
+        # V27: timeouts fixes remplacés par des timeouts dynamiques.
+        # Sur un marché de 300s avec fenêtre d'entrée 25-180s, attendre
+        # 10s + 8s = 18s avant FOK est catastrophique (≥10% de la fenêtre).
+        # Logique :
+        #   t < 120s restantes → FILL=2s REQUOTE=2s  (total ≤ 4s → FOK)
+        #   t ≥ 120s restantes → FILL=5s REQUOTE=3s  (total ≤ 8s → FOK)
+        # Les valeurs par token sont recalculées dans la boucle ci-dessous.
+        FILL_TIMEOUT_DEFAULT    = 5.0
+        REQUOTE_TIMEOUT_DEFAULT = 3.0
+        FILL_TIMEOUT_URGENT     = 2.0
+        REQUOTE_TIMEOUT_URGENT  = 2.0
 
         with self._sprint_pending_lock:
             pending = dict(self._sprint_pending_makers)
@@ -1298,6 +1307,13 @@ class Trader:
         now = time.time()
         for order_id, info in pending.items():
             age = now - info["ts_posted"]
+
+            # Timeout dynamique selon temps restant du sprint
+            _tid_exp   = self._sprint_expiry_cache.get(info.get("token_id", ""), 0.0)
+            _t_left    = (_tid_exp - now) if _tid_exp > 0 else 9999.0
+            _urgent    = _t_left < 120.0
+            FILL_TIMEOUT_S    = FILL_TIMEOUT_URGENT    if _urgent else FILL_TIMEOUT_DEFAULT
+            REQUOTE_TIMEOUT_S = REQUOTE_TIMEOUT_URGENT if _urgent else REQUOTE_TIMEOUT_DEFAULT
             try:
                 order = self.pm_client.get_order(order_id)
                 if order is None:
@@ -1358,16 +1374,31 @@ class Trader:
                     except Exception as e_c:
                         logger.debug("[SprintMaker] cancel err: %s", e_c)
 
-                    # Prix requote = mid depuis WS
+                    # V27: Prix requote — 3 sources par priorité décroissante
+                    # 1. WS Polymarket book (O(1), temps réel)
+                    # 2. REST CLOB cache (5s lag, mais frais)
+                    # 3. FOK market direct (fallback ultime)
                     new_price = None
+
+                    # Source 1 : WS book mid
                     if hasattr(self.pm_client, "ws_client") and self.pm_client.ws_client.running:
                         mid_ws = self.pm_client.ws_client.get_midpoint(info["token_id"])
                         if mid_ws and 0.02 <= mid_ws <= 0.98:
                             new_price = round(mid_ws, 3)
 
+                    # Source 2 : REST CLOB cache (si WS indispo)
+                    if new_price is None:
+                        _ies2 = getattr(self, "info_edge_strategy", None)
+                        _rcc2 = getattr(_ies2, "_rest_clob_mid_cache", {})
+                        _re2  = _rcc2.get(info["token_id"])
+                        if _re2 and (now - _re2[1]) < 15.0:
+                            new_price = round(_re2[0], 3)
+                            logger.debug("[V27 SprintMaker] Requote via REST cache %.3f %s",
+                                         new_price, info["token_id"][:16])
+
                     if new_price is None:
                         logger.info(
-                            "[SprintMaker] Mid WS indispo → fallback market %s",
+                            "[SprintMaker] Aucun mid (WS+REST indispos) → fallback market %s",
                             info["token_id"][:16],
                         )
                         try:

@@ -2054,27 +2054,57 @@ class InfoEdgeStrategy(BaseStrategy):
                             self._last_quote_ts[market.yes_token_id] = time.time()
                             continue
 
-                    # Upgrade 3 — Limit maker : ask−1tick depuis WS CLOB
-                    # Si le book WS est disponible, on poster un limit BUY à best_ask−0.001
-                    # (économise ~3-8% de spread vs FOK market). Sinon fallback market.
+                    # ── Upgrade 1 (V27) : Limit maker — 2 sources de prix, priorité WS → REST
+                    #
+                    # Source A — WS CLOB book (temps réel, O(1)) :
+                    #   Post à best_ask − 1 tick. Se remplit si un vendeur
+                    #   accepte de croiser à ce prix. Économie : ~spread entier.
+                    #
+                    # Source B — REST CLOB cache (5s lag) :
+                    #   Post à mid + 0.5 tick si WS vide ET t > 45s ET cache frais.
+                    #   Probabilité fill ~30-50% en 2s. Si non rempli → FOK market.
+                    #   Économie : ~spread/2 vs FOK (même si fill rate 30%, EV > 0).
+                    #
+                    # Les deux paths utilisent _sprint_pending_makers (watcher 2s/2s).
+                    # Si ni A ni B : FOK market direct (comportement V22 inchangé).
                     _sm_limit_price = None
                     _sm_shares      = None
+
+                    # ── Source A : WS book ───────────────────────────────────────
                     if hasattr(self.client, "ws_client") and self.client.ws_client.running:
                         _ob = self.client.ws_client.get_order_book(signal_token)
                         if _ob and _ob.get("asks"):
                             _best_ask = float(_ob["asks"][0]["price"])
                             _lp = round(max(0.01, _best_ask - 0.001), 3)
                             _sh = round(usdc_amount / _lp, 2)
-                            if _sh >= 5.0:  # minimum Polymarket
+                            if _sh >= 5.0:
                                 _sm_limit_price = _lp
                                 _sm_shares      = _sh
+
+                    # ── Source B : REST CLOB cache (fallback si WS vide) ────────
+                    # Condition : pas de WS book ET t > 45s ET cache frais (< 10s)
+                    if _sm_limit_price is None and time_left_sec > 45.0:
+                        _rc = self._rest_clob_mid_cache.get(signal_token)
+                        if _rc and (time.time() - _rc[1]) < 10.0:
+                            _rest_mid = _rc[0]
+                            # mid + 0.5 tick = légèrement au-dessus du mid
+                            # → s'insère entre mid et ask, économise ~spread/2
+                            _lp = round(min(0.970, _rest_mid + 0.005), 3)
+                            _sh = round(usdc_amount / _lp, 2)
+                            if _sh >= 5.0:
+                                _sm_limit_price = _lp
+                                _sm_shares      = _sh
+                                logger.debug(
+                                    "[V27 SprintMaker] REST cache %.3f → limit@%.3f (%s sh) t=%.0fs",
+                                    _rest_mid, _lp, _sh, time_left_sec,
+                                )
 
                     if _sm_limit_price is not None:
                         _order_type = "sprint_maker"
                         _price      = _sm_limit_price
                         _size       = _sm_shares
                     else:
-                        # WS book vide ou shares < 5 → FOK market classique
+                        # Ni WS ni REST disponibles → FOK market direct
                         _order_type = "market"
                         _price      = 0.99
                         _size       = usdc_amount
