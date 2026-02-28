@@ -1898,6 +1898,13 @@ class InfoEdgeStrategy(BaseStrategy):
                     "anti_streak_penalty":  0.5,   # [0.3–0.7]  facteur × sur sizing
                     "anti_streak_window":   3,     # [2–5]      trades consécutifs BTC UP
 
+                    # ── F3 Vol Spike Detector ───────────────────────────────
+                    # Round "chaud" si vol_ratio ≥ seuil OU |mom_60s| ≥ seuil.
+                    # Round "calme" (les deux sous seuil) → skip le sprint :
+                    #   signal momentum = bruit de microstructure, edge non fiable.
+                    "vol_spike_ratio_min":  0.85,  # [0.70–1.10] vol_ratio plancher
+                    "vol_spike_mom60_min":  0.0005,# [0.0003–0.001] |mom_60s| plancher (0.05%)
+
                     # ── Risk Manager (référence — enforcement via RiskManager) ──
                     # Ces valeurs sont lues par risk.py ; centralisées ici pour visibilité
                     "max_drawdown_pct":     10.0,  # [5–15]     % drawdown vs HWM → kill switch
@@ -1917,6 +1924,37 @@ class InfoEdgeStrategy(BaseStrategy):
                 # On ne peut pas sortir profitablement → risque asymétrique total.
                 if time_left_sec < 25.0:
                     logger.debug("[V25] Entrée rejetée: t=%.0fs < 25s min", time_left_sec)
+                    continue
+
+                # ── F3 Vol Spike Detector — skip rounds calmes ───────────────
+                # Hot round : vol_ratio ≥ seuil OU |mom_60s| ≥ seuil (OR).
+                # Calme     : les deux sous seuil → momentum = bruit → skip.
+                # vol_ratio  = vol_60s / vol_300s (régime vol court vs long terme)
+                # mom_60s    = retour normalisé sur 60s (Binance WS, zero-REST)
+                if self.binance_ws:
+                    _v60_vsd  = self.binance_ws.get_ns_vol("BTCUSDT", 60.0)
+                    _v300_vsd = self.binance_ws.get_ns_vol("BTCUSDT", 300.0)
+                    _vr_vsd   = max(0.10, min(5.0, _v60_vsd / max(_v300_vsd, 1e-6)))
+                    _m60_vsd  = self.binance_ws.get_ns_momentum("BTCUSDT", 60.0)
+                else:
+                    _vr_vsd, _m60_vsd = 1.0, 0.0
+
+                _hot_by_vol = _vr_vsd  >= conf["vol_spike_ratio_min"]
+                _hot_by_mom = abs(_m60_vsd) >= conf["vol_spike_mom60_min"]
+
+                if not (_hot_by_vol or _hot_by_mom):
+                    if not hasattr(self, '_volskip_log_ts'):
+                        self._volskip_log_ts: dict = {}
+                    _now_vs = time.time()
+                    if _now_vs - self._volskip_log_ts.get(market.market_id, 0.0) > 60.0:
+                        logger.info(
+                            "[VOL SKIP] Round calme — vr=%.2f(min=%.2f) m60=%+.4f%%(min=%.4f%%) "
+                            "→ sprint %s ignoré",
+                            _vr_vsd, conf["vol_spike_ratio_min"],
+                            _m60_vsd * 100, conf["vol_spike_mom60_min"] * 100,
+                            market.market_id[:8],
+                        )
+                        self._volskip_log_ts[market.market_id] = _now_vs
                     continue
 
                 # ── Direction helpers ─────────────────────────────────────
@@ -2174,17 +2212,19 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(dir_ok_obi,                                   "dirOBI"),
                         f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f}{_cvd_tag})",
                     ])
-                    fire_tag = " → 🔥FIRE" if will_fire else ""
-                    spam_tag = " ⛔COOLDOWN" if sniper_already_fired else ""
+                    fire_tag  = " → 🔥FIRE" if will_fire else ""
+                    spam_tag  = " ⛔COOLDOWN" if sniper_already_fired else ""
+                    _vr_tag   = f"VR={_vr_vsd:.2f}({'🔥' if _hot_by_vol else '❄'})"
                     logger.info(
                         "[V29 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
                         "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) "
-                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) CVD30=%+.2f(×%.2f) | "
+                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) "
+                        "CVD30=%+.2f(×%.2f) %s | "
                         "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
                         market.question[:18], spot, time_left_sec,
                         edge_pct, e_std, e_sa, e_sb,
                         m30, m_std,
-                        o_val, o_sa, o_sb, cvd30_val, cvd_size_mult,
+                        o_val, o_sa, o_sb, cvd30_val, cvd_size_mult, _vr_tag,
                         "✓" if dir_ok_mom    else "✗",
                         "✓" if dir_ok_obi    else "✗",
                         "✓" if standard_pass else "✗",
