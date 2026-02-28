@@ -1143,6 +1143,8 @@ class InfoEdgeStrategy(BaseStrategy):
         # ce cache. _calculate_edge_score l'utilise en priorité 2 (après WS).
         self._rest_clob_mid_cache: dict   = {}   # token_id → (mid, timestamp)
         self._rest_clob_poll_tokens: set  = set()
+        self._rest_clob_poll_expiry: dict = {}   # token_id → end_date_ts  (V28)
+        self._rest_clob_last_poll:   dict = {}   # token_id → last poll ts  (V28)
         self._rest_clob_running:    bool  = False
         self._start_rest_clob_poller()
 
@@ -1168,12 +1170,15 @@ class InfoEdgeStrategy(BaseStrategy):
             logger.warning("[XGB] Échec chargement modèle sprint: %s — fallback linéaire.", e)
 
     def _start_rest_clob_poller(self) -> None:
-        """V25: Lance un thread daemon qui poll le book REST CLOB toutes les 5s.
+        """V28 (ex-V25): Thread daemon — poll REST CLOB avec intervalle adaptatif.
 
-        Objectif : obtenir un p_poly frais pour les sprints qui viennent d'ouvrir
-        (WS book vide pendant les 30-60 premières secondes).
-        Endpoint utilisé : GET https://clob.polymarket.com/book?token_id=<id>
-        Auth non requise pour la lecture du book.
+        Intervalle par token :
+          - t < 120 s avant expiry → poll toutes les 1 s   (fenêtre critique)
+          - t ≥ 120 s              → poll toutes les 5 s   (économie réseau)
+
+        Le tick interne est 0.5 s pour réagir rapidement aux tokens qui passent
+        en zone critique sans sur-solliciter le CLOB quand t est grand.
+        Endpoint : GET https://clob.polymarket.com/book?token_id=<id>
         """
         import threading as _threading
         self._rest_clob_running = True
@@ -1181,16 +1186,25 @@ class InfoEdgeStrategy(BaseStrategy):
         def _loop():
             while self._rest_clob_running:
                 try:
+                    now = time.time()
                     tokens = list(self._rest_clob_poll_tokens)
                     for token_id in tokens:
-                        self._poll_rest_clob_one(token_id)
+                        # Déterminer l'intervalle souhaité selon le temps restant
+                        exp_ts = self._rest_clob_poll_expiry.get(token_id, 0.0)
+                        t_left = (exp_ts - now) if exp_ts > 0 else 9999.0
+                        desired_interval = 1.0 if t_left < 120.0 else 5.0
+
+                        last = self._rest_clob_last_poll.get(token_id, 0.0)
+                        if now - last >= desired_interval:
+                            self._poll_rest_clob_one(token_id)
+                            self._rest_clob_last_poll[token_id] = now
                 except Exception:
                     pass
-                time.sleep(5.0)
+                time.sleep(0.5)   # tick fin-grain — ne poll que si l'intervalle est écoulé
 
         t = _threading.Thread(target=_loop, daemon=True, name="RestClobPoller")
         t.start()
-        logger.debug("[V25 RestPoller] Démarré — poll 5s des tokens sprint actifs")
+        logger.debug("[V28 RestPoller] Démarré — poll adaptatif 1s(t<120s)/5s par token")
 
     def _poll_rest_clob_one(self, token_id: str) -> None:
         """Fetche le mid REST CLOB pour un token et met à jour le cache."""
@@ -1619,10 +1633,15 @@ class InfoEdgeStrategy(BaseStrategy):
             if is_sprint and hasattr(self.client, 'ws_client'):
                 self.client.ws_client.subscribe_tokens([token_yes, token_no])
 
-            # V25: enregistrer pour REST CLOB poll (p_poly frais dès t=0)
+            # V25/V28: enregistrer pour REST CLOB poll (p_poly frais dès t=0)
             if is_sprint and token_yes and token_no:
                 self._rest_clob_poll_tokens.add(token_yes)
                 self._rest_clob_poll_tokens.add(token_no)
+                # V28: mémoriser l'expiry pour l'intervalle adaptatif 1s/5s
+                _exp_ts = getattr(market, "end_date_ts", 0.0)
+                if _exp_ts > 0:
+                    self._rest_clob_poll_expiry[token_yes] = _exp_ts
+                    self._rest_clob_poll_expiry[token_no]  = _exp_ts
 
             # ── V15.2 Real Edge Score computed for EVERY sprint tick ────
             edge_pct, p_true, p_poly, vol_5m = 0.0, 0.0, 0.0, 0.0
