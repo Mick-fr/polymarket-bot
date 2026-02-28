@@ -1432,6 +1432,61 @@ class Trader:
                 # Garder vivant jusqu'à t<20s (critère absolu), puis abandon sans FOK.
                 if _is_up_down:
                     if _t_left > 20.0:
+                        # Option C: probe market AMM 2 USDC entre t=40s et t=50s (1 seul essai).
+                        # Si l'AMM Polymarket répond via CLOB, le FOK 2 USDC devrait passer
+                        # là où le FOK plein (6+ USDC) échouait par manque de depth.
+                        if 40.0 < _t_left < 52.0 and not info.get("amm_probe_done"):
+                            probe_usdc = min(2.0, info["usdc_amount"])
+                            logger.info(
+                                "[SprintMaker] 🔍 AMM probe %.1f USDC sur UP/DOWN (t=%.0fs) %s",
+                                probe_usdc, _t_left, info["token_id"][:16],
+                            )
+                            try:
+                                _pr = self.pm_client.place_market_order(
+                                    info["token_id"], probe_usdc, "buy"
+                                )
+                                _pr_status = (_pr or {}).get("status", "")
+                                _pr_taking = float((_pr or {}).get("takingAmount") or 0)
+                                if _pr_status == "matched" and _pr_taking > 0:
+                                    _pr_making = float((_pr or {}).get("makingAmount") or probe_usdc)
+                                    _pr_price  = _pr_making / _pr_taking
+                                    self.db.update_position(
+                                        token_id=info["token_id"],
+                                        market_id=info["market_id"],
+                                        question=info["market_question"],
+                                        side="YES",
+                                        quantity_delta=_pr_taking,
+                                        fill_price=_pr_price,
+                                    )
+                                    logger.info(
+                                        "[SprintMaker] ✅ AMM probe FILL! %.2fsh @ %.4f | %s",
+                                        _pr_taking, _pr_price, info["token_id"][:16],
+                                    )
+                                    from bot.telegram import send_alert
+                                    send_alert(
+                                        f"[AMM Probe] FILL {_pr_taking:.2f}sh @ {_pr_price:.4f}"
+                                        f" = {_pr_making:.2f}USDC | {info['token_id'][:8]}"
+                                    )
+                                    # Annuler le limit et enregistrer
+                                    try:
+                                        self.pm_client.cancel_order(order_id)
+                                    except Exception:
+                                        pass
+                                    with self._sprint_pending_lock:
+                                        self._sprint_pending_makers.pop(order_id, None)
+                                    continue
+                                else:
+                                    logger.warning(
+                                        "[SprintMaker] ❌ AMM probe rejeté (status=%s) "
+                                        "→ AMM inaccessible via CLOB %s",
+                                        _pr_status, info["token_id"][:16],
+                                    )
+                            except Exception as e_probe:
+                                logger.warning("[SprintMaker] AMM probe err: %s", e_probe)
+                            # Marquer probe tenté (évite boucle)
+                            with self._sprint_pending_lock:
+                                if order_id in self._sprint_pending_makers:
+                                    self._sprint_pending_makers[order_id]["amm_probe_done"] = True
                         continue  # Limit toujours vivant, prochain poll dans 5s
                     # t_left < 20s : abandon propre sans FOK
                     logger.warning(
