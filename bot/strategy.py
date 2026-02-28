@@ -1329,6 +1329,8 @@ class InfoEdgeStrategy(BaseStrategy):
                 taker_imb = float(self.binance_ws.get_cvd(ws_sym, 60.0))   # proxy buy imb
                 vol_300s  = self.binance_ws.get_ns_vol(ws_sym, 300.0)
                 vol_ratio = max(0.10, min(5.0, vol_60s / max(vol_300s, 1e-6)))
+                # V32: exposé pour regime detection Kelly dans generate_signals
+                self._last_vol_ratio = vol_ratio
 
                 # Dict complet → extraction ordonnée par self._sprint_feature_cols
                 feat_dict = {
@@ -2088,8 +2090,24 @@ class InfoEdgeStrategy(BaseStrategy):
                     # edge = 2×tedge_gate (6%) → kelly_mult 1.0×
                     # edge ≥ 4×tedge_gate (12%) → kelly_mult 1.5× (cap)
                     kelly_mult = min(1.5, max(0.5, abs_edge_v22 / (conf["tedge_gate"] * 2.0)))
+
+                    # V32: Regime detection — vol_ratio = vol_60s / vol_300s
+                    # trending (>1.5) : momentum fort mais retournement probable → ×0.85
+                    # calme    (<0.70) : peu de signal, edge potentiellement bruit  → ×0.75
+                    # neutre           : pas d'ajustement → ×1.00
+                    _vr = getattr(self, "_last_vol_ratio", 1.0)
+                    if _vr > 1.50:
+                        regime_mult  = 0.85
+                        regime_label = f"regime_trend×0.85(vr={_vr:.2f})"
+                    elif _vr < 0.70:
+                        regime_mult  = 0.75
+                        regime_label = f"regime_calm×0.75(vr={_vr:.2f})"
+                    else:
+                        regime_mult  = 1.00
+                        regime_label = None
+
                     base_order = (balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
-                                  * sizing_penalty * kelly_mult * cvd_size_mult)
+                                  * sizing_penalty * kelly_mult * cvd_size_mult * regime_mult)
                     order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
                     # V23: market orders → size = USDC (pas shares).
                     # place_market_order(amount=signal.size) attend des USDC.
@@ -2104,6 +2122,8 @@ class InfoEdgeStrategy(BaseStrategy):
                         penalty_detail.append(f"sniper×{conf['sniper_sizing_mult']}")
                     penalty_detail.append(f"kelly×{kelly_mult:.2f}")
                     penalty_detail.append(f"cvd×{cvd_size_mult:.2f}")
+                    if regime_label:
+                        penalty_detail.append(regime_label)
                     penalty_str = ("×".join([""] + penalty_detail) if penalty_detail else "×1.0")
                     direction = "YES" if side == "buy" else "NO"
                     logger.info(
