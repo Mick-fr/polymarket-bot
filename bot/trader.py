@@ -1378,12 +1378,7 @@ class Trader:
             FILL_TIMEOUT_S    = max(2.0, min(8.0, _t_left / 25.0))
             REQUOTE_TIMEOUT_S = max(1.5, min(3.0, FILL_TIMEOUT_S / 2.5))
 
-            # Fix Bug2: UP/DOWN markets CLOB user-to-user (pas d'AMM maker dans le carnet).
-            # FOK échoue car liquidity insuffisante. Garder le limit vivant jusqu'à t-20s.
             _is_up_down = ("$" not in info.get("market_question", ""))
-            if _is_up_down and _t_left > 22.0:
-                FILL_TIMEOUT_S    = _t_left - 20.0   # vivant jusqu'à 20s avant expiry
-                REQUOTE_TIMEOUT_S = _t_left - 20.0   # inaccessible (= FILL, pas de double timeout)
             try:
                 order = self.pm_client.get_order(order_id)
                 if order is None:
@@ -1431,6 +1426,29 @@ class Trader:
                     )
                     with self._sprint_pending_lock:
                         self._sprint_pending_makers.pop(order_id, None)
+                    continue
+
+                # Fix Bug2+3: UP/DOWN — CLOB user-to-user, limit jamais fillé par AMM.
+                # Garder vivant jusqu'à t<20s (critère absolu), puis abandon sans FOK.
+                if _is_up_down:
+                    if _t_left > 20.0:
+                        continue  # Limit toujours vivant, prochain poll dans 5s
+                    # t_left < 20s : abandon propre sans FOK
+                    logger.warning(
+                        "[SprintMaker] UP/DOWN t<20s → abandon limit sans FOK %s (t_left=%.0fs)",
+                        info["token_id"][:16], _t_left,
+                    )
+                    try:
+                        self.pm_client.cancel_order(order_id)
+                    except Exception:
+                        pass
+                    with self._sprint_pending_lock:
+                        self._sprint_pending_makers.pop(order_id, None)
+                    _st_u = getattr(self, "info_edge_strategy", None)
+                    if _st_u and hasattr(_st_u, "_sniper_anti_spam"):
+                        _st_u._sniper_anti_spam.pop(info.get("market_id", ""), None)
+                        logger.info("[SprintMaker] Anti-spam cleared %s (UP/DOWN zéro fill)",
+                                    info.get("market_id", "?")[:12])
                     continue
 
                 # ── Timeout premier essai → cancel + requote au mid ───────────
