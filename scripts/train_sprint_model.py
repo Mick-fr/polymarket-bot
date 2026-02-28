@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 """
-Upgrade 2 — Training XGBoost model for BTC sprint market direction prediction.
+V31 (ex-Upgrade 2) — Training XGBoost model for BTC sprint market direction prediction.
 
 Source de données : Binance 1-min klines BTCUSDT (6 mois, ~260k candles).
 Pas besoin de données Polymarket : le marché "Bitcoin Up or Down 5 min"
 résout exactement sur la clôture vs l'ouverture du créneau 5 min BTC.
 
-Features calculées à T+2min dans la fenêtre (= entrée standard du bot à t≈180s) :
-  - mom_30s   : momentum 30s (approximé par le return de la 1ère kline)
-  - mom_60s   : momentum 60s (return sur 2 klines)
-  - mom_300s  : momentum 5min (return sur 5 klines — fenêtre entière)
-  - vol_60s   : volatilité annualisée sur 2 klines de 1 min
-  - hour_sin  : encodage cyclique de l'heure UTC (sin)
-  - hour_cos  : encodage cyclique de l'heure UTC (cos)
+V31 — Upgrade 5 : 3 nouvelles features + multi-time sampling
+  Chaque fenêtre 5-min est maintenant échantillonnée aux minutes 0, 1, 2, 3
+  (au lieu de minute 2 seulement) → 4× plus d'exemples d'entraînement.
+
+Features (9 au total) :
+  --- Features Binance momentum (existantes) ---
+  - mom_30s        : momentum 30s (return kline i vs kline i-1)
+  - mom_60s        : momentum 60s (return kline i vs kline i-1, même résolution 1-min)
+  - mom_300s       : momentum 5min (return sur 5 klines)
+  - vol_60s        : volatilité annualisée sur 2 klines de 1 min
+  - hour_sin       : encodage cyclique heure UTC (sin)
+  - hour_cos       : encodage cyclique heure UTC (cos)
+  --- Nouvelles features V31 ---
+  - time_in_cycle  : minutes écoulées dans la fenêtre 5-min (0.0, 1.0, 2.0, 3.0)
+  - taker_imb      : imbalance taker buy [-1,1] = 2*(taker_buy_base/volume) - 1
+  - vol_ratio      : vol_court (3 klines) / vol_moyen (10 klines) — régime vol
 
 Target : int(window_close > window_open) — direction du créneau 5 min BTC.
 
@@ -44,7 +53,12 @@ MODEL_PATH   = MODEL_DIR / "sprint_xgb.pkl"
 FEATURE_PATH = MODEL_DIR / "sprint_features.json"
 CACHE_PATH   = MODEL_DIR / "_klines_cache.pkl"   # évite de re-télécharger
 
-FEATURE_COLS = ["mom_30s", "mom_60s", "mom_300s", "vol_60s", "hour_sin", "hour_cos"]
+FEATURE_COLS = [
+    "mom_30s", "mom_60s", "mom_300s", "vol_60s", "hour_sin", "hour_cos",
+    "time_in_cycle",   # V31: minutes écoulées dans la fenêtre (0-3)
+    "taker_imb",       # V31: imbalance taker buy [-1, +1]
+    "vol_ratio",       # V31: vol_court / vol_moyen (régime)
+]
 
 # ── Paramètres ────────────────────────────────────────────────────────────────
 MONTHS_HISTORY = 6
@@ -122,32 +136,36 @@ def fetch_binance_1m(symbol: str = SYMBOL, months: int = MONTHS_HISTORY) -> pd.D
 def build_features(df_1m: pd.DataFrame) -> pd.DataFrame:
     """Construit le dataset (features + target) à partir des klines 1-min.
 
-    Pour chaque créneau 5-min, on simule l'entrée à T+2min (minute 2 de la fenêtre)
-    et on calcule les features disponibles à ce moment.
+    V31 — Multi-time sampling :
+        Chaque fenêtre 5-min est échantillonnée aux minutes 0, 1, 2, 3
+        (minute 4 ignorée car trop proche de la clôture).
+        → 4× plus d'exemples vs l'ancien echantillonnage à minute 2 seulement.
 
-    Convention :
-        - window_open_price = open de la kline minute 0 du créneau
-        - entry_kline = kline minute 2 (index i=2 dans le créneau de 5)
-        - window_close_price = close de la kline minute 4
-        - target = int(window_close_price > window_open_price)
+    Pour chaque entrée au time_in_cycle=k (minute k de la fenêtre) :
+        - window_open_idx  = i - k          (kline minute 0 du créneau)
+        - window_close_idx = window_open_idx + 4  (kline minute 4 du créneau)
+        - target = int(close[window_close_idx] > open_[window_open_idx])
     """
     df_1m = df_1m.reset_index()
-    close = df_1m["close"].values
-    open_ = df_1m["open"].values
-    ts    = df_1m["ts_open"].values
+    close        = df_1m["close"].values.astype(float)
+    open_        = df_1m["open"].values.astype(float)
+    ts           = df_1m["ts_open"].values
+    volume_arr   = df_1m["volume"].values.astype(float)
+    taker_buy_arr = df_1m["taker_buy_base"].values.astype(float)
 
-    n  = len(df_1m)
+    n    = len(df_1m)
     rows = []
 
-    # Besoin d'au moins 30 klines d'historique + 2 klines futures
-    for i in range(30, n - 2):
+    for i in range(30, n - 5):
         dt = pd.Timestamp(ts[i])
-        # Seulement les klines à minute ≡ 2 (mod 5) dans le créneau
-        if dt.minute % 5 != 2:
+        time_in_cycle = dt.minute % 5   # 0, 1, 2, 3, or 4
+
+        # Minute 4 = trop tard pour entrer (1 min à clôture)
+        if time_in_cycle == 4:
             continue
 
-        window_open_idx  = i - 2   # kline minute 0 du créneau
-        window_close_idx = i + 2   # kline minute 4 du créneau
+        window_open_idx  = i - time_in_cycle        # kline minute 0 du créneau
+        window_close_idx = window_open_idx + 4       # kline minute 4 du créneau
 
         if window_open_idx < 30 or window_close_idx >= n:
             continue
@@ -156,42 +174,65 @@ def build_features(df_1m: pd.DataFrame) -> pd.DataFrame:
         window_close_price = close[window_close_idx]
         target = int(window_close_price > window_open_price)
 
-        # ── Features ──────────────────────────────────────────────────────────
-        # mom_30s  ≈ return de la kline juste avant l'entrée (1 min)
+        # ── Features momentum (inchangées) ────────────────────────────────────
         c_now  = close[i]
-        c_1m   = close[i - 1]   # 1 min ago
-        c_5m   = close[i - 5]   # 5 min ago
-        c_30m  = close[i - 30]  # 30 min ago
+        c_1m   = close[i - 1]
+        c_5m   = close[i - 5] if i >= 5 else close[0]
 
-        mom_30s  = (c_now - c_1m)  / c_1m  * 100.0 if c_1m  > 0 else 0.0
-        mom_60s  = (c_now - c_1m)  / c_1m  * 100.0  # même resolution pour 1-min klines
-        mom_300s = (c_now - c_5m)  / c_5m  * 100.0 if c_5m  > 0 else 0.0
+        mom_30s  = (c_now - c_1m) / c_1m  * 100.0 if c_1m  > 0 else 0.0
+        mom_60s  = mom_30s   # même résolution à 1-min klines
+        mom_300s = (c_now - c_5m) / c_5m  * 100.0 if c_5m  > 0 else 0.0
 
-        # vol_60s : std des log-returns sur les 2 dernières klines (approximation)
-        log_rets = []
+        # vol_60s : std des log-returns sur les 2 dernières klines
+        log_rets_2 = []
         for j in range(max(1, i - 1), i + 1):
             if close[j-1] > 0 and close[j] > 0:
-                log_rets.append(math.log(close[j] / close[j-1]))
-        vol_60s = float(np.std(log_rets)) * math.sqrt(525_600) if log_rets else 0.60
+                log_rets_2.append(math.log(close[j] / close[j-1]))
+        vol_60s = float(np.std(log_rets_2)) * math.sqrt(525_600) if log_rets_2 else 0.60
         vol_60s = max(0.10, min(3.0, vol_60s))
 
         # Encodage cyclique de l'heure UTC
-        hour = dt.hour + dt.minute / 60.0
+        hour     = dt.hour + dt.minute / 60.0
         hour_sin = math.sin(2 * math.pi * hour / 24.0)
         hour_cos = math.cos(2 * math.pi * hour / 24.0)
 
+        # ── Nouvelles features V31 ─────────────────────────────────────────────
+
+        # time_in_cycle : minutes écoulées depuis l'ouverture de la fenêtre (0-3)
+        tic = float(time_in_cycle)
+
+        # taker_imb : imbalance taker buy [-1, +1]
+        # 2*(taker_buy_base/volume) - 1  → +1 = tous acheteurs, -1 = tous vendeurs
+        vol_i    = max(volume_arr[i], 1e-9)
+        taker_imb = float(2.0 * taker_buy_arr[i] / vol_i - 1.0)
+        taker_imb = max(-1.0, min(1.0, taker_imb))
+
+        # vol_ratio : vol_court (3 klines) / vol_moyen (10 klines) — régime vol
+        def _annvol(start, end):
+            rets = [math.log(close[j] / close[j-1])
+                    for j in range(max(1, start), end + 1)
+                    if close[j-1] > 0 and close[j] > 0]
+            return float(np.std(rets)) * math.sqrt(525_600) if len(rets) >= 2 else 0.60
+
+        vol_3k  = _annvol(i - 2, i)
+        vol_10k = _annvol(i - 9, i)
+        vol_ratio = max(0.10, min(5.0, vol_3k / max(vol_10k, 1e-6)))
+
         rows.append({
-            "mom_30s":  mom_30s,
-            "mom_60s":  mom_60s,
-            "mom_300s": mom_300s,
-            "vol_60s":  vol_60s,
-            "hour_sin": hour_sin,
-            "hour_cos": hour_cos,
-            "target":   target,
+            "mom_30s":       mom_30s,
+            "mom_60s":       mom_60s,
+            "mom_300s":      mom_300s,
+            "vol_60s":       vol_60s,
+            "hour_sin":      hour_sin,
+            "hour_cos":      hour_cos,
+            "time_in_cycle": tic,
+            "taker_imb":     taker_imb,
+            "vol_ratio":     vol_ratio,
+            "target":        target,
         })
 
     df_feat = pd.DataFrame(rows)
-    print(f"[Features] {len(df_feat):,} exemples générés. "
+    print(f"[Features] {len(df_feat):,} exemples générés (multi-time). "
           f"Taux UP={df_feat['target'].mean():.3f} (base=0.50).")
     return df_feat
 
@@ -292,16 +333,25 @@ def save_model(model, feature_cols: list):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def sanity_check(model):
-    """Vérifie que le modèle produit des probabilités sensées sur des exemples synthétiques."""
+    """Vérifie que le modèle produit des probabilités sensées sur des exemples synthétiques.
+
+    Les cas couvrent 9 features V31 : mom_30s, mom_60s, mom_300s, vol_60s,
+    hour_sin, hour_cos, time_in_cycle, taker_imb, vol_ratio.
+    """
     test_cases = [
-        # mom_30s, mom_60s, mom_300s, vol_60s, hour_sin, hour_cos
-        [ 0.10,  0.15,  0.30, 0.60,  0.0,  1.0],   # fort momentum haussier → P(UP) élevé
-        [-0.10, -0.15, -0.30, 0.60,  0.0,  1.0],   # fort momentum baissier → P(UP) faible
-        [ 0.00,  0.00,  0.00, 0.60,  0.0,  1.0],   # neutre → P(UP) ≈ 0.50
+        # mom30  mom60  mom300  vol60  hsin  hcos  tic  timb  vrat
+        [ 0.10,  0.10,  0.30,  0.60,  0.0,  1.0,  2.0,  0.40, 1.2],  # fort UP
+        [-0.10, -0.10, -0.30,  0.60,  0.0,  1.0,  2.0, -0.40, 1.2],  # fort DOWN
+        [ 0.00,  0.00,  0.00,  0.60,  0.0,  1.0,  2.0,  0.00, 1.0],  # neutre
     ]
-    X_test = np.array(test_cases, dtype=np.float32)
+    # Construire X dans l'ordre des features du modèle
+    feat_map = {name: idx for idx, name in enumerate([
+        "mom_30s", "mom_60s", "mom_300s", "vol_60s", "hour_sin", "hour_cos",
+        "time_in_cycle", "taker_imb", "vol_ratio",
+    ])}
+    X_test = np.array(test_cases, dtype=np.float32)[:, [feat_map[c] for c in FEATURE_COLS]]
     probas  = model.predict_proba(X_test)[:, 1]
-    labels  = ["UP fort", "DOWN fort", "Neutre  "]
+    labels  = ["UP fort ", "DOWN fort", "Neutre  "]
     print("\n[Sanity] Vérification sur cas synthétiques :")
     for label, p in zip(labels, probas):
         bar = "▓" * int(p * 40)
@@ -320,7 +370,7 @@ def sanity_check(model):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Upgrade 2 — Sprint XGBoost Model Training")
+    print("  V31 Upgrade 5 — Sprint XGBoost Model Training (9 features)")
     print("=" * 60)
 
     df_klines  = fetch_binance_1m()

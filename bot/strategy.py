@@ -1280,19 +1280,22 @@ class InfoEdgeStrategy(BaseStrategy):
                 pass
         return 0.0
 
-    def _compute_p_true_updown(self, sym: str, funding: float) -> tuple[float, float, float]:
+    def _compute_p_true_updown(self, sym: str, funding: float,
+                               time_in_cycle_min: float = 2.0) -> tuple[float, float, float]:
         """Modèle directionnel pour marchés 'Bitcoin/ETH Up or Down'.
 
-        Upgrade 2 : utilise le modèle XGBoost calibré si bot/models/sprint_xgb.pkl
-        est présent. Fallback automatique vers le modèle linéaire si absent ou erreur.
+        V31 (Upgrade 5) : vector de features dict-based → backward-compatible avec
+        l'ancien modèle 6-features ET le nouveau modèle 9-features.
 
-        Features XGBoost (doivent correspondre exactement à scripts/train_sprint_model.py) :
-          mom_30s   : momentum 30s depuis binance_ws.get_30s_momentum()
-          mom_60s   : momentum 60s depuis binance_ws.get_ns_momentum(60)
-          mom_300s  : momentum 300s depuis binance_ws.get_ns_momentum(300)
-          vol_60s   : vol réalisée 60s depuis binance_ws.get_ns_vol(60)
-          hour_sin  : encodage cyclique heure UTC (sin)
-          hour_cos  : encodage cyclique heure UTC (cos)
+        Features disponibles (sous-ensemble selon self._sprint_feature_cols) :
+          mom_30s        : momentum 30s
+          mom_60s        : momentum 60s
+          mom_300s       : momentum 300s
+          vol_60s        : vol réalisée 60s annualisée
+          hour_sin/cos   : heure UTC cyclique
+          time_in_cycle  : minutes écoulées dans la fenêtre 5-min (V31)
+          taker_imb      : CVD 60s normalisé [-1,+1] (V31, proxy taker imbalance)
+          vol_ratio      : vol_60s / vol_300s (régime vol, V31)
 
         Returns: (p_true_up, mom_30s, obi)
         """
@@ -1308,12 +1311,12 @@ class InfoEdgeStrategy(BaseStrategy):
             cvd_n  = self.binance_ws.get_cvd(ws_sym, 60.0)
             obi    = 0.70 * obi_d5 + 0.30 * cvd_n
 
-        # ── Upgrade 2 : inférence XGBoost ────────────────────────────────────
+        # ── V31 : inférence XGBoost dict-based (backward-compatible) ──────────
         if self._sprint_model is not None and self.binance_ws is not None:
             try:
                 import math, numpy as _np
                 ws_sym = f"{sym}USDT" if len(sym) <= 3 else sym
-                mom_30s  = mom   # déjà calculé ci-dessus
+                mom_30s  = mom
                 mom_60s  = self.binance_ws.get_ns_momentum(ws_sym, 60.0)
                 mom_300s = self.binance_ws.get_ns_momentum(ws_sym, 300.0)
                 vol_60s  = self.binance_ws.get_ns_vol(ws_sym, 60.0)
@@ -1322,17 +1325,37 @@ class InfoEdgeStrategy(BaseStrategy):
                 hour_sin = math.sin(2 * math.pi * hour / 24.0)
                 hour_cos = math.cos(2 * math.pi * hour / 24.0)
 
-                X = _np.array([[
-                    mom_30s, mom_60s, mom_300s, vol_60s, hour_sin, hour_cos,
-                ]], dtype=_np.float32)
+                # V31: nouvelles features (ignorées si non dans self._sprint_feature_cols)
+                taker_imb = float(self.binance_ws.get_cvd(ws_sym, 60.0))   # proxy buy imb
+                vol_300s  = self.binance_ws.get_ns_vol(ws_sym, 300.0)
+                vol_ratio = max(0.10, min(5.0, vol_60s / max(vol_300s, 1e-6)))
+
+                # Dict complet → extraction ordonnée par self._sprint_feature_cols
+                feat_dict = {
+                    "mom_30s":       mom_30s,
+                    "mom_60s":       mom_60s,
+                    "mom_300s":      mom_300s,
+                    "vol_60s":       vol_60s,
+                    "hour_sin":      hour_sin,
+                    "hour_cos":      hour_cos,
+                    "time_in_cycle": float(time_in_cycle_min),
+                    "taker_imb":     taker_imb,
+                    "vol_ratio":     vol_ratio,
+                }
+                X = _np.array(
+                    [[feat_dict[c] for c in self._sprint_feature_cols]],
+                    dtype=_np.float32,
+                )
 
                 p_up = float(self._sprint_model.predict_proba(X)[0, 1])
                 p_up = max(0.05, min(0.95, p_up))
 
                 logger.debug(
-                    "[XGB] p_true=%.4f | mom30=%.4f mom60=%.4f mom300=%.4f "
-                    "vol60=%.3f h_sin=%.3f h_cos=%.3f",
-                    p_up, mom_30s, mom_60s, mom_300s, vol_60s, hour_sin, hour_cos,
+                    "[XGB] p_true=%.4f | mom30=%.4f mom300=%.4f vol60=%.3f "
+                    "tic=%.1f timb=%.2f vratio=%.2f | feats=%s",
+                    p_up, mom_30s, mom_300s, vol_60s,
+                    time_in_cycle_min, taker_imb, vol_ratio,
+                    self._sprint_feature_cols,
                 )
                 return p_up, mom, obi
 
@@ -1483,7 +1506,10 @@ class InfoEdgeStrategy(BaseStrategy):
         if self._is_updown_market(market.question):
             # ── Branche A : marché directionnel "Up or Down" ──────────────────
             # Modèle momentum + OBI — pas de strike fixe
-            p_true, _mom, _obi = self._compute_p_true_updown(sym, funding)
+            # V31: time_in_cycle = minutes écoulées depuis l'ouverture de la fenêtre
+            _minutes_left    = market.days_to_expiry * 1440.0
+            _time_in_cycle   = max(0.0, min(4.0, 5.0 - _minutes_left))
+            p_true, _mom, _obi = self._compute_p_true_updown(sym, funding, _time_in_cycle)
             logger.debug(
                 "[EDGE UpDown] mom=%.4f%% obi=%.3f → p_true=%.4f p_poly=%.4f",
                 _mom, _obi, p_true, p_poly
