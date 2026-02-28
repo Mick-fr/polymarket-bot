@@ -1586,10 +1586,12 @@ class InfoEdgeStrategy(BaseStrategy):
         markets = self._universe.get_eligible_markets()
         
         # Récupération sécurisée des données Binance
-        live_spot = 0.0
-        live_mom  = 0.0
-        live_obi  = 0.0
-        live_cvd30 = 0.0   # V26: CVD 30s pour confirmation directionnelle snipers
+        live_spot  = 0.0
+        live_mom   = 0.0
+        live_obi   = 0.0
+        live_cvd10 = 0.0   # F3: CVD 10s — absorption (taker burst court terme)
+        live_cvd30 = 0.0   # V26: CVD 30s — sizing modifier principal
+        live_cvd60 = 0.0   # F3: CVD 60s — divergence (tendance taker long terme)
         if self.binance_ws and self.binance_ws.is_connected:
             try:
                 live_spot  = self.binance_ws.get_mid("BTCUSDT")
@@ -1597,7 +1599,9 @@ class InfoEdgeStrategy(BaseStrategy):
                 live_obi   = (0.70 * self.binance_ws.get_obi_depth5("BTCUSDT")
                               + 0.30 * self.binance_ws.get_cvd("BTCUSDT", 60.0))
                 live_mom   = self.binance_ws.get_30s_momentum("BTCUSDT")
+                live_cvd10 = self.binance_ws.get_cvd("BTCUSDT", 10.0)
                 live_cvd30 = self.binance_ws.get_cvd("BTCUSDT", 30.0)
+                live_cvd60 = self.binance_ws.get_cvd("BTCUSDT", 60.0)
                 # V19: Write to memory buffer instead of DB
                 with self._telemetry_lock:
                     self._telemetry_buffer["live_btc_spot"] = round(live_spot, 2)
@@ -1900,22 +1904,74 @@ class InfoEdgeStrategy(BaseStrategy):
                     (edge_pct > 0 and o_val > 0) or (edge_pct < 0 and o_val < 0)
                 )
 
-                # V29: CVD_30s → sizing modifier (était gate dure en V26).
-                # Bloquer le trade quand CVD est neutre rate trop de setups valides.
-                # À la place : moduler la taille selon l'alignement taker flow.
-                #   aligne fort (|cvd30| ≥ 0.08, même dir)      → ×1.00 (confirmé)
-                #   neutre      (|cvd30| < 0.08)                 → ×0.85 (bruit)
-                #   opposé fort (|cvd30| ≥ 0.08, dir contraire) → ×0.70 (contre-signal)
-                cvd30_val = live_cvd30  # scalaire [-1, +1] déjà calculé plus haut
+                # F3: CVD avancé — multi-TF + divergence + absorption
+                #
+                # BASE (V29): alignement CVD_30s avec direction de l'edge
+                #   confirmé  (|cvd30| ≥ 0.08, même dir) → ×1.00
+                #   neutre    (|cvd30| < 0.08)            → ×0.85
+                #   contre    (|cvd30| ≥ 0.08, dir opp.)  → ×0.70
+                #
+                # DIVERGENCE (CVD_60s vs mom_30s):
+                #   prix monte + CVD_60s vend → vendeurs cachés = bearish div
+                #   prix baisse + CVD_60s achète → acheteurs cachés = bullish div
+                #   divergence confirme notre edge → ×1.10 | invalide → ×0.85
+                #
+                # ABSORPTION (CVD_10s fort + prix statique):
+                #   |cvd10| > 0.25 ET |mom_30s| < 0.02% → liquidity wall
+                #   absorption confirme edge → ×1.10 | invalide → ×0.85
+                cvd30_val = live_cvd30
+
+                # ── Base V29 ──────────────────────────────────────────────────
                 _cvd_aligns = (
                     (edge_pct > 0 and cvd30_val > 0) or (edge_pct < 0 and cvd30_val < 0)
                 )
                 if abs(cvd30_val) >= 0.08 and _cvd_aligns:
-                    cvd_size_mult = 1.00   # taker flow confirme → pleine taille
+                    _base_cvd = 1.00
                 elif abs(cvd30_val) < 0.08:
-                    cvd_size_mult = 0.85   # CVD neutre → légère prudence
+                    _base_cvd = 0.85
                 else:
-                    cvd_size_mult = 0.70   # CVD contre → réduction forte
+                    _base_cvd = 0.70
+
+                # ── Divergence: mom_30s direction vs CVD_60s direction ────────
+                _dir_mom_f3  = 1 if m30 > 0.0002 else (-1 if m30 < -0.0002 else 0)
+                _dir_cvd60   = 1 if live_cvd60 > 0.05 else (-1 if live_cvd60 < -0.05 else 0)
+                _divergence  = (_dir_mom_f3 != 0 and _dir_cvd60 != 0
+                                and _dir_mom_f3 != _dir_cvd60)
+                # divergence confirme edge : prix monte + CVD vend → bearish → confirme BUY NO
+                _div_confirms = _divergence and (
+                    (edge_pct < 0 and _dir_mom_f3 > 0 and _dir_cvd60 < 0) or
+                    (edge_pct > 0 and _dir_mom_f3 < 0 and _dir_cvd60 > 0)
+                )
+                if _div_confirms:
+                    _base_cvd = min(1.15, _base_cvd * 1.10)   # divergence confirme → +10%
+                elif _divergence:
+                    _base_cvd *= 0.85                          # divergence invalide → −15%
+
+                # ── Absorption: CVD_10s fort + prix statique ─────────────────
+                # Grand flux taker en 10s mais prix immobile = mur de liquidité
+                _has_absorption = abs(live_cvd10) > 0.25 and abs(m30) < 0.0002
+                _abs_confirms = _has_absorption and (
+                    (edge_pct < 0 and live_cvd10 > 0.25) or   # acheteurs absorbés → bearish
+                    (edge_pct > 0 and live_cvd10 < -0.25)     # vendeurs absorbés  → bullish
+                )
+                if _abs_confirms:
+                    _base_cvd = min(1.15, _base_cvd * 1.10)
+                elif _has_absorption:
+                    _base_cvd *= 0.85
+
+                cvd_size_mult = round(max(0.50, min(1.15, _base_cvd)), 2)
+
+                # Tag pour les logs EVAL/FIRE
+                if _div_confirms:
+                    _cvd_tag = "/div✓"
+                elif _divergence:
+                    _cvd_tag = "/div✗"
+                elif _abs_confirms:
+                    _cvd_tag = "/abs✓"
+                elif _has_absorption:
+                    _cvd_tag = "/abs✗"
+                else:
+                    _cvd_tag = ""
 
                 # ── Évaluation des 3 paths (hiérarchique) ─────────────────
 
@@ -2035,7 +2091,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(time_left_sec <= conf["sniper_time_a_sec"],   f"t≤{conf['sniper_time_a_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(time_left_sec >= _min_t,                      f"t≥{_min_t}s"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
-                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
+                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f}{_cvd_tag})",
                     ])
                     sb_detail = " ".join([
                         _sc(abs_edge_v22  >= conf["sniper_edge_b"],       f"E≥{conf['sniper_edge_b']:.0f}%"),
@@ -2043,7 +2099,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(time_left_sec >= _min_t,                      f"t≥{_min_t}s"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
-                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
+                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f}{_cvd_tag})",
                     ])
                     fire_tag = " → 🔥FIRE" if will_fire else ""
                     spam_tag = " ⛔COOLDOWN" if sniper_already_fired else ""
