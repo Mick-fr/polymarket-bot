@@ -2069,13 +2069,13 @@ class InfoEdgeStrategy(BaseStrategy):
                     side        = "buy" if edge_pct > 0 else "sell"
                     fire_reason = "SNIPER_B_ULTRA_TRIGGERED"
                     is_sniper   = True
-                    self._sniper_anti_spam[market.market_id] = now_ts
+                    # Anti-spam posé APRÈS le guard p_poly stale (évite cooldown fantôme)
 
                 elif sniper_a_pass and not sniper_already_fired:
                     side        = "buy" if edge_pct > 0 else "sell"
                     fire_reason = "SNIPER_A_HIGH_TRIGGERED"
                     is_sniper   = True
-                    self._sniper_anti_spam[market.market_id] = now_ts
+                    # Anti-spam posé APRÈS le guard p_poly stale (évite cooldown fantôme)
 
                 # ── Guard p_poly stale : bloquer FIRE si p_poly = défaut 0.500 ──
                 # Cause du bug 2026-02-28 : restart → REST CLOB pas encore warm →
@@ -2101,19 +2101,33 @@ class InfoEdgeStrategy(BaseStrategy):
                         pass
 
                     if abs(p_poly - 0.500) < 0.005:
-                        # p_poly toujours stale après rescue → bloquer
-                        if not hasattr(self, '_stale_blocked_ts'):
-                            self._stale_blocked_ts: dict = {}
-                        _now_sb = time.time()
-                        if _now_sb - self._stale_blocked_ts.get(market.market_id, 0.0) > 30.0:
-                            logger.warning(
-                                "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
-                                "sync REST aussi vide, signal ignoré",
-                                p_poly, market.market_id,
+                        # Relaxation pour marchés UP/DOWN (sans strike $) :
+                        # Ces marchés démarrent naturellement à p_poly=0.500 et leur
+                        # CLOB peut rester vide toute la durée (AMM-only).
+                        # Après 120s d'ouverture, on accepte 0.500 comme prix AMM réel.
+                        _no_strike_mkt = ("$" not in market.question)
+                        _elapsed_s     = 300.0 - time_left_sec  # sprint = 300s
+                        if _no_strike_mkt and _elapsed_s >= 120.0:
+                            logger.info(
+                                "[STALE RELAX] UP/DOWN CLOB vide depuis %.0fs — "
+                                "p_poly=0.500 accepté comme prix AMM (marché %s)",
+                                _elapsed_s, market.market_id,
                             )
-                            self._stale_blocked_ts[market.market_id] = _now_sb
-                        side        = None
-                        fire_reason = None
+                            # side reste posé — trade autorisé
+                        else:
+                            # p_poly toujours stale après rescue → bloquer
+                            if not hasattr(self, '_stale_blocked_ts'):
+                                self._stale_blocked_ts: dict = {}
+                            _now_sb = time.time()
+                            if _now_sb - self._stale_blocked_ts.get(market.market_id, 0.0) > 30.0:
+                                logger.warning(
+                                    "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
+                                    "sync REST aussi vide, signal ignoré",
+                                    p_poly, market.market_id,
+                                )
+                                self._stale_blocked_ts[market.market_id] = _now_sb
+                            side        = None
+                            fire_reason = None
 
                 # ── PULSE + SNIPER_EVAL LOG (throttled 30s par marché) ────────
                 # Un seul log par marché toutes les 30s pour éviter le spam.
@@ -2123,6 +2137,12 @@ class InfoEdgeStrategy(BaseStrategy):
                     self._last_eval_log_ts: dict = {}
 
                 will_fire = (standard_pass or sniper_a_pass or sniper_b_pass) and not sniper_already_fired and (side is not None)
+
+                # Anti-spam sniper : posé ICI (après guard p_poly) pour éviter le cooldown fantôme.
+                # Si side=None (FIRE BLOCKED), le cooldown n'est PAS posé → retry au prochain sprint.
+                if will_fire and is_sniper:
+                    self._sniper_anti_spam[market.market_id] = now_ts
+
                 throttle_elapsed = now - self._last_eval_log_ts.get(market.market_id, 0.0) > 30.0
 
                 if will_fire or throttle_elapsed:
