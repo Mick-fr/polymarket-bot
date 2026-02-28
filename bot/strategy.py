@@ -2107,11 +2107,13 @@ class InfoEdgeStrategy(BaseStrategy):
                         # Après 120s d'ouverture, on accepte 0.500 comme prix AMM réel.
                         _no_strike_mkt = ("$" not in market.question)
                         _elapsed_s     = 300.0 - time_left_sec  # sprint = 300s
-                        if _no_strike_mkt and _elapsed_s >= 120.0:
+                        if _no_strike_mkt and _elapsed_s >= 120.0 and is_sniper:
+                            # Seulement niveau sniper (E≥8%/12%) pour AMM-only :
+                            # standard_pass (E~3%) trop faible quand p_poly incertain.
                             logger.info(
                                 "[STALE RELAX] UP/DOWN CLOB vide depuis %.0fs — "
-                                "p_poly=0.500 accepté comme prix AMM (marché %s)",
-                                _elapsed_s, market.market_id,
+                                "p_poly=0.500 accepté (sniper %s, marché %s)",
+                                _elapsed_s, fire_reason, market.market_id,
                             )
                             # side reste posé — trade autorisé
                         else:
