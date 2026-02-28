@@ -1867,14 +1867,22 @@ class InfoEdgeStrategy(BaseStrategy):
                     (edge_pct > 0 and o_val > 0) or (edge_pct < 0 and o_val < 0)
                 )
 
-                # V26: dir_ok_cvd — flux taker 30s confirme la direction.
-                # CVD_30s mesure les véritables takers (ordres marché exécutés),
-                # plus fiable que OBI (qui peut être spoofé par des ordres limite annulés).
-                # Seuil 0.08 = 8% de déséquilibre buy/sell sur 30s (bruit < 5%).
+                # V29: CVD_30s → sizing modifier (était gate dure en V26).
+                # Bloquer le trade quand CVD est neutre rate trop de setups valides.
+                # À la place : moduler la taille selon l'alignement taker flow.
+                #   aligne fort (|cvd30| ≥ 0.08, même dir)      → ×1.00 (confirmé)
+                #   neutre      (|cvd30| < 0.08)                 → ×0.85 (bruit)
+                #   opposé fort (|cvd30| ≥ 0.08, dir contraire) → ×0.70 (contre-signal)
                 cvd30_val = live_cvd30  # scalaire [-1, +1] déjà calculé plus haut
-                dir_ok_cvd = (abs(cvd30_val) >= 0.08) and (
+                _cvd_aligns = (
                     (edge_pct > 0 and cvd30_val > 0) or (edge_pct < 0 and cvd30_val < 0)
                 )
+                if abs(cvd30_val) >= 0.08 and _cvd_aligns:
+                    cvd_size_mult = 1.00   # taker flow confirme → pleine taille
+                elif abs(cvd30_val) < 0.08:
+                    cvd_size_mult = 0.85   # CVD neutre → légère prudence
+                else:
+                    cvd_size_mult = 0.70   # CVD contre → réduction forte
 
                 # ── Évaluation des 3 paths (hiérarchique) ─────────────────
 
@@ -1888,25 +1896,23 @@ class InfoEdgeStrategy(BaseStrategy):
 
                 # Path 2 — Sniper A : haute conviction, fenêtre temporelle serrée
                 # OBI confirme la direction à la place du momentum.
-                # V26: CVD_30s requis EN PLUS de OBI pour filtrer le spoofing.
+                # V29: CVD_30s n'est plus une gate — il module la taille via cvd_size_mult.
                 sniper_a_pass = (
                     abs_edge_v22     >= conf["sniper_edge_a"]
                     and abs_obi_v22  >= conf["sniper_obi_a"]
                     and time_left_sec <= conf["sniper_time_a_sec"]
                     and dir_ok_obi
-                    and dir_ok_cvd   # V26: taker flow confirme (filtre anti-spoof)
                 )
 
                 # Path B — Sniper B : ultra conviction, fenêtre large.
                 # Cible les setups edge ≥ 12% + OBI fort bloqués uniquement
                 # par mom faible (ex: near-miss 08:01:45 edge=+13.75% OBI=+0.85).
-                # V26: CVD_30s requis pour confirmer la conviction directionnelle.
+                # V29: CVD_30s → sizing modifier uniquement.
                 sniper_b_pass = (
                     abs_edge_v22     >= conf["sniper_edge_b"]
                     and abs_obi_v22  >= conf["sniper_obi_b"]
                     and time_left_sec <= conf["sniper_time_b_sec"]
                     and dir_ok_obi
-                    and dir_ok_cvd   # V26: taker flow confirme
                 )
 
                 # ── Anti-spam Sniper ──────────────────────────────────────
@@ -1972,29 +1978,28 @@ class InfoEdgeStrategy(BaseStrategy):
                         _sc(abs_obi_v22   >= conf["sniper_obi_a"],        f"OBI≥{conf['sniper_obi_a']}"),
                         _sc(time_left_sec <= conf["sniper_time_a_sec"],   f"t≤{conf['sniper_time_a_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
-                        _sc(dir_ok_cvd,                                   f"CVD30={cvd30_val:+.2f}"),
+                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
                     ])
                     sb_detail = " ".join([
                         _sc(abs_edge_v22  >= conf["sniper_edge_b"],       f"E≥{conf['sniper_edge_b']:.0f}%"),
                         _sc(abs_obi_v22   >= conf["sniper_obi_b"],        f"OBI≥{conf['sniper_obi_b']}"),
                         _sc(time_left_sec <= conf["sniper_time_b_sec"],   f"t≤{conf['sniper_time_b_sec']}s(={time_left_sec:.0f}s)"),
                         _sc(dir_ok_obi,                                   "dirOBI"),
-                        _sc(dir_ok_cvd,                                   f"CVD30={cvd30_val:+.2f}"),
+                        f"CVD30={cvd30_val:+.2f}(×{cvd_size_mult:.2f})",
                     ])
                     fire_tag = " → 🔥FIRE" if will_fire else ""
                     spam_tag = " ⛔COOLDOWN" if sniper_already_fired else ""
                     logger.info(
-                        "[V26 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
+                        "[V29 EVAL] %-18s | Spot=%.0f$ t=%.0fs | "
                         "E=%+.2f%%(std:%3.0f%% sa:%3.0f%% sb:%3.0f%%) "
-                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) CVD30=%+.2f | "
-                        "dir[M=%s O=%s C=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
+                        "M=%+.4f%%(%3.0f%%) OBI=%+.3f(sa:%3.0f%% sb:%3.0f%%) CVD30=%+.2f(×%.2f) | "
+                        "dir[M=%s O=%s] gate[Std=%s SA=%s SB=%s]%s%s | SA[%s] | SB[%s]",
                         market.question[:18], spot, time_left_sec,
                         edge_pct, e_std, e_sa, e_sb,
                         m30, m_std,
-                        o_val, o_sa, o_sb, cvd30_val,
+                        o_val, o_sa, o_sb, cvd30_val, cvd_size_mult,
                         "✓" if dir_ok_mom    else "✗",
                         "✓" if dir_ok_obi    else "✗",
-                        "✓" if dir_ok_cvd    else "✗",
                         "✓" if standard_pass else "✗",
                         "✓" if sniper_a_pass else "✗",
                         "✓" if sniper_b_pass else "✗",
@@ -2027,7 +2032,8 @@ class InfoEdgeStrategy(BaseStrategy):
                     # edge = 2×tedge_gate (6%) → kelly_mult 1.0×
                     # edge ≥ 4×tedge_gate (12%) → kelly_mult 1.5× (cap)
                     kelly_mult = min(1.5, max(0.5, abs_edge_v22 / (conf["tedge_gate"] * 2.0)))
-                    base_order = balance * self.ORDER_SIZE_PCT * self.SIZING_MULT * sizing_penalty * kelly_mult
+                    base_order = (balance * self.ORDER_SIZE_PCT * self.SIZING_MULT
+                                  * sizing_penalty * kelly_mult * cvd_size_mult)
                     order_size = min(base_order * 2.8, portfolio * 0.06, conf["max_order_usdc"])
                     # V23: market orders → size = USDC (pas shares).
                     # place_market_order(amount=signal.size) attend des USDC.
@@ -2041,6 +2047,7 @@ class InfoEdgeStrategy(BaseStrategy):
                     if sniper_applied:
                         penalty_detail.append(f"sniper×{conf['sniper_sizing_mult']}")
                     penalty_detail.append(f"kelly×{kelly_mult:.2f}")
+                    penalty_detail.append(f"cvd×{cvd_size_mult:.2f}")
                     penalty_str = ("×".join([""] + penalty_detail) if penalty_detail else "×1.0")
                     direction = "YES" if side == "buy" else "NO"
                     logger.info(
