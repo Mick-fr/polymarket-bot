@@ -1992,11 +1992,17 @@ class InfoEdgeStrategy(BaseStrategy):
                 # market exécuté au vrai prix CLOB (~0.97) → edge réel négatif.
                 # On annule le signal ; l'EVAL log affiche le vrai état des gates.
                 if side and abs(p_poly - 0.500) < 0.005:
-                    logger.warning(
-                        "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
-                        "REST CLOB pas encore warm, signal ignoré",
-                        p_poly, market.market_id,
-                    )
+                    # Throttle : log au plus 1 fois par marché toutes les 30s
+                    if not hasattr(self, '_stale_blocked_ts'):
+                        self._stale_blocked_ts: dict = {}
+                    _now_sb = time.time()
+                    if _now_sb - self._stale_blocked_ts.get(market.market_id, 0.0) > 30.0:
+                        logger.warning(
+                            "[FIRE BLOCKED] p_poly stale (%.3f) sur %s — "
+                            "REST CLOB pas encore warm, signal ignoré",
+                            p_poly, market.market_id,
+                        )
+                        self._stale_blocked_ts[market.market_id] = _now_sb
                     side        = None
                     fire_reason = None
 
