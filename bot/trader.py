@@ -1357,18 +1357,15 @@ class Trader:
           matched/filled → enregistre position en DB, nettoie
           cancelled/expired → nettoie
         """
-        # V27: timeouts fixes remplacés par des timeouts dynamiques.
-        # Sur un marché de 300s avec fenêtre d'entrée 25-180s, attendre
-        # 10s + 8s = 18s avant FOK est catastrophique (≥10% de la fenêtre).
-        # Logique :
-        #   t < 120s restantes → FILL=2s REQUOTE=2s  (total ≤ 4s → FOK)
-        #   t ≥ 120s restantes → FILL=5s REQUOTE=3s  (total ≤ 8s → FOK)
-        # Les valeurs par token sont recalculées dans la boucle ci-dessous.
-        FILL_TIMEOUT_DEFAULT    = 5.0
-        REQUOTE_TIMEOUT_DEFAULT = 3.0
-        FILL_TIMEOUT_URGENT     = 2.0
-        REQUOTE_TIMEOUT_URGENT  = 2.0
-
+        # V32: timeout continu fonction du temps restant dans le sprint.
+        # Plus le sprint expire bientôt, plus on est agressif.
+        # Formule : FILL = clamp(t_left/25, 2.0, 8.0)
+        #           REQUOTE = clamp(FILL/2.5, 1.5, 3.0)
+        # Exemples :
+        #   t=200s → FILL=8.0s  REQUOTE=3.0s
+        #   t=120s → FILL=4.8s  REQUOTE=1.9s
+        #   t= 60s → FILL=2.4s  REQUOTE=1.5s
+        #   t= 25s → FILL=2.0s  REQUOTE=1.5s
         with self._sprint_pending_lock:
             pending = dict(self._sprint_pending_makers)
         if not pending:
@@ -1378,12 +1375,11 @@ class Trader:
         for order_id, info in pending.items():
             age = now - info["ts_posted"]
 
-            # Timeout dynamique selon temps restant du sprint
+            # Timeout continu selon temps restant du sprint
             _tid_exp   = self._sprint_expiry_cache.get(info.get("token_id", ""), 0.0)
             _t_left    = (_tid_exp - now) if _tid_exp > 0 else 9999.0
-            _urgent    = _t_left < 120.0
-            FILL_TIMEOUT_S    = FILL_TIMEOUT_URGENT    if _urgent else FILL_TIMEOUT_DEFAULT
-            REQUOTE_TIMEOUT_S = REQUOTE_TIMEOUT_URGENT if _urgent else REQUOTE_TIMEOUT_DEFAULT
+            FILL_TIMEOUT_S    = max(2.0, min(8.0, _t_left / 25.0))
+            REQUOTE_TIMEOUT_S = max(1.5, min(3.0, FILL_TIMEOUT_S / 2.5))
             try:
                 order = self.pm_client.get_order(order_id)
                 if order is None:

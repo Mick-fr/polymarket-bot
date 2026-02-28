@@ -2136,48 +2136,69 @@ class InfoEdgeStrategy(BaseStrategy):
                             self._last_quote_ts[market.yes_token_id] = time.time()
                             continue
 
-                    # ── Upgrade 1 (V27) : Limit maker — 2 sources de prix, priorité WS → REST
+                    # ── Upgrade 1 (V32) : Limit maker — spread-aware + adverse-sel filter
                     #
                     # Source A — WS CLOB book (temps réel, O(1)) :
-                    #   Post à best_ask − 1 tick. Se remplit si un vendeur
-                    #   accepte de croiser à ce prix. Économie : ~spread entier.
+                    #   spread ≤ 2 ticks  → market direct (impossible de s'insérer)
+                    #   spread ≥ 4 cents  → limit au mid exact (capture spread/2)
+                    #   spread normal     → limit à ask − 1 tick (0.001)
                     #
                     # Source B — REST CLOB cache (5s lag) :
                     #   Post à mid + 0.5 tick si WS vide ET t > 45s ET cache frais.
-                    #   Probabilité fill ~30-50% en 2s. Si non rempli → FOK market.
-                    #   Économie : ~spread/2 vs FOK (même si fill rate 30%, EV > 0).
                     #
-                    # Les deux paths utilisent _sprint_pending_makers (watcher 2s/2s).
-                    # Si ni A ni B : FOK market direct (comportement V22 inchangé).
+                    # Filtre adverse selection (C) :
+                    #   OBI > 0.75 → flux très informé/directionnel → market direct
+                    #   Le gain de rebate maker ne compense pas la latence d'exécution.
                     _sm_limit_price = None
                     _sm_shares      = None
 
-                    # ── Source A : WS book ───────────────────────────────────────
-                    if hasattr(self.client, "ws_client") and self.client.ws_client.running:
+                    # ── C) Filtre adverse selection : OBI fort → market direct ───
+                    _high_adverse = abs_obi_v22 > 0.75
+                    if _high_adverse:
+                        logger.debug(
+                            "[SprintMaker] OBI fort (%.3f>0.75) → market direct "
+                            "(adverse sel. + latence)",
+                            abs_obi_v22,
+                        )
+
+                    # ── Source A : WS book (spread-aware) ───────────────────────
+                    if not _high_adverse and hasattr(self.client, "ws_client") and self.client.ws_client.running:
                         _ob = self.client.ws_client.get_order_book(signal_token)
                         if _ob and _ob.get("asks"):
                             _best_ask = float(_ob["asks"][0]["price"])
-                            _lp = round(max(0.01, _best_ask - 0.001), 3)
-                            _sh = round(usdc_amount / _lp, 2)
-                            if _sh >= 5.0:
-                                _sm_limit_price = _lp
-                                _sm_shares      = _sh
+                            _best_bid = float(_ob["bids"][0]["price"]) if _ob.get("bids") else None
+                            _spread   = round(_best_ask - _best_bid, 4) if _best_bid else None
+                            if _spread is not None and _spread <= 0.002:
+                                # Locked/1-tick → impossible de s'insérer → FOK
+                                logger.debug("[SprintMaker] Spread locked (%.3f) → FOK", _spread)
+                            else:
+                                if _spread is not None and _spread >= 0.040:
+                                    # Spread large → mid exact → capture spread/2
+                                    _lp = round((_best_ask + _best_bid) / 2, 3)
+                                else:
+                                    # Spread normal → ask − 1 tick
+                                    _lp = round(max(0.01, _best_ask - 0.001), 3)
+                                _sh = round(usdc_amount / _lp, 2)
+                                if _sh >= 5.0:
+                                    _sm_limit_price = _lp
+                                    _sm_shares      = _sh
+                                    logger.debug(
+                                        "[SprintMaker] WS spread=%.3f → limit@%.3f (%s sh)",
+                                        _spread if _spread else 0.0, _lp, _sh,
+                                    )
 
                     # ── Source B : REST CLOB cache (fallback si WS vide) ────────
-                    # Condition : pas de WS book ET t > 45s ET cache frais (< 10s)
-                    if _sm_limit_price is None and time_left_sec > 45.0:
+                    if not _high_adverse and _sm_limit_price is None and time_left_sec > 45.0:
                         _rc = self._rest_clob_mid_cache.get(signal_token)
                         if _rc and (time.time() - _rc[1]) < 10.0:
                             _rest_mid = _rc[0]
-                            # mid + 0.5 tick = légèrement au-dessus du mid
-                            # → s'insère entre mid et ask, économise ~spread/2
                             _lp = round(min(0.970, _rest_mid + 0.005), 3)
                             _sh = round(usdc_amount / _lp, 2)
                             if _sh >= 5.0:
                                 _sm_limit_price = _lp
                                 _sm_shares      = _sh
                                 logger.debug(
-                                    "[V27 SprintMaker] REST cache %.3f → limit@%.3f (%s sh) t=%.0fs",
+                                    "[SprintMaker] REST cache %.3f → limit@%.3f (%s sh) t=%.0fs",
                                     _rest_mid, _lp, _sh, time_left_sec,
                                 )
 
@@ -2186,7 +2207,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         _price      = _sm_limit_price
                         _size       = _sm_shares
                     else:
-                        # Ni WS ni REST disponibles → FOK market direct
+                        # Locked/OBI-fort/no-data → FOK market direct
                         _order_type = "market"
                         _price      = 0.99
                         _size       = usdc_amount
