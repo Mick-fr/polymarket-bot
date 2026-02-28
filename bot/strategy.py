@@ -1550,6 +1550,28 @@ class InfoEdgeStrategy(BaseStrategy):
             _minutes_left    = minutes_to_expiry  # déjà calculé précisément ci-dessus
             _time_in_cycle   = max(0.0, min(4.0, 5.0 - _minutes_left))
             p_true, _mom, _obi = self._compute_p_true_updown(sym, funding, _time_in_cycle)
+
+            # V35: BS hybrid — blend XGBoost (65%) + BS(strike implicite via mom_300s) (35%)
+            # Ancre le XGBoost sur la géométrie Black-Scholes réelle du sprint.
+            # strike_open = niveau spot au début du cycle (estimé via mom_300s).
+            # Appliqué seulement si mom_300s ≥ 0.1% (déplacement non-trivial).
+            _p_xgb = p_true
+            if spot > 0 and _minutes_left > 0 and self.binance_ws and self.binance_ws.is_connected:
+                try:
+                    _ws_sym_ud = f"{sym}USDT" if len(sym) <= 3 else sym
+                    _mom_300s  = self.binance_ws.get_ns_momentum(_ws_sym_ud, 300.0)
+                    if abs(_mom_300s) >= 0.001:  # ≥ 0.1% — signal non trivial
+                        _strike_open = spot / (1.0 + _mom_300s)
+                        _p_bs = self._compute_p_true(spot, _strike_open, _minutes_left, vol)
+                        p_true = max(0.05, min(0.95, 0.65 * _p_xgb + 0.35 * _p_bs))
+                        logger.debug(
+                            "[EDGE UpDown] BS hybrid: mom300=%+.3f%% K=%.2f "
+                            "p_xgb=%.4f p_bs=%.4f → p_hybrid=%.4f",
+                            _mom_300s * 100, _strike_open, _p_xgb, _p_bs, p_true
+                        )
+                except Exception:
+                    pass  # BS hybrid optionnel — XGBoost seul en fallback
+
             logger.debug(
                 "[EDGE UpDown] mom=%.4f%% obi=%.3f → p_true=%.4f p_poly=%.4f",
                 _mom, _obi, p_true, p_poly
@@ -1925,6 +1947,19 @@ class InfoEdgeStrategy(BaseStrategy):
                     "max_net_exposure_pct": 25.0,  # [15–40]    % du solde expo nette max
                     "max_order_usdc":       12.0,  # [6–20]     plafond USDC par ordre
                 }
+
+                # V35: Overrides thresholds pour marchés UP/DOWN (sans strike $)
+                # Ces marchés : p_poly = 0.500 fixe (AMM-only), exécution via probe AMM t=40-52s.
+                # • edge bar plus haute  : XGBoost ±20% max → nécessite conviction forte
+                # • OBI relaxé           : OBI Binance moins corrélé au résultat UP/DOWN
+                # • t_min abaissé 60→30s : probe AMM est instantané, pas de limit-fill delay
+                _no_strike_mkt_conf = ("$" not in market.question)
+                if _no_strike_mkt_conf:
+                    conf["sniper_edge_a"]       = 15.0   # 8% → 15%
+                    conf["sniper_obi_a"]        = 0.50   # 0.65 → 0.50
+                    conf["sniper_edge_b"]       = 20.0   # 12% → 20%
+                    conf["sniper_obi_b"]        = 0.40   # 0.55 → 0.40
+                    conf["sniper_min_time_sec"] = 30     # 60s → 30s (probe instant)
 
                 # ── Variables locales ─────────────────────────────────────
                 abs_edge_v22  = abs(edge_pct)
