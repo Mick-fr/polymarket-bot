@@ -1893,6 +1893,25 @@ class InfoEdgeStrategy(BaseStrategy):
             if (time.time() - self._last_quote_ts.get(market.yes_token_id, 0.0)) < self._quote_cooldown:
                 continue
 
+            # V36: Cooldown 45s post-reconnect WS Binance.
+            # Après un reconnect, btc_history et les momentum (mom_300s notamment) sont
+            # partiellement stale → les premières secondes post-reconnect donnent des edges
+            # fictifs très élevés (ex: E=+40% immédiatement après reconnect = artefact).
+            # Bloquer les signaux sprint pendant 45s pour laisser le buffer se remplir.
+            if is_sprint and self.binance_ws:
+                _reconnect_age = time.time() - getattr(self.binance_ws, "_last_reconnect_ts", 0.0)
+                if _reconnect_age < 45.0:
+                    if not hasattr(self, '_reconnect_skip_log_ts'):
+                        self._reconnect_skip_log_ts = 0.0
+                    if time.time() - self._reconnect_skip_log_ts > 10.0:
+                        logger.info(
+                            "[WS COOLDOWN] Reconnect il y a %.0fs — signaux bloqués (%.0f/45s) "
+                            "pour stabiliser mom_300s",
+                            _reconnect_age, 45.0 - _reconnect_age,
+                        )
+                        self._reconnect_skip_log_ts = time.time()
+                    continue
+
             # --- Trading Gate Sprint (V22) : Standard + Sniper Override ---
             if is_sprint:
 

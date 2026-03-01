@@ -608,6 +608,41 @@ class Trader:
                         self._sprint_expiry_cache[m.no_token_id]  = m.end_date_ts
             self.active_targets = sprint_ids
 
+        # V36: Détection positions expirées non vendues ("claimables") — alerte Telegram.
+        # Si end_date_ts > 120s ago ET mid ≥ 0.90 ET position encore ouverte → non vendue.
+        # Le bot ne peut pas appeler redeemPositions() (hors scope py_clob_client) →
+        # l'utilisateur doit réclamer manuellement sur polymarket.com.
+        try:
+            _now_claim = time.time()
+            if not hasattr(self, '_claim_alerted'):
+                self._claim_alerted: set = set()
+            for _pos in self.db.get_all_positions():
+                _tk = _pos.get("token_id", "")
+                _qty = float(_pos.get("quantity") or 0)
+                if _qty <= 0.01 or _tk in self._claim_alerted:
+                    continue
+                _exp_c = self._sprint_expiry_cache.get(_tk, 0.0)
+                if _exp_c <= 0 or (_now_claim - _exp_c) < 120.0:
+                    continue  # pas encore expiré depuis assez longtemps
+                _mid_c = float(_pos.get("current_mid") or 0)
+                if _mid_c >= 0.90:  # position gagnante non vendue
+                    _q = _pos.get("question", _tk[:12])
+                    from bot.telegram import send_alert
+                    send_alert(
+                        f"⚠️ POSITION CLAIMABLE\n"
+                        f"{_q[:50]}\n"
+                        f"qty={_qty:.2f} mid={_mid_c:.3f}\n"
+                        f"➡️ Réclamer sur polymarket.com"
+                    )
+                    logger.warning(
+                        "[CLAIM ALERT] Position non vendue après expiry (%.0fs) → mid=%.3f "
+                        "qty=%.2f %s — réclamer manuellement",
+                        _now_claim - _exp_c, _mid_c, _qty, _tk[:16],
+                    )
+                    self._claim_alerted.add(_tk)
+        except Exception as _e_claim:
+            logger.debug("[CLAIM] Erreur check: %s", _e_claim)
+
         # 4.a V14.0 Anti-Stale AI Sentiment isolation
         try:
             from bot.ai_edge import get_ai_global_sentiment_bias
