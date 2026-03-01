@@ -1560,7 +1560,21 @@ class Trader:
                                 _amm_mid = self.pm_client.get_midpoint(info["token_id"])
                             except Exception:
                                 pass
-                            if _amm_mid is not None and _amm_mid > _p_true_fire + 0.02:
+                            # V42: CLOB vide → prix AMM invérifiable → skip probe (conservateur)
+                            # Quand get_midpoint() retourne None (CLOB sans quotes), on ne peut pas
+                            # confirmer que le prix AMM est en deçà de p_true → ne pas acheter au
+                            # risque de payer 0.92 pour un token estimé à 0.82 (edge négatif).
+                            if _amm_mid is None:
+                                logger.info(
+                                    "[SprintMaker] ⛔ AMM probe annulé — CLOB vide, prix AMM invérifiable "
+                                    "(p_true_fire=%.3f) | %s",
+                                    _p_true_fire, info["token_id"][:16],
+                                )
+                                with self._sprint_pending_lock:
+                                    if order_id in self._sprint_pending_makers:
+                                        self._sprint_pending_makers[order_id]["amm_probe_done"] = True
+                                continue
+                            if _amm_mid > _p_true_fire + 0.02:
                                 logger.warning(
                                     "[SprintMaker] ⛔ AMM probe annulé — prix AMM %.3f > p_true_fire %.3f "
                                     "(edge négatif ≈ %.1f%%) | %s",
