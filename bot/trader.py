@@ -668,6 +668,57 @@ class Trader:
             except Exception as e_tpsl:
                 logger.error("[TP/SL] Erreur inattendue: %s", e_tpsl)
 
+        # 6.b V37 Daily Retrain Check — alerte si réentraînement XGBoost recommandé
+        if not hasattr(self, "_last_retrain_check_ts"):
+            self._last_retrain_check_ts = now - 86400  # déclenchement au 1er passage
+        if now - self._last_retrain_check_ts >= 86400:
+            self._last_retrain_check_ts = now
+            try:
+                from bot.telegram import send_alert
+                reasons = []
+
+                # Critère 1 : volume de trades live suffisant (≥200)
+                closed = self.db.get_closed_trades(limit=10000)
+                n_trades = len(closed)
+                if n_trades >= 200:
+                    reasons.append(f"✅ {n_trades} trades live — dataset suffisant pour réentraîner")
+
+                # Critère 2 : win rate live vs AUC backtest (0.7959 ≈ 80%)
+                if n_trades >= 30:
+                    wins = sum(1 for t in closed if (t.get("pnl_usdc") or 0) > 0)
+                    win_rate = wins / n_trades
+                    xgb_auc_ref = 0.7959
+                    if abs(win_rate - xgb_auc_ref) > 0.10:
+                        reasons.append(
+                            f"⚠️ Win rate live {win_rate*100:.1f}% vs AUC backtest {xgb_auc_ref*100:.1f}% "
+                            f"(écart {abs(win_rate-xgb_auc_ref)*100:.1f}% > 10%)"
+                        )
+
+                # Critère 3 : MOM DECAY déclenché souvent sur 7j (strong_pct > 40%)
+                try:
+                    decay_stats = self.db.get_decay_stats(days=7)
+                    d_total  = decay_stats.get("total") or 0
+                    d_strong = decay_stats.get("strong_decay_count") or 0
+                    strong_pct = d_strong / max(d_total, 1) * 100
+                    if d_total >= 10 and strong_pct > 40:
+                        reasons.append(
+                            f"⚠️ MOM DECAY fort sur 7j : {strong_pct:.0f}% des events "
+                            f"w≥20% ({d_strong}/{d_total}) → XGBoost capte mal les retournements"
+                        )
+                except Exception:
+                    pass
+
+                if reasons:
+                    msg = "🔁 [RETRAIN CHECK] Réentraînement XGBoost recommandé :\n" + "\n".join(reasons)
+                    send_alert(msg)
+                    logger.warning("[RETRAIN CHECK] %s", " | ".join(reasons))
+                else:
+                    logger.info(
+                        "[RETRAIN CHECK] Pas nécessaire — trades=%d, critères non atteints", n_trades
+                    )
+            except Exception as _e_retrain:
+                logger.debug("[RETRAIN CHECK] Erreur: %s", _e_retrain)
+
         # 5. Purge DB
         self._cycles_since_purge += 1
         if self._cycles_since_purge >= self._DB_PURGE_INTERVAL_CYCLES:
