@@ -2262,15 +2262,30 @@ class InfoEdgeStrategy(BaseStrategy):
                         # Après 120s d'ouverture, on accepte 0.500 comme prix AMM réel.
                         _no_strike_mkt = ("$" not in market.question)
                         _elapsed_s     = 300.0 - time_left_sec  # sprint = 300s
-                        if _no_strike_mkt and _elapsed_s >= 120.0 and is_sniper:
+                        # V41: VOL SKIP guard — si round calme, STALE RELAX n'est pas fiable
+                        # (modèle BS sur p_poly=0.500 avec VR bas = edge fictif).
+                        _stale_vol_ok = _hot_by_vol or _hot_by_mom
+                        if _no_strike_mkt and _elapsed_s >= 120.0 and is_sniper and _stale_vol_ok:
                             # Seulement niveau sniper (E≥8%/12%) pour AMM-only :
                             # standard_pass (E~3%) trop faible quand p_poly incertain.
                             logger.info(
                                 "[STALE RELAX] UP/DOWN CLOB vide depuis %.0fs — "
-                                "p_poly=0.500 accepté (sniper %s, marché %s)",
+                                "p_poly=0.500 accepté (sniper %s, marché %s, vr=%.2f m60=%.4f%%)",
                                 _elapsed_s, fire_reason, market.market_id,
+                                _vr_vsd, _m60_vsd * 100,
                             )
                             # side reste posé — trade autorisé
+                        elif _no_strike_mkt and _elapsed_s >= 120.0 and is_sniper and not _stale_vol_ok:
+                            # Round calme : STALE RELAX bloqué (V41)
+                            logger.info(
+                                "[STALE RELAX BLOCKED] Round calme — vr=%.2f(th=%.2f) m60=%.4f%%(th=%.4f%%) "
+                                "→ STALE RELAX annulé (marché %s, elapsed=%.0fs)",
+                                _vr_vsd, conf["vol_spike_ratio_min"],
+                                _m60_vsd * 100, conf["vol_spike_mom60_min"] * 100,
+                                market.market_id, _elapsed_s,
+                            )
+                            side        = None
+                            fire_reason = None
                         else:
                             # p_poly toujours stale après rescue → bloquer
                             if not hasattr(self, '_stale_blocked_ts'):

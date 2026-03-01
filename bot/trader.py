@@ -1441,13 +1441,20 @@ class Trader:
                         )
                 else:
                     self._tpsl_zombie_errors.pop(token_id, None)
-                    # V24b: FOK 400 → bloquer re-entrée strategy 10 min
-                    # Évite de pyramider sur une position en SL qu'on ne peut pas vendre.
-                    if "400" in err_s and self.strategy and hasattr(self.strategy, "_last_quote_ts"):
-                        self.strategy._last_quote_ts[token_id] = time.time() + 600.0
+                    if "400" in err_s:
+                        # V41: FOK 400 sur PARTIAL_TP → passer en mode FULL_TP au lieu de
+                        # bloquer 10min. Le CLOB n'a pas de liquidité pour 50% de la position ;
+                        # FULL_TP tentera une vente complète au prochain tick.
+                        # Bloquer 10min était contre-productif quand le marché expire dans 30s.
+                        with self._tpsl_lock:
+                            self._tpsl_partial_exited.add(token_id)
                         logger.warning(
-                            "[TP/SL] FOK 400 → re-entrée bloquée 10min %s", token_id[:16]
+                            "[TP/SL] FOK 400 PARTIAL_TP → skip partial, passage FULL_TP mode %s",
+                            token_id[:16],
                         )
+                        # Garder le cooldown anti-pyramidage sur la stratégie (V24b, clé yes_token)
+                        if self.strategy and hasattr(self.strategy, "_last_quote_ts"):
+                            self.strategy._last_quote_ts[token_id] = time.time() + 600.0
                     logger.error("[TP/SL] Erreur SELL %s sur %s: %s", reason, token_id[:16], e)
 
     # ── Upgrade 3 — Sprint maker cancel-replace watcher ──────────────────────────
