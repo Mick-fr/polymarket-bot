@@ -89,6 +89,8 @@ class Signal:
     mid_price:       float = 0.0
     # V38: p_true au moment du FIRE — utilisé par SprintMaker probe pour valider l'edge AMM
     p_true:          float = 0.5
+    # V40: yes_token_id pour libérer le cooldown en cas d'ordre non envoyé (network failure)
+    yes_token_id:    str   = ""
 
 
 @dataclass
@@ -2522,6 +2524,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         token_id=signal_token,
                         market_id=market.market_id,
                         market_question=market.question,
+                        yes_token_id=market.yes_token_id,  # V40: pour clear cooldown si ordre échoue
                         side="buy",  # Toujours BUY (YES ou NO selon direction)
                         order_type=_order_type,
                         price=_price,

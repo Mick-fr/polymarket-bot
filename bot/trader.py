@@ -2752,6 +2752,7 @@ class Trader:
             status="submitted",
         )
 
+        _order_sent = False  # V40: True seulement après réponse HTTP reçue
         try:
             if self.config.bot.paper_trading:
                 resp = self._simulate_order(signal)
@@ -2810,6 +2811,7 @@ class Trader:
                     label=f"place_market({signal.token_id[:16]})"
                 )
 
+            _order_sent = True  # V40: réponse reçue, ordre transmis au CLOB
             order_id = resp.get("orderID") or resp.get("id") or str(resp)
 
             # ── Normalisation du statut CLOB ───────────────────────────────────
@@ -3005,6 +3007,17 @@ class Trader:
             logger.error("Erreur exécution ordre: %s", e)
             self.db.update_order_status(local_id, "error", error=str(e))
             self.db.add_log("ERROR", "trader", f"Erreur ordre: {e}")
+            # V40: Si l'ordre n'a jamais atteint Polymarket (network failure → status_code=None),
+            # libérer le cooldown pour permettre un retry immédiat sur le prochain tick.
+            # On ne touche PAS au cooldown si _order_sent=True (ordre peut être dans le CLOB).
+            if not _order_sent:
+                _yes_tok = getattr(signal, "yes_token_id", "") or signal.token_id
+                if self.strategy and hasattr(self.strategy, "_last_quote_ts") and _yes_tok:
+                    self.strategy._last_quote_ts.pop(_yes_tok, None)
+                    logger.info(
+                        "[V40] Cooldown libéré %s — ordre non envoyé (%s)",
+                        _yes_tok[:16], type(e).__name__,
+                    )
             return True  # Approuvé par risk, mais erreur d'exécution
 
         return True  # Signal approuvé et traité
