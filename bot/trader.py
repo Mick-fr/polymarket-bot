@@ -481,19 +481,20 @@ class Trader:
         if symbol != "BTCUSDT":
             return
             
-        # Kill switch check (V20.1 cached values)
-        kill_switch = self.cached_kill_switch
-        bot_active = self.cached_bot_active
-        if kill_switch or not bot_active:
-            return
-
-        # Upgrade 5 — TP/SL sprint sub-seconde (indépendant du mode stratégie)
-        # Tourne sur chaque tick BTCUSDT → latence ≤ 500ms vs 60s maintenance.
+        # V39: TP/SL des positions EXISTANTES tourne AVANT le kill switch.
+        # Bug précédent : kill_switch → return → positions bloquées jusqu'à expiration
+        # → claim Polygon obligatoire car CLOB fermé. Fix: TP/SL indépendant du kill switch.
         if not self.config.bot.paper_trading:
             try:
                 self._check_sprint_tp_sl_fast()
             except Exception as e_tpsl5:
                 logger.debug("[TP/SL FAST] Erreur: %s", e_tpsl5)
+
+        # Kill switch check (V20.1 cached values) — bloque NOUVEAUX signaux seulement
+        kill_switch = self.cached_kill_switch
+        bot_active = self.cached_bot_active
+        if kill_switch or not bot_active:
+            return
 
         strategy_mode = self.cached_strategy_mode
         if strategy_mode != "Info Edge Only":
@@ -1137,6 +1138,12 @@ class Trader:
             sell_fraction = 1.0
             if _secs_left < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left:.0f}s)"
+            elif _secs_left < 60.0 and mid_ws >= 0.85:
+                # V39: EXPIRY_WIN_EARLY — vendre une position gagnante à t<60s
+                # pendant que le CLOB/AMM a encore de la liquidité.
+                # Sans ça : EXPIRY_EXIT à t<12s arrive trop tard (CLOB fermé) →
+                # tokens gagnants bloqués → claim Polygon manuel obligatoire.
+                reason = f"EXPIRY_WIN_EARLY(t={_secs_left:.0f}s,mid={mid_ws:.3f})"
             elif ratio >= tp_ratio:
                 reason = f"TP×{ratio:.2f}(th={tp_ratio:.2f})"
             elif ratio >= TP_PARTIAL_RATIO and not _is_partial_done:
@@ -1329,6 +1336,9 @@ class Trader:
             sell_fraction_slow = 1.0
             if _secs_left_slow < 12.0:
                 reason = f"EXPIRY_EXIT(t={_secs_left_slow:.0f}s)"
+            elif _secs_left_slow < 60.0 and mid >= 0.85:
+                # V39: EXPIRY_WIN_EARLY (slow path) — même logique que fast path
+                reason = f"EXPIRY_WIN_EARLY(t={_secs_left_slow:.0f}s,mid={mid:.3f})"
             elif ratio >= tp_ratio_slow:
                 reason = f"TP×{ratio:.2f}(th={tp_ratio_slow:.2f})"
             elif ratio >= TP_PARTIAL_RATIO and not _is_partial_done_slow:
