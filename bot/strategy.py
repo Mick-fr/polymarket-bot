@@ -1572,6 +1572,34 @@ class InfoEdgeStrategy(BaseStrategy):
                 except Exception:
                     pass  # BS hybrid optionnel — XGBoost seul en fallback
 
+            # V37: Momentum Decay Filter — si mom_60s contredit mom_300s,
+            # le momentum est en retournement → régresser p_true vers 0.5.
+            # Prévient les entrées tardives sur momentum stale : XGBoost/BS ont
+            # intégré l'élan des 5 dernières minutes mais BTC a déjà inversé.
+            # Actif seulement si mom_300s ≥ 0.1% ET mom_60s ≥ 0.05% ET directions opposées.
+            if spot > 0 and self.binance_ws and self.binance_ws.is_connected:
+                try:
+                    _wd_sym  = f"{sym}USDT" if len(sym) <= 3 else sym
+                    _m60_ud  = self.binance_ws.get_ns_momentum(_wd_sym, 60.0)
+                    _m300_ud = self.binance_ws.get_ns_momentum(_wd_sym, 300.0)
+                    if (abs(_m300_ud) >= 0.001           # momentum long non trivial
+                            and abs(_m60_ud) >= 0.0005   # momentum récent mesurable (≥ 0.05%)
+                            and _m60_ud * _m300_ud < 0): # directions opposées → retournement
+                        _p_before = p_true
+                        # Régression vers 0.5 proportionnelle au ratio |mom_60s| / |mom_300s|
+                        # Plus le retournement récent est fort → plus on régresse
+                        _decay_r = min(1.0, abs(_m60_ud) / max(abs(_m300_ud), 1e-9))
+                        _w_decay = 0.40 * _decay_r  # régression max 40% vers 0.5
+                        p_true   = max(0.05, min(0.95, p_true * (1.0 - _w_decay) + 0.5 * _w_decay))
+                        logger.info(
+                            "[MOM DECAY] mom300=%+.3f%% mom60=%+.3f%% → inversion détectée "
+                            "p_true %.4f → %.4f (decay=%.0f%%)",
+                            _m300_ud * 100, _m60_ud * 100,
+                            _p_before, p_true, _w_decay * 100,
+                        )
+                except Exception:
+                    pass  # optionnel — ne bloque pas le signal
+
             logger.debug(
                 "[EDGE UpDown] mom=%.4f%% obi=%.3f → p_true=%.4f p_poly=%.4f",
                 _mom, _obi, p_true, p_poly
