@@ -1542,5 +1542,33 @@ def create_app(config: AppConfig, db: Database) -> Flask:
                 f'<span class="text-slate-300 font-mono text-xs mr-3">{funding*100:+.4f}%</span>'
                 f'<span class="text-xs">{ws_dot}{ws_lbl}</span>')
 
+    @app.route("/api/decay-stats")
+    @login_required
+    def api_decay_stats():
+        """V37 — Statistiques du Momentum Decay Filter pour calibration des seuils."""
+        from flask import request as _req
+        days = int(_req.args.get("days", 7))
+        try:
+            stats = db.get_decay_stats(days=days)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+        total = stats.get("total") or 0
+        avg_w = stats.get("avg_weight") or 0.0
+        avg_p_red = stats.get("avg_p_reduction") or 0.0
+        strong = stats.get("strong_decay_count") or 0
+
+        return jsonify({
+            "period_days":        days,
+            "total_events":       total,
+            "avg_weight_pct":     round(avg_w * 100, 1),
+            "avg_p_reduction":    round(avg_p_red, 4),
+            "strong_decay_count": strong,          # w_decay ≥ 20%
+            "strong_pct":         round(strong / max(total, 1) * 100, 1),
+            "last_event":         stats.get("last_event"),
+            "distribution":       stats.get("distribution", []),
+            "recent":             stats.get("recent", []),
+        })
+
     logger.info("Dashboard Flask initialisé avec toutes les routes (+ analytics + V7.5).")
     return app

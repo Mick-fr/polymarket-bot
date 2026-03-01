@@ -168,6 +168,23 @@ class Database:
             except Exception:
                 pass  # Colonne déjà existante → ignoré
 
+        # Migration V37 : table decay_log (Momentum Decay Filter monitoring)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS decay_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT    NOT NULL,
+                market_id   TEXT,
+                mom_300s    REAL    NOT NULL,
+                mom_60s     REAL    NOT NULL,
+                decay_r     REAL    NOT NULL,
+                w_decay     REAL    NOT NULL,
+                p_before    REAL    NOT NULL,
+                p_after     REAL    NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_decay_log_ts ON decay_log(timestamp)")
+        conn.commit()
+
     # ── Kill Switch ──────────────────────────────────────────────
 
     def get_kill_switch(self) -> bool:
@@ -1233,7 +1250,7 @@ class Database:
                 self.update_high_water_mark(current_balance)
             
             self.add_log(
-                "WARNING", "system", 
+                "WARNING", "system",
                 f"[Factory Reset] Tout réinitialisé — nouvelle base saine. Portfolio = {current_balance:.2f} USDC, HWM reset."
             )
             return {"status": "ok", "message": "Factory reset completed", "hwm": current_balance}
@@ -1241,3 +1258,77 @@ class Database:
             import logging
             logging.getLogger("db").error(f"Factory reset failed: {e}")
             return {"status": "error", "message": str(e)}
+
+    # ── V37 Momentum Decay Log ────────────────────────────────────
+
+    def log_decay_event(
+        self,
+        market_id: str,
+        mom_300s: float,
+        mom_60s: float,
+        decay_r: float,
+        w_decay: float,
+        p_before: float,
+        p_after: float,
+    ) -> None:
+        """Enregistre un événement Momentum Decay pour calibration ultérieure."""
+        import datetime as _dt
+        ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO decay_log
+                   (timestamp, market_id, mom_300s, mom_60s, decay_r, w_decay, p_before, p_after)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (ts, market_id, mom_300s, mom_60s, decay_r, w_decay, p_before, p_after),
+            )
+
+    def get_decay_stats(self, days: int = 7) -> dict:
+        """Retourne des statistiques agrégées sur les événements MOM DECAY."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*)                                    AS total,
+                    AVG(w_decay)                                AS avg_weight,
+                    AVG(p_before - p_after)                     AS avg_p_reduction,
+                    MAX(w_decay)                                AS max_weight,
+                    SUM(CASE WHEN w_decay >= 0.20 THEN 1 END)  AS strong_decay_count,
+                    MAX(timestamp)                              AS last_event
+                FROM decay_log
+                WHERE timestamp >= datetime('now', ? || ' days')
+                """,
+                (f"-{days}",),
+            )
+            row = cur.fetchone()
+            summary = dict(row) if row else {}
+
+            # Distribution par bucket de w_decay (arrondi 5%)
+            cur.execute(
+                """
+                SELECT
+                    CAST(ROUND(w_decay / 0.05) * 5 AS INTEGER) AS bucket_pct,
+                    COUNT(*)                                    AS cnt
+                FROM decay_log
+                WHERE timestamp >= datetime('now', ? || ' days')
+                GROUP BY bucket_pct
+                ORDER BY bucket_pct
+                """,
+                (f"-{days}",),
+            )
+            summary["distribution"] = [
+                {"bucket_pct": r["bucket_pct"], "count": r["cnt"]}
+                for r in cur.fetchall()
+            ]
+
+            # Derniers 20 événements pour inspection manuelle
+            cur.execute(
+                """
+                SELECT timestamp, market_id, mom_300s, mom_60s, decay_r, w_decay, p_before, p_after
+                FROM decay_log
+                ORDER BY id DESC
+                LIMIT 20
+                """,
+            )
+            summary["recent"] = [dict(r) for r in cur.fetchall()]
+
+        return summary

@@ -1597,6 +1597,20 @@ class InfoEdgeStrategy(BaseStrategy):
                             _m300_ud * 100, _m60_ud * 100,
                             _p_before, p_true, _w_decay * 100,
                         )
+                        # V37: Persist pour calibration (non-bloquant)
+                        try:
+                            if hasattr(self, 'db') and self.db:
+                                self.db.log_decay_event(
+                                    market_id=market.id,
+                                    mom_300s=_m300_ud,
+                                    mom_60s=_m60_ud,
+                                    decay_r=_decay_r,
+                                    w_decay=_w_decay,
+                                    p_before=_p_before,
+                                    p_after=p_true,
+                                )
+                        except Exception:
+                            pass
                 except Exception:
                     pass  # optionnel — ne bloque pas le signal
 
