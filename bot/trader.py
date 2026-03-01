@@ -2777,8 +2777,12 @@ class Trader:
                         actual_size   = signal.size
                         actual_price  = signal.price or 0.5
                 else:
-                    actual_size   = signal.size
-                    actual_price  = signal.price or 0.5
+                    # Fix: limit matchée immédiatement → prix réel via makingAmount/takingAmount
+                    # (ex: limit 0.51 matchée à 0.22 → avg correct = 0.22 et non 0.51)
+                    _tak_l = float(resp.get("takingAmount") or 0)
+                    _mak_l = float(resp.get("makingAmount") or 0)
+                    actual_size  = _tak_l if _tak_l > 0 else signal.size
+                    actual_price = (_mak_l / _tak_l) if (_tak_l > 0 and _mak_l > 0) else (signal.price or 0.5)
 
                 # Plafonner le SELL à la quantité réellement détenue (évite positions négatives)
                 if signal.side == "sell":
