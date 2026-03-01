@@ -1016,7 +1016,19 @@ class Trader:
                     logger.debug("[TP/SL FAST] REST mid fallback %.4f pour %s",
                                  mid_ws, token_id[:16])
                 else:
-                    continue  # aucune source de mid → 60s chrono prend le relais
+                    # Fix: marché expiré (t > +10s) + book CLOB vide (UP/DOWN) →
+                    # déclencher EXPIRY_EXIT via DB mid sans attendre le chronjob 60s.
+                    _exp_pre = self._sprint_expiry_cache.get(token_id, 0.0)
+                    if _exp_pre > 0 and (now - _exp_pre) > 10.0:
+                        _db_mid = float(p.get("current_mid") or 0)
+                        mid_ws = _db_mid if 0.01 <= _db_mid <= 0.99 else avg
+                        logger.info(
+                            "[TP/SL FAST] Marché expiré depuis %.0fs, book vide → "
+                            "EXPIRY_EXIT forcé via DB mid %.3f (%s)",
+                            now - _exp_pre, mid_ws, token_id[:16],
+                        )
+                    else:
+                        continue  # aucune source de mid → 60s chrono prend le relais
 
             ratio = mid_ws / avg
 
