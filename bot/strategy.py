@@ -87,6 +87,8 @@ class Signal:
     spread_at_signal: float = 0.0
     volume_24h:      float = 0.0
     mid_price:       float = 0.0
+    # V38: p_true au moment du FIRE — utilisé par SprintMaker probe pour valider l'edge AMM
+    p_true:          float = 0.5
 
 
 @dataclass
@@ -2514,6 +2516,8 @@ class InfoEdgeStrategy(BaseStrategy):
                         _price      = 0.99
                         _size       = usdc_amount
 
+                    # p_true du token signé (YES ou NO selon direction)
+                    _signal_p_true = p_true if direction == "YES" else (1.0 - p_true)
                     signals.append(Signal(
                         token_id=signal_token,
                         market_id=market.market_id,
@@ -2530,6 +2534,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         ),
                         mid_price=0.50,
                         spread_at_signal=0.01,
+                        p_true=_signal_p_true,
                     ))
                     # V24: Cooldown post-FIRE prolongé pour sprints (90s effectifs)
                     # Formule : _last_quote_ts = T + (90 - quote_cooldown)

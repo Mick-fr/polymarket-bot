@@ -1535,6 +1535,26 @@ class Trader:
                         # là où le FOK plein (6+ USDC) échouait par manque de depth.
                         if 40.0 < _t_left < 52.0 and not info.get("amm_probe_done"):
                             probe_usdc = min(2.0, info["usdc_amount"])
+                            # V38: Vérifier que le prix AMM actuel conserve un edge positif.
+                            # Si AMM_price > p_true_at_fire → on surpaie → edge négatif → skip.
+                            _p_true_fire = info.get("p_true_at_fire", 0.5)
+                            _amm_mid = None
+                            try:
+                                _amm_mid = self.pm_client.get_midpoint(info["token_id"])
+                            except Exception:
+                                pass
+                            if _amm_mid is not None and _amm_mid > _p_true_fire + 0.02:
+                                logger.warning(
+                                    "[SprintMaker] ⛔ AMM probe annulé — prix AMM %.3f > p_true_fire %.3f "
+                                    "(edge négatif ≈ %.1f%%) | %s",
+                                    _amm_mid, _p_true_fire,
+                                    (_p_true_fire - _amm_mid) * 100,
+                                    info["token_id"][:16],
+                                )
+                                with self._sprint_pending_lock:
+                                    if order_id in self._sprint_pending_makers:
+                                        self._sprint_pending_makers[order_id]["amm_probe_done"] = True
+                                continue
                             logger.info(
                                 "[SprintMaker] 🔍 AMM probe %.1f USDC sur UP/DOWN (t=%.0fs) %s",
                                 probe_usdc, _t_left, info["token_id"][:16],
@@ -2842,6 +2862,8 @@ class Trader:
                             "shares":         signal.size,
                             "usdc_amount":    usdc_rsv,
                             "requeue_count":  0,
+                            # V38: p_true du token au moment du FIRE (pour vérif edge probe)
+                            "p_true_at_fire": getattr(signal, "p_true", 0.5),
                         }
                     logger.info(
                         "[SprintMaker] ✅ Limit maker enregistré @ %.3f (%s sh ≈ %.2f USDC) | order=%s",
