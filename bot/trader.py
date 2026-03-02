@@ -1552,21 +1552,20 @@ class Trader:
                         # là où le FOK plein (6+ USDC) échouait par manque de depth.
                         if 40.0 < _t_left < 52.0 and not info.get("amm_probe_done"):
                             probe_usdc = min(2.0, info["usdc_amount"])
-                            # V38: Vérifier que le prix AMM actuel conserve un edge positif.
-                            # Si AMM_price > p_true_at_fire → on surpaie → edge négatif → skip.
+                            # V38/V43: Vérifier que le prix d'achat actuel conserve un edge positif.
+                            # V43: get_price(side="buy") = meilleur ask CLOB = prix réel d'achat.
+                            # Remplace get_midpoint() qui retournait le mid (stale) au lieu du ask.
+                            # Cas 08:04:11 — mid NO=0.49 passait check mais AMM exécutait à 0.99.
                             _p_true_fire = info.get("p_true_at_fire", 0.5)
-                            _amm_mid = None
+                            _amm_ask = None
                             try:
-                                _amm_mid = self.pm_client.get_midpoint(info["token_id"])
+                                _amm_ask = self.pm_client.get_price(info["token_id"], side="buy")
                             except Exception:
                                 pass
-                            # V42: CLOB vide → prix AMM invérifiable → skip probe (conservateur)
-                            # Quand get_midpoint() retourne None (CLOB sans quotes), on ne peut pas
-                            # confirmer que le prix AMM est en deçà de p_true → ne pas acheter au
-                            # risque de payer 0.92 pour un token estimé à 0.82 (edge négatif).
-                            if _amm_mid is None:
+                            # V42/V43: pas d'ask en CLOB → prix réel invérifiable → skip probe
+                            if _amm_ask is None:
                                 logger.info(
-                                    "[SprintMaker] ⛔ AMM probe annulé — CLOB vide, prix AMM invérifiable "
+                                    "[SprintMaker] ⛔ AMM probe annulé — pas d'ask CLOB, prix invérifiable "
                                     "(p_true_fire=%.3f) | %s",
                                     _p_true_fire, info["token_id"][:16],
                                 )
@@ -1574,12 +1573,12 @@ class Trader:
                                     if order_id in self._sprint_pending_makers:
                                         self._sprint_pending_makers[order_id]["amm_probe_done"] = True
                                 continue
-                            if _amm_mid > _p_true_fire + 0.02:
+                            if _amm_ask > _p_true_fire + 0.02:
                                 logger.warning(
-                                    "[SprintMaker] ⛔ AMM probe annulé — prix AMM %.3f > p_true_fire %.3f "
+                                    "[SprintMaker] ⛔ AMM probe annulé — ask %.3f > p_true_fire %.3f "
                                     "(edge négatif ≈ %.1f%%) | %s",
-                                    _amm_mid, _p_true_fire,
-                                    (_p_true_fire - _amm_mid) * 100,
+                                    _amm_ask, _p_true_fire,
+                                    (_p_true_fire - _amm_ask) * 100,
                                     info["token_id"][:16],
                                 )
                                 with self._sprint_pending_lock:
@@ -1587,8 +1586,8 @@ class Trader:
                                         self._sprint_pending_makers[order_id]["amm_probe_done"] = True
                                 continue
                             logger.info(
-                                "[SprintMaker] 🔍 AMM probe %.1f USDC sur UP/DOWN (t=%.0fs) %s",
-                                probe_usdc, _t_left, info["token_id"][:16],
+                                "[SprintMaker] 🔍 AMM probe %.1f USDC — ask=%.3f p_true=%.3f (t=%.0fs) %s",
+                                probe_usdc, _amm_ask, _p_true_fire, _t_left, info["token_id"][:16],
                             )
                             try:
                                 _pr = self.pm_client.place_market_order(
