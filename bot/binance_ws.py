@@ -279,13 +279,13 @@ class BinanceWSClient(threading.Thread):
             on_error=self._on_error,
             on_close=self._on_close,
         )
-        ws.run_forever(ping_interval=60, ping_timeout=30)
+        ws.run_forever(ping_interval=20, ping_timeout=10)
 
     def _on_open(self, ws):
         self._connected = True
         self._last_reconnect_ts = time.time()   # V36: cooldown signal post-reconnect
         logger.info("[BinanceWS] ==================================")
-        logger.info("[BinanceWS] Connecté aux bookTicker BTC/ETH (ping: 60s, timeout: 30s)")
+        logger.info("[BinanceWS] Connecté aux bookTicker BTC/ETH (ping: 20s, timeout: 10s)")
         logger.info("[BinanceWS] ==================================")
 
     def _on_message(self, ws, message):
