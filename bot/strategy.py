@@ -1595,11 +1595,10 @@ class InfoEdgeStrategy(BaseStrategy):
                         _decay_r = min(1.0, abs(_m60_ud) / max(abs(_m300_ud), 1e-9))
                         _w_decay = 0.40 * _decay_r  # régression max 40% vers 0.5
                         p_true   = max(0.05, min(0.95, p_true * (1.0 - _w_decay) + 0.5 * _w_decay))
-                        # Anti-spam V46: throttle temporel pur — max 1 INFO toutes les 5s.
-                        # V45 (dedup par clé) insuffisant : les valeurs BTC changent à chaque
-                        # tick WS entre évaluations de marchés → clés différentes → flood.
+                        # Anti-spam V47: throttle 30s — V46 à 5s encore trop court
+                        # (decay persiste plusieurs minutes → 8 logs/min observés).
                         _decay_last_ts = getattr(self, "_last_decay_log_ts", 0.0)
-                        if time.time() - _decay_last_ts > 5.0:
+                        if time.time() - _decay_last_ts > 30.0:
                             self._last_decay_log_ts = time.time()
                             logger.info(
                                 "[MOM DECAY] mom300=%+.3f%% mom60=%+.3f%% → inversion détectée "
@@ -1755,6 +1754,7 @@ class InfoEdgeStrategy(BaseStrategy):
 
         traded = 0
         for market in markets:
+            _stale_relax_size_cap = None  # V47: $2 cap si STALE RELAX active (reset par marché)
             # V13 Rapid-Fire Targeting: Skip immediately if not in target list
             if target_market_ids is not None and market.market_id not in target_market_ids:
                 continue
@@ -2273,6 +2273,7 @@ class InfoEdgeStrategy(BaseStrategy):
                         # Après 120s d'ouverture, on accepte 0.500 comme prix AMM réel.
                         _no_strike_mkt = ("$" not in market.question)
                         _elapsed_s     = 300.0 - time_left_sec  # sprint = 300s
+                        _stale_relax_size_cap = None  # V47: défini si STALE RELAX s'active
                         # V41: VOL SKIP guard — si round calme, STALE RELAX n'est pas fiable
                         # (modèle BS sur p_poly=0.500 avec VR bas = edge fictif).
                         _stale_vol_ok = _hot_by_vol or _hot_by_mom
@@ -2286,6 +2287,10 @@ class InfoEdgeStrategy(BaseStrategy):
                                 _vr_vsd, _m60_vsd * 100,
                             )
                             # side reste posé — trade autorisé
+                            # V47: cap taille à $2 — CLOB vide → AMM probe bloqué → seul
+                            # le limit peut remplir. Si fill → risque plein Kelly ($4-6).
+                            # $2 max = même risque que la probe AMM (symétrie des risques).
+                            _stale_relax_size_cap = 2.0
                         elif _no_strike_mkt and _elapsed_s >= 120.0 and is_sniper and not _stale_vol_ok:
                             # Round calme : STALE RELAX bloqué (V41)
                             logger.info(
@@ -2425,6 +2430,13 @@ class InfoEdgeStrategy(BaseStrategy):
                     # place_market_order(amount=signal.size) attend des USDC.
                     # risk._compute_order_cost retourne signal.size pour market orders.
                     usdc_amount = round(order_size, 2)
+                    # V47: STALE RELAX → cap $2 (CLOB vide, AMM probe bloqué, risque limité)
+                    if _stale_relax_size_cap is not None and usdc_amount > _stale_relax_size_cap:
+                        logger.info(
+                            "[STALE RELAX] Taille plafonnée %.2f→%.2f USDC (CLOB vide, cap $2)",
+                            usdc_amount, _stale_relax_size_cap,
+                        )
+                        usdc_amount = _stale_relax_size_cap
 
                     # ── FIRE LOG ──────────────────────────────────────────────
                     penalty_detail = []
