@@ -1595,12 +1595,25 @@ class InfoEdgeStrategy(BaseStrategy):
                         _decay_r = min(1.0, abs(_m60_ud) / max(abs(_m300_ud), 1e-9))
                         _w_decay = 0.40 * _decay_r  # régression max 40% vers 0.5
                         p_true   = max(0.05, min(0.95, p_true * (1.0 - _w_decay) + 0.5 * _w_decay))
-                        logger.info(
-                            "[MOM DECAY] mom300=%+.3f%% mom60=%+.3f%% → inversion détectée "
-                            "p_true %.4f → %.4f (decay=%.0f%%)",
-                            _m300_ud * 100, _m60_ud * 100,
-                            _p_before, p_true, _w_decay * 100,
-                        )
+                        # Anti-spam: mom300/mom60 sont BTC-wide → même log pour chaque marché du cycle.
+                        # Logger INFO seulement au premier marché, DEBUG pour les suivants.
+                        _decay_key = (round(_m300_ud, 4), round(_m60_ud, 4))
+                        _decay_last = getattr(self, "_last_decay_log", (0.0, None))
+                        _decay_is_new = (_decay_key != _decay_last[1]
+                                         or time.time() - _decay_last[0] > 10.0)
+                        if _decay_is_new:
+                            self._last_decay_log = (time.time(), _decay_key)
+                            logger.info(
+                                "[MOM DECAY] mom300=%+.3f%% mom60=%+.3f%% → inversion détectée "
+                                "p_true %.4f → %.4f (decay=%.0f%%)",
+                                _m300_ud * 100, _m60_ud * 100,
+                                _p_before, p_true, _w_decay * 100,
+                            )
+                        else:
+                            logger.debug(
+                                "[MOM DECAY] (dup) p_true %.4f → %.4f | %s",
+                                _p_before, p_true, market.market_id,
+                            )
                         # V37: Persist pour calibration (non-bloquant)
                         try:
                             if hasattr(self, 'db') and self.db:
