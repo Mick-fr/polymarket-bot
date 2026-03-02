@@ -728,7 +728,6 @@ class Trader:
             self._cycles_since_purge = 0
             
         # 6. V18 Hourly Analytics Alerts (Sharpe & Drawdown)
-        import time
         now = time.time()
         if not hasattr(self, "_last_analytics_alert_ts"):
             self._last_analytics_alert_ts = now - 3600  # Trigger on first loop
