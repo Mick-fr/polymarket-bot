@@ -1552,10 +1552,15 @@ class Trader:
                         # là où le FOK plein (6+ USDC) échouait par manque de depth.
                         if 40.0 < _t_left < 52.0 and not info.get("amm_probe_done"):
                             probe_usdc = min(2.0, info["usdc_amount"])
-                            # V38/V43: Vérifier que le prix d'achat actuel conserve un edge positif.
+                            # V38/V43/V44: Vérifier que le prix d'achat conserve un edge suffisant.
                             # V43: get_price(side="buy") = meilleur ask CLOB = prix réel d'achat.
-                            # Remplace get_midpoint() qui retournait le mid (stale) au lieu du ask.
-                            # Cas 08:04:11 — mid NO=0.49 passait check mais AMM exécutait à 0.99.
+                            # V44: double filtre risque/rendement —
+                            #   MAX_AMM_PROBE_PRICE=0.82 : jamais probe si ask > 82¢ (ratio trop mauvais)
+                            #   MIN_AMM_PROBE_EDGE=0.05  : edge minimum 5% (p_true - ask ≥ 5¢/token)
+                            # Rationale: acheter à 96¢ pour gagner 4¢ avec $2 de risque est inviable.
+                            # À 82¢ max : gain potentiel 18¢/token, ratio acceptable.
+                            _MAX_AMM_PROBE_PRICE = 0.82
+                            _MIN_AMM_PROBE_EDGE  = 0.05
                             _p_true_fire = info.get("p_true_at_fire", 0.5)
                             _amm_ask = None
                             try:
@@ -1573,6 +1578,19 @@ class Trader:
                                     if order_id in self._sprint_pending_makers:
                                         self._sprint_pending_makers[order_id]["amm_probe_done"] = True
                                 continue
+                            # V44a: hard cap — ask trop élevé, ratio risque/rendement inacceptable
+                            if _amm_ask > _MAX_AMM_PROBE_PRICE:
+                                logger.info(
+                                    "[SprintMaker] ⛔ AMM probe annulé — ask %.3f > MAX_PROBE_PRICE %.2f "
+                                    "(ratio R/R trop faible, gain max=%.1f¢) | %s",
+                                    _amm_ask, _MAX_AMM_PROBE_PRICE,
+                                    (1.0 - _amm_ask) * 100, info["token_id"][:16],
+                                )
+                                with self._sprint_pending_lock:
+                                    if order_id in self._sprint_pending_makers:
+                                        self._sprint_pending_makers[order_id]["amm_probe_done"] = True
+                                continue
+                            # V38/V43: edge négatif (ask > p_true)
                             if _amm_ask > _p_true_fire + 0.02:
                                 logger.warning(
                                     "[SprintMaker] ⛔ AMM probe annulé — ask %.3f > p_true_fire %.3f "
@@ -1585,9 +1603,24 @@ class Trader:
                                     if order_id in self._sprint_pending_makers:
                                         self._sprint_pending_makers[order_id]["amm_probe_done"] = True
                                 continue
+                            # V44b: edge insuffisant (< 5%) — gain trop faible pour le risque
+                            _probe_edge = _p_true_fire - _amm_ask
+                            if _probe_edge < _MIN_AMM_PROBE_EDGE:
+                                logger.info(
+                                    "[SprintMaker] ⛔ AMM probe annulé — edge %.1f%% < MIN_EDGE %.1f%% "
+                                    "(ask=%.3f p_true=%.3f) | %s",
+                                    _probe_edge * 100, _MIN_AMM_PROBE_EDGE * 100,
+                                    _amm_ask, _p_true_fire, info["token_id"][:16],
+                                )
+                                with self._sprint_pending_lock:
+                                    if order_id in self._sprint_pending_makers:
+                                        self._sprint_pending_makers[order_id]["amm_probe_done"] = True
+                                continue
                             logger.info(
-                                "[SprintMaker] 🔍 AMM probe %.1f USDC — ask=%.3f p_true=%.3f (t=%.0fs) %s",
-                                probe_usdc, _amm_ask, _p_true_fire, _t_left, info["token_id"][:16],
+                                "[SprintMaker] 🔍 AMM probe %.1f USDC — ask=%.3f p_true=%.3f "
+                                "edge=%.1f%% (t=%.0fs) %s",
+                                probe_usdc, _amm_ask, _p_true_fire,
+                                _probe_edge * 100, _t_left, info["token_id"][:16],
                             )
                             try:
                                 _pr = self.pm_client.place_market_order(
