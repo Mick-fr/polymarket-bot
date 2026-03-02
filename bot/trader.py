@@ -543,6 +543,7 @@ class Trader:
     def _maintenance_loop(self):
         """V13.0: Tâche de fond lente pour la revalorisation et les allowances (60s)."""
         logger.info("[Maintenance] ── Exécution chronjob 60s ────────────────")
+        now = time.time()  # V46: défini ici pour éviter UnboundLocalError (ligne ~674 référence now)
 
         # 1. Connectivité API
         if not self.pm_client.is_alive():
